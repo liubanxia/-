@@ -1,0 +1,64 @@
+# Project Phoenix Git 忽略规则
+
+# 开发环境与安装程序
+02_开发环境/
+03_第三方工具/
+
+# 大型模型、知识资料、构建和备份
+04_AI模型/
+05_医学知识库/
+08_构建版本/
+10_备份/
+99_归档/
+
+# 运行日志与病例衍生资料
+09_日志/
+12_经验库/
+14_学习中心/
+15_证据中心/
+
+# Python 临时文件
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+
+# 本地编辑器配置
+.vscode/
+*.code-workspace
+
+# 数据库、日志和临时文件
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.tmp
+*.temp
+*.bak
+
+# 医学影像和模型文件
+*.dcm
+*.dicom
+*.nii
+*.nii.gz
+*.onnx
+*.pt
+*.pth
+*.ckpt
+*.gguf
+*.safetensors
+
+# 安装包与压缩包
+*.exe
+*.msi
+*.dll
+*.zip
+*.7z
+*.rar
+
+# 系统自动文件
+Thumbs.db
+desktop.ini
+.DS_Store
