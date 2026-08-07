@@ -14,7 +14,5 @@ DEBUG = True
 # 支持影像类型
 SUPPORTED_MODALITIES = [
     "CT",
-    "MR",
-    "CR",
     "DR"
 ]
