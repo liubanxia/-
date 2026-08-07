@@ -1,4 +1,9 @@
 from config.settings import *
+from utils.logger import setup_logger
+
+logger = setup_logger()
+
+logger.info("Project Phoenix 启动")
 
 print("=" * 50)
 print(PROJECT_NAME)
