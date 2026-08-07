@@ -14,5 +14,10 @@ DEBUG = True
 # 支持影像类型
 SUPPORTED_MODALITIES = [
     "CT",
-    "DR"
+    "DX",
 ]
+
+MODALITY_DISPLAY_NAMES = {
+    "CT": "CT",
+    "DX": "DR",
+}
