@@ -318,7 +318,58 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 f"DICOM读取失败: {exc}"
             )
+    def mousePressEvent(self, event):
+        if (
+            event.button() == Qt.RightButton
+            and self.current_hu_array is not None
+        ):
+            self.windowing_active = True
+            self.windowing_start_pos = event.position().toPoint()
+            self.windowing_start_center = float(self.window_center)
+            self.windowing_start_width = float(self.window_width)
+            event.accept()
+            return
 
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.windowing_active and self.current_hu_array is not None:
+            current_pos = event.position().toPoint()
+
+            dx = current_pos.x() - self.windowing_start_pos.x()
+            dy = current_pos.y() - self.windowing_start_pos.y()
+
+            self.window_width = max(
+                1.0,
+                self.windowing_start_width + dx * 2.0,
+            )
+
+            self.window_center = (
+                self.windowing_start_center - dy * 2.0
+            )
+
+            self._render_ct_window()
+
+            self.statusBar().showMessage(
+                f"CT 调窗 | WL: {self.window_center:.0f} | "
+                f"WW: {self.window_width:.0f}"
+            )
+
+            event.accept()
+            return
+
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if (
+            event.button() == Qt.RightButton
+            and self.windowing_active
+        ):
+            self.windowing_active = False
+            event.accept()
+            return
+
+        super().mouseReleaseEvent(event)
         def resizeEvent(self, event):
             super().resizeEvent(event)
 
