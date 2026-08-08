@@ -370,14 +370,36 @@ class MainWindow(QMainWindow):
             return
 
         super().mouseReleaseEvent(event)
-        def resizeEvent(self, event):
-            super().resizeEvent(event)
 
-            if hasattr(self, "current_pixmap"):
-                scaled_pixmap = self.current_pixmap.scaled(
-                    self.image_label.size(),
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation,
-                )
-                self.image_label.setPixmap(scaled_pixmap)
-        
+    def mouseDoubleClickEvent(self, event):
+        if (
+            event.button() == Qt.LeftButton
+            and self.current_hu_array is not None
+            and self.default_window_center is not None
+            and self.default_window_width is not None
+        ):
+            self.window_center = float(self.default_window_center)
+            self.window_width = float(self.default_window_width)
+
+            self._render_ct_window()
+
+            self.statusBar().showMessage(
+                f"CT 默认窗已恢复 | WL: {self.window_center:.0f} | "
+                f"WW: {self.window_width:.0f}"
+            )
+
+            event.accept()
+            return
+
+        super().mouseDoubleClickEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+
+        if hasattr(self, "current_pixmap"):
+            scaled_pixmap = self.current_pixmap.scaled(
+                self.image_label.size(),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+            self.image_label.setPixmap(scaled_pixmap)
