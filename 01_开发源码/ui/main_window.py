@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
 )
 from PySide6.QtGui import QAction, QImage, QPixmap
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QPoint
 
 from dicom.reader import read_dicom
 import numpy as np
@@ -20,6 +20,21 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+
+        # CT 窗宽 / 窗位交互状态
+        self.current_dataset = None
+        self.current_hu_array = None
+
+        self.window_center = None
+        self.window_width = None
+
+        self.default_window_center = None
+        self.default_window_width = None
+
+        self.windowing_active = False
+        self.windowing_start_pos = QPoint()
+        self.windowing_start_center = 0.0
+        self.windowing_start_width = 1.0
 
         self.setWindowTitle("Project Phoenix - 医学影像智能工作站")
         self.resize(1400, 900)
@@ -142,19 +157,22 @@ class MainWindow(QMainWindow):
 
         modality = getattr(dataset, "Modality", "")
 
-        # -------------------------------------------------
-        # CT：先转换为 HU，再应用 Window Center / Width
-        # -------------------------------------------------
+        # 保存当前 DICOM
+        self.current_dataset = dataset
+
+        # --------------------------------------------------
+        # CT：转换为 HU，并使用 Window Center / Window Width
+        # --------------------------------------------------
         if modality == "CT":
             slope = float(getattr(dataset, "RescaleSlope", 1.0))
             intercept = float(getattr(dataset, "RescaleIntercept", 0.0))
 
             hu_array = pixel_array * slope + intercept
+            self.current_hu_array = hu_array
 
             window_center = getattr(dataset, "WindowCenter", 40.0)
             window_width = getattr(dataset, "WindowWidth", 400.0)
 
-            # 如果 WC / WW 是 MultiValue，只取第一个值
             try:
                 window_center = float(window_center[0])
             except (TypeError, IndexError):
@@ -165,26 +183,23 @@ class MainWindow(QMainWindow):
             except (TypeError, IndexError):
                 window_width = float(window_width)
 
-            if window_width <= 1:
-                raise ValueError(
-                    f"无效 Window Width: {window_width}"
-                )
+            if window_width < 1:
+                window_width = 1.0
 
-            window_min = window_center - window_width / 2.0
-            window_max = window_center + window_width / 2.0
+            self.window_center = window_center
+            self.window_width = window_width
 
-            image_8bit = np.clip(
-                (hu_array - window_min)
-                / (window_max - window_min)
-                * 255.0,
-                0,
-                255,
-            ).astype(np.uint8)
+            self.default_window_center = window_center
+            self.default_window_width = window_width
 
-        # -------------------------------------------------
-        # 非 CT：暂时继续使用 min / max 灰阶映射
-        # -------------------------------------------------
+            self._render_ct_window()
+
+        # --------------------------------------------------
+        # 非 CT：继续使用 min / max 灰阶显示
+        # --------------------------------------------------
         else:
+            self.current_hu_array = None
+
             pixel_min = float(pixel_array.min())
             pixel_max = float(pixel_array.max())
 
@@ -197,11 +212,39 @@ class MainWindow(QMainWindow):
                 * 255.0
             ).astype(np.uint8)
 
-        # -------------------------------------------------
-        # MONOCHROME1 反相
-        # -------------------------------------------------
+            photometric = getattr(
+                dataset,
+                "PhotometricInterpretation",
+                "MONOCHROME2",
+            )
+
+            if photometric == "MONOCHROME1":
+                image_8bit = 255 - image_8bit
+
+            self._show_image_array(image_8bit)
+
+
+    def _render_ct_window(self):
+        """根据当前窗位/窗宽重新渲染 CT。"""
+        if self.current_hu_array is None:
+            return
+
+        window_width = max(float(self.window_width), 1.0)
+        window_center = float(self.window_center)
+
+        window_min = window_center - window_width / 2.0
+        window_max = window_center + window_width / 2.0
+
+        image_8bit = np.clip(
+            (self.current_hu_array - window_min)
+            / (window_max - window_min)
+            * 255.0,
+            0,
+            255,
+        ).astype(np.uint8)
+
         photometric = getattr(
-            dataset,
+            self.current_dataset,
             "PhotometricInterpretation",
             "MONOCHROME2",
         )
@@ -209,6 +252,11 @@ class MainWindow(QMainWindow):
         if photometric == "MONOCHROME1":
             image_8bit = 255 - image_8bit
 
+        self._show_image_array(image_8bit)
+
+
+    def _show_image_array(self, image_8bit):
+        """将 8-bit 灰阶数组显示到中央影像区。"""
         image_8bit = np.ascontiguousarray(image_8bit)
 
         height, width = image_8bit.shape
@@ -271,13 +319,14 @@ class MainWindow(QMainWindow):
                 f"DICOM读取失败: {exc}"
             )
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
+        def resizeEvent(self, event):
+            super().resizeEvent(event)
 
-        if hasattr(self, "current_pixmap"):
-            scaled_pixmap = self.current_pixmap.scaled(
-                self.image_label.size(),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation,
-            )
-            self.image_label.setPixmap(scaled_pixmap)
+            if hasattr(self, "current_pixmap"):
+                scaled_pixmap = self.current_pixmap.scaled(
+                    self.image_label.size(),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
+                )
+                self.image_label.setPixmap(scaled_pixmap)
+        
