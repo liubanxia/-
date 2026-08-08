@@ -9,10 +9,11 @@ from PySide6.QtWidgets import (
     QToolBar,
     QFileDialog,
 )
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QImage, QPixmap
 from PySide6.QtCore import Qt
 
 from dicom.reader import read_dicom
+import numpy as np
 
 class MainWindow(QMainWindow):
     """Project Phoenix 医学影像工作站主窗口。"""
@@ -71,11 +72,22 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(left_title)
         left_layout.addWidget(self.left_content_label, 1)
 
-        image_panel = self._create_panel(
-            "影像显示区",
-            "DICOM Image Viewer\n\n等待载入影像",
-            700,
-        )
+        image_panel = QFrame()
+        image_panel.setFrameShape(QFrame.StyledPanel)
+        image_panel.setMinimumWidth(700)
+
+        image_layout = QVBoxLayout(image_panel)
+
+        image_title = QLabel("影像显示区")
+        image_title.setAlignment(Qt.AlignCenter)
+
+        self.image_label = QLabel("DICOM Image Viewer\n\n等待载入影像")
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setWordWrap(True)
+        self.image_label.setMinimumSize(400, 400)
+
+        image_layout.addWidget(image_title)
+        image_layout.addWidget(self.image_label, 1)
 
         right_panel = self._create_panel(
             "AI / 报告",
@@ -120,6 +132,59 @@ class MainWindow(QMainWindow):
         status_bar.showMessage("Project Phoenix 已启动 | 等待载入影像")
         self.setStatusBar(status_bar)
 
+    def _display_dicom_image(self, dataset):
+        pixel_array = dataset.pixel_array.astype(np.float32)
+
+        if pixel_array.ndim != 2:
+            raise ValueError(
+                f"当前仅支持二维灰阶影像，实际维度: {pixel_array.shape}"
+            )
+
+        pixel_min = float(pixel_array.min())
+        pixel_max = float(pixel_array.max())
+
+        if pixel_max <= pixel_min:
+            raise ValueError("像素值范围无效，无法显示影像")
+
+        image_8bit = (
+            (pixel_array - pixel_min)
+            / (pixel_max - pixel_min)
+            * 255.0
+        ).astype(np.uint8)
+
+        photometric = getattr(
+            dataset,
+            "PhotometricInterpretation",
+            "MONOCHROME2",
+        )
+
+        if photometric == "MONOCHROME1":
+            image_8bit = 255 - image_8bit
+
+        image_8bit = np.ascontiguousarray(image_8bit)
+
+        height, width = image_8bit.shape
+        bytes_per_line = image_8bit.strides[0]
+
+        qimage = QImage(
+            image_8bit.data,
+            width,
+            height,
+            bytes_per_line,
+            QImage.Format_Grayscale8,
+        ).copy()
+
+        pixmap = QPixmap.fromImage(qimage)
+
+        scaled_pixmap = pixmap.scaled(
+            self.image_label.size(),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+
+        self.image_label.setText("")
+        self.image_label.setPixmap(scaled_pixmap)
+
     def _open_dicom(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -137,6 +202,8 @@ class MainWindow(QMainWindow):
             modality = getattr(dataset, "Modality", "UNKNOWN")
             study = getattr(dataset, "StudyDescription", "未提供")
             series = getattr(dataset, "SeriesDescription", "未提供")
+
+            self._display_dicom_image(dataset)
 
             self.left_content_label.setText(
                 "DICOM 信息\n\n"
