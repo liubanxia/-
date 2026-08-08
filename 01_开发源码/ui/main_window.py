@@ -50,11 +50,26 @@ class MainWindow(QMainWindow):
 
         workspace_layout = QHBoxLayout()
 
-        left_panel = self._create_panel(
-            "检查 / 序列",
-            "患者与检查列表\n\n后续显示：\nStudy\nSeries\nModality",
-            220,
+        left_panel = QFrame()
+        left_panel.setFrameShape(QFrame.StyledPanel)
+        left_panel.setMinimumWidth(220)
+
+        left_layout = QVBoxLayout(left_panel)
+
+        left_title = QLabel("检查 / 序列")
+        left_title.setAlignment(Qt.AlignCenter)
+
+        self.left_content_label = QLabel(
+            "尚未载入 DICOM\n\n"
+            "Study: -\n"
+            "Series: -\n"
+            "Modality: -"
         )
+        self.left_content_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.left_content_label.setWordWrap(True)
+
+        left_layout.addWidget(left_title)
+        left_layout.addWidget(self.left_content_label, 1)
 
         image_panel = self._create_panel(
             "影像显示区",
@@ -123,8 +138,16 @@ class MainWindow(QMainWindow):
             study = getattr(dataset, "StudyDescription", "未提供")
             series = getattr(dataset, "SeriesDescription", "未提供")
 
+            self.left_content_label.setText(
+                "DICOM 信息\n\n"
+                f"Study: {study}\n"
+                f"Series: {series}\n"
+                f"Modality: {modality}"
+            )
+
             self.statusBar().showMessage(
-                f"DICOM读取成功 | Modality: {modality} | Study: {study} | Series: {series}"
+                f"DICOM读取成功 | Modality: {modality} | "
+                f"Study: {study} | Series: {series}"
             )
 
         except Exception as exc:
