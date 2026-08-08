@@ -6,7 +6,10 @@ from PySide6.QtWidgets import (
     QLabel,
     QFrame,
     QStatusBar,
+    QToolBar,
+    QFileDialog,
 )
+from PySide6.QtGui import QAction
 from PySide6.QtCore import Qt
 
 
@@ -19,38 +22,45 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Project Phoenix - 医学影像智能工作站")
         self.resize(1400, 900)
 
+        self._build_toolbar()
         self._build_ui()
         self._build_status_bar()
+
+    def _build_toolbar(self):
+        toolbar = QToolBar("主工具栏")
+        toolbar.setMovable(False)
+
+        open_action = QAction("打开 DICOM", self)
+        open_action.triggered.connect(self._open_dicom)
+
+        toolbar.addAction(open_action)
+
+        self.addToolBar(toolbar)
 
     def _build_ui(self):
         central_widget = QWidget()
         main_layout = QVBoxLayout(central_widget)
 
-        # 顶部标题区
         title_label = QLabel("Project Phoenix  医学影像智能工作站")
         title_label.setAlignment(Qt.AlignCenter)
         title_label.setMinimumHeight(50)
 
         main_layout.addWidget(title_label)
 
-        # 主工作区
         workspace_layout = QHBoxLayout()
 
-        # 左侧：检查 / 序列区
         left_panel = self._create_panel(
             "检查 / 序列",
             "患者与检查列表\n\n后续显示：\nStudy\nSeries\nModality",
             220,
         )
 
-        # 中央：影像显示区
         image_panel = self._create_panel(
             "影像显示区",
             "DICOM Image Viewer\n\n等待载入影像",
             700,
         )
 
-        # 右侧：AI / 报告区
         right_panel = self._create_panel(
             "AI / 报告",
             "AI分析结果\n\n结构化报告\n\n医生审核区",
@@ -93,3 +103,18 @@ class MainWindow(QMainWindow):
         status_bar = QStatusBar()
         status_bar.showMessage("Project Phoenix 已启动 | 等待载入影像")
         self.setStatusBar(status_bar)
+
+    def _open_dicom(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择 DICOM 文件",
+            "",
+            "DICOM 文件 (*.dcm *.dicom);;所有文件 (*.*)",
+        )
+
+        if not file_path:
+            return
+
+        self.statusBar().showMessage(
+            f"已选择 DICOM：{file_path}"
+        )
