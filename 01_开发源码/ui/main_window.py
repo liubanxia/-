@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QAction
 from PySide6.QtCore import Qt
 
+from dicom.reader import read_dicom
 
 class MainWindow(QMainWindow):
     """Project Phoenix 医学影像工作站主窗口。"""
@@ -115,6 +116,18 @@ class MainWindow(QMainWindow):
         if not file_path:
             return
 
-        self.statusBar().showMessage(
-            f"已选择 DICOM：{file_path}"
-        )
+        try:
+            dataset = read_dicom(file_path)
+
+            modality = getattr(dataset, "Modality", "UNKNOWN")
+            study = getattr(dataset, "StudyDescription", "未提供")
+            series = getattr(dataset, "SeriesDescription", "未提供")
+
+            self.statusBar().showMessage(
+                f"DICOM读取成功 | Modality: {modality} | Study: {study} | Series: {series}"
+            )
+
+        except Exception as exc:
+            self.statusBar().showMessage(
+                f"DICOM读取失败: {exc}"
+            )
