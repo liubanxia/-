@@ -49,8 +49,21 @@ class MainWindow(QMainWindow):
 
         open_action = QAction("打开 DICOM", self)
         open_action.triggered.connect(self._open_dicom)
-
         toolbar.addAction(open_action)
+
+        lung_window_action = QAction("肺窗", self)
+        lung_window_action.triggered.connect(self._set_lung_window)
+        toolbar.addAction(lung_window_action)
+
+        mediastinal_window_action = QAction("纵隔窗", self)
+        mediastinal_window_action.triggered.connect(
+            self._set_mediastinal_window
+        )
+        toolbar.addAction(mediastinal_window_action)
+
+        bone_window_action = QAction("骨窗", self)
+        bone_window_action.triggered.connect(self._set_bone_window)
+        toolbar.addAction(bone_window_action)
 
         self.addToolBar(toolbar)
 
@@ -359,6 +372,51 @@ class MainWindow(QMainWindow):
             return
 
         super().mouseMoveEvent(event)
+
+    def _set_lung_window(self):
+        if self.current_hu_array is None:
+            self.statusBar().showMessage("请先载入 CT 影像")
+            return
+
+        self.window_center = -600.0
+        self.window_width = 1500.0
+
+        self._render_ct_window()
+
+        self.statusBar().showMessage(
+            f"CT 肺窗 | WL: {self.window_center:.0f} | "
+            f"WW: {self.window_width:.0f}"
+        )
+
+    def _set_mediastinal_window(self):
+        if self.current_hu_array is None:
+            self.statusBar().showMessage("请先载入 CT 影像")
+            return
+
+        self.window_center = 40.0
+        self.window_width = 400.0
+
+        self._render_ct_window()
+
+        self.statusBar().showMessage(
+            f"CT 纵隔窗 | WL: {self.window_center:.0f} | "
+            f"WW: {self.window_width:.0f}"
+        )
+
+    def _set_bone_window(self):
+        if self.current_hu_array is None:
+            self.statusBar().showMessage("请先载入 CT 影像")
+            return
+
+        self.window_center = 300.0
+        self.window_width = 1500.0
+
+        self._render_ct_window()
+
+        self.statusBar().showMessage(
+            f"CT 骨窗 | WL: {self.window_center:.0f} | "
+            f"WW: {self.window_width:.0f}"
+        )
 
     def mouseReleaseEvent(self, event):
         if (
