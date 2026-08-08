@@ -140,18 +140,66 @@ class MainWindow(QMainWindow):
                 f"当前仅支持二维灰阶影像，实际维度: {pixel_array.shape}"
             )
 
-        pixel_min = float(pixel_array.min())
-        pixel_max = float(pixel_array.max())
+        modality = getattr(dataset, "Modality", "")
 
-        if pixel_max <= pixel_min:
-            raise ValueError("像素值范围无效，无法显示影像")
+        # -------------------------------------------------
+        # CT：先转换为 HU，再应用 Window Center / Width
+        # -------------------------------------------------
+        if modality == "CT":
+            slope = float(getattr(dataset, "RescaleSlope", 1.0))
+            intercept = float(getattr(dataset, "RescaleIntercept", 0.0))
 
-        image_8bit = (
-            (pixel_array - pixel_min)
-            / (pixel_max - pixel_min)
-            * 255.0
-        ).astype(np.uint8)
+            hu_array = pixel_array * slope + intercept
 
+            window_center = getattr(dataset, "WindowCenter", 40.0)
+            window_width = getattr(dataset, "WindowWidth", 400.0)
+
+            # 如果 WC / WW 是 MultiValue，只取第一个值
+            try:
+                window_center = float(window_center[0])
+            except (TypeError, IndexError):
+                window_center = float(window_center)
+
+            try:
+                window_width = float(window_width[0])
+            except (TypeError, IndexError):
+                window_width = float(window_width)
+
+            if window_width <= 1:
+                raise ValueError(
+                    f"无效 Window Width: {window_width}"
+                )
+
+            window_min = window_center - window_width / 2.0
+            window_max = window_center + window_width / 2.0
+
+            image_8bit = np.clip(
+                (hu_array - window_min)
+                / (window_max - window_min)
+                * 255.0,
+                0,
+                255,
+            ).astype(np.uint8)
+
+        # -------------------------------------------------
+        # 非 CT：暂时继续使用 min / max 灰阶映射
+        # -------------------------------------------------
+        else:
+            pixel_min = float(pixel_array.min())
+            pixel_max = float(pixel_array.max())
+
+            if pixel_max <= pixel_min:
+                raise ValueError("像素值范围无效，无法显示影像")
+
+            image_8bit = (
+                (pixel_array - pixel_min)
+                / (pixel_max - pixel_min)
+                * 255.0
+            ).astype(np.uint8)
+
+        # -------------------------------------------------
+        # MONOCHROME1 反相
+        # -------------------------------------------------
         photometric = getattr(
             dataset,
             "PhotometricInterpretation",
