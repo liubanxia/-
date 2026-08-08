@@ -175,8 +175,9 @@ class MainWindow(QMainWindow):
         ).copy()
 
         pixmap = QPixmap.fromImage(qimage)
+        self.current_pixmap = pixmap
 
-        scaled_pixmap = pixmap.scaled(
+        scaled_pixmap = self.current_pixmap.scaled(
             self.image_label.size(),
             Qt.KeepAspectRatio,
             Qt.SmoothTransformation,
@@ -221,3 +222,14 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 f"DICOM读取失败: {exc}"
             )
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+
+        if hasattr(self, "current_pixmap"):
+            scaled_pixmap = self.current_pixmap.scaled(
+                self.image_label.size(),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+            self.image_label.setPixmap(scaled_pixmap)
