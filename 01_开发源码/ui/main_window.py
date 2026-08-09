@@ -14,6 +14,8 @@ from PySide6.QtCore import Qt, QPoint
 
 from dicom.reader import read_dicom
 import numpy as np
+import os
+import pydicom
 
 class MainWindow(QMainWindow):
     """Project Phoenix 医学影像工作站主窗口。"""
@@ -24,6 +26,9 @@ class MainWindow(QMainWindow):
         # CT 窗宽 / 窗位交互状态
         self.current_dataset = None
         self.current_hu_array = None
+        # CT 序列状态
+        self.series_files = []
+        self.current_slice_index = 0
 
         self.window_center = None
         self.window_width = None
@@ -50,6 +55,10 @@ class MainWindow(QMainWindow):
         open_action = QAction("打开 DICOM", self)
         open_action.triggered.connect(self._open_dicom)
         toolbar.addAction(open_action)
+
+        open_series_action = QAction("打开 CT 序列", self)
+        open_series_action.triggered.connect(self._open_ct_series)
+        toolbar.addAction(open_series_action)
 
         lung_window_action = QAction("肺窗", self)
         lung_window_action.triggered.connect(self._set_lung_window)
@@ -295,6 +304,107 @@ class MainWindow(QMainWindow):
         self.image_label.setText("")
         self.image_label.setPixmap(scaled_pixmap)
 
+    def _open_ct_series(self):
+        folder_path = QFileDialog.getExistingDirectory(
+            self,
+            "选择 CT DICOM 序列文件夹",
+            ""
+        )
+
+        if not folder_path:
+            return
+
+        try:
+            dicom_files = []
+
+            for file_name in os.listdir(folder_path):
+                file_path = os.path.join(folder_path, file_name)
+
+                if not os.path.isfile(file_path):
+                    continue
+
+                try:
+                    ds = pydicom.dcmread(file_path, stop_before_pixels=True)
+
+                    if getattr(ds, "Modality", "") == "CT":
+                        dicom_files.append(file_path)
+
+                except Exception:
+                    continue
+
+            if not dicom_files:
+                self.statusBar().showMessage(
+                    "未找到可读取的 CT DICOM 文件"
+                )
+                return
+
+            def get_slice_position(file_path):
+                try:
+                    ds = pydicom.dcmread(
+                        file_path,
+                        stop_before_pixels=True
+                    )
+
+                    if hasattr(ds, "ImagePositionPatient"):
+                        return float(ds.ImagePositionPatient[2])
+
+                    if hasattr(ds, "SliceLocation"):
+                        return float(ds.SliceLocation)
+
+                    if hasattr(ds, "InstanceNumber"):
+                        return float(ds.InstanceNumber)
+
+                except Exception:
+                    pass
+
+                return 0.0
+
+            dicom_files.sort(key=get_slice_position)
+
+            self.series_files = dicom_files
+            self.current_slice_index = 0
+
+            first_dataset = read_dicom(
+                self.series_files[self.current_slice_index]
+            )
+
+            self._display_dicom_image(first_dataset)
+
+            modality = getattr(
+                first_dataset,
+                "Modality",
+                "UNKNOWN"
+            )
+            study = getattr(
+                first_dataset,
+                "StudyDescription",
+                "未提供"
+            )
+            series = getattr(
+                first_dataset,
+                "SeriesDescription",
+                "未提供"
+            )
+
+            self.left_content_label.setText(
+                "DICOM 信息\n\n"
+                f"Study: {study}\n"
+                f"Series: {series}\n"
+                f"Modality: {modality}\n"
+                f"Images: {len(self.series_files)}\n"
+                f"Slice: 1 / {len(self.series_files)}"
+            )
+
+            self.statusBar().showMessage(
+                f"CT 序列读取成功 | "
+                f"{len(self.series_files)} 张 | "
+                f"当前 1/{len(self.series_files)}"
+            )
+
+        except Exception as exc:
+            self.statusBar().showMessage(
+                f"CT 序列读取失败：{exc}"
+            )
     def _open_dicom(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -307,6 +417,13 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            # --------------------------------------------------
+            # 进入单张 DICOM 模式：
+            # 清除之前加载的 CT 序列，防止滚轮继续翻旧序列
+            # --------------------------------------------------
+            self.series_files = []
+            self.current_slice_index = 0
+
             dataset = read_dicom(file_path)
 
             modality = getattr(dataset, "Modality", "UNKNOWN")
@@ -323,8 +440,10 @@ class MainWindow(QMainWindow):
             )
 
             self.statusBar().showMessage(
-                f"DICOM读取成功 | Modality: {modality} | "
-                f"Study: {study} | Series: {series}"
+                f"DICOM读取成功 | "
+                f"Modality: {modality} | "
+                f"Study: {study} | "
+                f"Series: {series}"
             )
 
         except Exception as exc:
@@ -450,6 +569,93 @@ class MainWindow(QMainWindow):
             return
 
         super().mouseDoubleClickEvent(event)
+
+    def wheelEvent(self, event):
+        if not self.series_files:
+            super().wheelEvent(event)
+            return
+
+        total_number = len(self.series_files)
+
+        if total_number <= 0:
+            event.accept()
+            return
+
+        delta = event.angleDelta().y()
+
+        # PACS 风格循环翻层
+        # 向上：上一层；第一层继续滚则跳到最后一层
+        if delta > 0:
+            self.current_slice_index = (
+                self.current_slice_index - 1
+            ) % total_number
+
+        # 向下：下一层；最后一层继续滚则回到第一层
+        elif delta < 0:
+            self.current_slice_index = (
+                self.current_slice_index + 1
+            ) % total_number
+
+        else:
+            event.accept()
+            return
+
+        # 保留当前窗宽 / 窗位
+        previous_window_center = self.window_center
+        previous_window_width = self.window_width
+
+        dataset = read_dicom(
+            self.series_files[self.current_slice_index]
+        )
+
+        self._display_dicom_image(dataset)
+
+        if (
+            previous_window_center is not None
+            and previous_window_width is not None
+            and self.current_hu_array is not None
+        ):
+            self.window_center = float(previous_window_center)
+            self.window_width = float(previous_window_width)
+            self._render_ct_window()
+
+        modality = getattr(
+            dataset,
+            "Modality",
+            "UNKNOWN"
+        )
+        study = getattr(
+            dataset,
+            "StudyDescription",
+            "未提供"
+        )
+        series = getattr(
+            dataset,
+            "SeriesDescription",
+            "未提供"
+        )
+
+        # 内部索引 0～39
+        # 界面显示 1～40
+        current_number = self.current_slice_index + 1
+
+        self.left_content_label.setText(
+            "DICOM 信息\n\n"
+            f"Study: {study}\n"
+            f"Series: {series}\n"
+            f"Modality: {modality}\n"
+            f"Images: {total_number}\n"
+            f"Slice: {current_number} / {total_number}"
+        )
+
+        self.statusBar().showMessage(
+            f"CT 序列 | "
+            f"当前 {current_number}/{total_number} | "
+            f"WL: {self.window_center:.0f} | "
+            f"WW: {self.window_width:.0f}"
+        )
+
+        event.accept()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
