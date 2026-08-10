@@ -315,7 +315,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            dicom_files = []
+            series_groups = {}
 
             for file_name in os.listdir(folder_path):
                 file_path = os.path.join(folder_path, file_name)
@@ -324,19 +324,40 @@ class MainWindow(QMainWindow):
                     continue
 
                 try:
-                    ds = pydicom.dcmread(file_path, stop_before_pixels=True)
+                    ds = pydicom.dcmread(
+                        file_path,
+                        stop_before_pixels=True
+                    )
 
-                    if getattr(ds, "Modality", "") == "CT":
-                        dicom_files.append(file_path)
+                    if getattr(ds, "Modality", "") != "CT":
+                        continue
+
+                    series_uid = str(
+                        getattr(
+                            ds,
+                            "SeriesInstanceUID",
+                            "__NO_SERIES_UID__"
+                        )
+                    )
+
+                    if series_uid not in series_groups:
+                        series_groups[series_uid] = []
+
+                    series_groups[series_uid].append(file_path)
 
                 except Exception:
                     continue
 
-            if not dicom_files:
+            if not series_groups:
                 self.statusBar().showMessage(
                     "未找到可读取的 CT DICOM 文件"
                 )
                 return
+
+            selected_series_uid, dicom_files = max(
+                series_groups.items(),
+                key=lambda item: len(item[1])
+            )
 
             def get_slice_position(file_path):
                 try:
@@ -375,16 +396,20 @@ class MainWindow(QMainWindow):
                 "Modality",
                 "UNKNOWN"
             )
+
             study = getattr(
                 first_dataset,
                 "StudyDescription",
                 "未提供"
             )
+
             series = getattr(
                 first_dataset,
                 "SeriesDescription",
                 "未提供"
             )
+
+            series_count = len(series_groups)
 
             self.left_content_label.setText(
                 "DICOM 信息\n\n"
@@ -392,12 +417,14 @@ class MainWindow(QMainWindow):
                 f"Series: {series}\n"
                 f"Modality: {modality}\n"
                 f"Images: {len(self.series_files)}\n"
-                f"Slice: 1 / {len(self.series_files)}"
+                f"Slice: 1 / {len(self.series_files)}\n"
+                f"CT Series: {series_count}"
             )
 
             self.statusBar().showMessage(
                 f"CT 序列读取成功 | "
                 f"{len(self.series_files)} 张 | "
+                f"检测到 {series_count} 个 CT Series | "
                 f"当前 1/{len(self.series_files)}"
             )
 
