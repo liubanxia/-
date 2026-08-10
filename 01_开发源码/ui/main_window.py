@@ -14,6 +14,7 @@ from PySide6.QtGui import QAction, QImage, QPixmap
 from PySide6.QtCore import Qt, QPoint
 
 from dicom.reader import read_dicom
+from dicom.pixel import ct_to_hu, normalize_dx, validate_ct_pixel_dataset
 import numpy as np
 import os
 import pydicom
@@ -171,40 +172,51 @@ class MainWindow(QMainWindow):
         self.setStatusBar(status_bar)
 
     def _display_dicom_image(self, dataset):
-        pixel_array = dataset.pixel_array.astype(np.float32)
-
-        if pixel_array.ndim != 2:
-            raise ValueError(
-                f"当前仅支持二维灰阶影像，实际维度: {pixel_array.shape}"
-            )
-
-        modality = getattr(dataset, "Modality", "")
+        modality = getattr(
+            dataset,
+            "Modality",
+            "",
+        )
 
         # 保存当前 DICOM
         self.current_dataset = dataset
 
         # --------------------------------------------------
-        # CT：转换为 HU，并使用 Window Center / Window Width
+        # CT：统一通过 dicom.pixel 完成安全校验及 HU 转换
         # --------------------------------------------------
         if modality == "CT":
-            slope = float(getattr(dataset, "RescaleSlope", 1.0))
-            intercept = float(getattr(dataset, "RescaleIntercept", 0.0))
-
-            hu_array = pixel_array * slope + intercept
+            hu_array = ct_to_hu(dataset)
             self.current_hu_array = hu_array
 
-            window_center = getattr(dataset, "WindowCenter", 40.0)
-            window_width = getattr(dataset, "WindowWidth", 400.0)
+            window_center = getattr(
+                dataset,
+                "WindowCenter",
+                40.0,
+            )
+
+            window_width = getattr(
+                dataset,
+                "WindowWidth",
+                400.0,
+            )
 
             try:
-                window_center = float(window_center[0])
+                window_center = float(
+                    window_center[0]
+                )
             except (TypeError, IndexError):
-                window_center = float(window_center)
+                window_center = float(
+                    window_center
+                )
 
             try:
-                window_width = float(window_width[0])
+                window_width = float(
+                    window_width[0]
+                )
             except (TypeError, IndexError):
-                window_width = float(window_width)
+                window_width = float(
+                    window_width
+                )
 
             if window_width < 1:
                 window_width = 1.0
@@ -212,39 +224,33 @@ class MainWindow(QMainWindow):
             self.window_center = window_center
             self.window_width = window_width
 
-            self.default_window_center = window_center
-            self.default_window_width = window_width
+            self.default_window_center = (
+                window_center
+            )
+            self.default_window_width = (
+                window_width
+            )
 
             self._render_ct_window()
 
         # --------------------------------------------------
-        # 非 CT：继续使用 min / max 灰阶显示
+        # DX（DR）：统一通过 dicom.pixel 标准化
         # --------------------------------------------------
-        else:
+        elif modality == "DX":
             self.current_hu_array = None
 
-            pixel_min = float(pixel_array.min())
-            pixel_max = float(pixel_array.max())
-
-            if pixel_max <= pixel_min:
-                raise ValueError("像素值范围无效，无法显示影像")
-
-            image_8bit = (
-                (pixel_array - pixel_min)
-                / (pixel_max - pixel_min)
-                * 255.0
-            ).astype(np.uint8)
-
-            photometric = getattr(
-                dataset,
-                "PhotometricInterpretation",
-                "MONOCHROME2",
+            image_8bit = normalize_dx(
+                dataset
             )
 
-            if photometric == "MONOCHROME1":
-                image_8bit = 255 - image_8bit
+            self._show_image_array(
+                image_8bit
+            )
 
-            self._show_image_array(image_8bit)
+        else:
+            raise ValueError(
+                f"当前不支持影像类型：{modality}"
+            )
 
 
     def _render_ct_window(self):
@@ -723,6 +729,25 @@ class MainWindow(QMainWindow):
                 for item in slice_records
             ]
 
+            # ----------------------------------------------
+            # M8.0-I CT全Series像素与HU标定安全预检查
+            # ----------------------------------------------
+            for file_path in dicom_files:
+                try:
+                    dataset = read_dicom(
+                        file_path
+                    )
+
+                    validate_ct_pixel_dataset(
+                        dataset
+                    )
+
+                except Exception as exc:
+                    self.statusBar().showMessage(
+                        "安全停止：CT像素或HU标定检查失败："
+                        f"{exc}"
+                    )
+                    return
 
             self.series_files = dicom_files
             self.current_slice_index = 0
@@ -959,6 +984,9 @@ class MainWindow(QMainWindow):
 
         delta = event.angleDelta().y()
 
+        # 保存翻层前索引，运行时异常时恢复
+        previous_slice_index = self.current_slice_index
+
         # PACS 风格循环翻层
         # 向上：上一层；第一层继续滚则跳到最后一层
         if delta > 0:
@@ -976,24 +1004,79 @@ class MainWindow(QMainWindow):
             event.accept()
             return
 
-        # 保留当前窗宽 / 窗位
+        # 保留翻层前显示与CT状态
         previous_window_center = self.window_center
         previous_window_width = self.window_width
+        previous_dataset = self.current_dataset
+        previous_hu_array = self.current_hu_array
 
-        dataset = read_dicom(
-            self.series_files[self.current_slice_index]
+        previous_default_window_center = getattr(
+            self,
+            "default_window_center",
+            None,
         )
 
-        self._display_dicom_image(dataset)
+        previous_default_window_width = getattr(
+            self,
+            "default_window_width",
+            None,
+        )
 
-        if (
-            previous_window_center is not None
-            and previous_window_width is not None
-            and self.current_hu_array is not None
-        ):
-            self.window_center = float(previous_window_center)
-            self.window_width = float(previous_window_width)
-            self._render_ct_window()
+        try:
+            dataset = read_dicom(
+                self.series_files[
+                    self.current_slice_index
+                ]
+            )
+
+            self._display_dicom_image(
+                dataset
+            )
+
+            if (
+                previous_window_center is not None
+                and previous_window_width is not None
+                and self.current_hu_array is not None
+            ):
+                self.window_center = float(
+                    previous_window_center
+                )
+                self.window_width = float(
+                    previous_window_width
+                )
+                self._render_ct_window()
+
+        except Exception as exc:
+            # 恢复到翻层前状态，禁止索引与显示影像错位
+            self.current_slice_index = (
+                previous_slice_index
+            )
+            self.current_dataset = (
+                previous_dataset
+            )
+            self.current_hu_array = (
+                previous_hu_array
+            )
+            self.window_center = (
+                previous_window_center
+            )
+            self.window_width = (
+                previous_window_width
+            )
+            self.default_window_center = (
+                previous_default_window_center
+            )
+            self.default_window_width = (
+                previous_default_window_width
+            )
+
+            self.statusBar().showMessage(
+                "安全停止：CT切片读取或显示失败："
+                f"{exc}"
+            )
+
+            event.accept()
+            return
 
         modality = getattr(
             dataset,
