@@ -481,33 +481,248 @@ class MainWindow(QMainWindow):
                     selected_series_uid
                 ]
 
+           # ----------------------------------------------
+            # M8.0-H CT切片唯一性与空间排序安全门控
             # ----------------------------------------------
-            # 空间排序
-            # ----------------------------------------------
-            def get_slice_position(file_path):
+            import math
+
+            slice_records = []
+            sop_uids = set()
+
+            reference_row = None
+            reference_col = None
+            reference_normal = None
+
+            for file_path in dicom_files:
                 try:
                     ds = pydicom.dcmread(
                         file_path,
                         stop_before_pixels=True
                     )
+                except Exception:
+                    self.statusBar().showMessage(
+                        "安全停止：CT切片头信息读取失败"
+                    )
+                    return
 
-                    if hasattr(ds, "ImagePositionPatient"):
-                        return float(
-                            ds.ImagePositionPatient[2]
-                        )
+                # ------------------------------------------
+                # SOPInstanceUID 唯一性检查
+                # ------------------------------------------
+                sop_uid = str(
+                    getattr(ds, "SOPInstanceUID", "")
+                ).strip()
 
-                    if hasattr(ds, "SliceLocation"):
-                        return float(ds.SliceLocation)
+                if not sop_uid:
+                    self.statusBar().showMessage(
+                        "安全停止：CT切片缺失 SOPInstanceUID"
+                    )
+                    return
 
-                    if hasattr(ds, "InstanceNumber"):
-                        return float(ds.InstanceNumber)
+                if sop_uid in sop_uids:
+                    self.statusBar().showMessage(
+                        "安全停止：检测到重复 SOPInstanceUID"
+                    )
+                    return
+
+                sop_uids.add(sop_uid)
+
+                # ------------------------------------------
+                # 必须存在真实空间定位信息
+                # ------------------------------------------
+                if not hasattr(ds, "ImagePositionPatient"):
+                    self.statusBar().showMessage(
+                        "安全停止：CT切片缺失 ImagePositionPatient"
+                    )
+                    return
+
+                if not hasattr(ds, "ImageOrientationPatient"):
+                    self.statusBar().showMessage(
+                        "安全停止：CT切片缺失 ImageOrientationPatient"
+                    )
+                    return
+
+                try:
+                    ipp = [
+                        float(v)
+                        for v in ds.ImagePositionPatient
+                    ]
+
+                    iop = [
+                        float(v)
+                        for v in ds.ImageOrientationPatient
+                    ]
+
+                    if len(ipp) != 3 or len(iop) != 6:
+                        raise ValueError
+
+                    if not all(
+                        math.isfinite(v)
+                        for v in ipp + iop
+                    ):
+                        raise ValueError
 
                 except Exception:
-                    pass
+                    self.statusBar().showMessage(
+                        "安全停止：CT切片空间定位信息异常"
+                    )
+                    return
 
-                return 0.0
+                # ------------------------------------------
+                # 计算并标准化行、列方向向量
+                # ------------------------------------------
+                row = iop[:3]
+                col = iop[3:]
 
-            dicom_files.sort(key=get_slice_position)
+                row_length = math.sqrt(
+                    sum(v * v for v in row)
+                )
+
+                col_length = math.sqrt(
+                    sum(v * v for v in col)
+                )
+
+                if row_length < 1e-6 or col_length < 1e-6:
+                    self.statusBar().showMessage(
+                        "安全停止：CT图像方向向量异常"
+                    )
+                    return
+
+                row = [
+                    v / row_length
+                    for v in row
+                ]
+
+                col = [
+                    v / col_length
+                    for v in col
+                ]
+
+                # 行、列方向应近似正交
+                row_col_dot = sum(
+                    row[i] * col[i]
+                    for i in range(3)
+                )
+
+                if abs(row_col_dot) > 1e-3:
+                    self.statusBar().showMessage(
+                        "安全停止：CT图像方向向量不正交"
+                    )
+                    return
+
+                # ------------------------------------------
+                # 第一张切片建立参考方向
+                # ------------------------------------------
+                if reference_row is None:
+                    reference_row = row
+                    reference_col = col
+
+                    normal = [
+                        row[1] * col[2]
+                        - row[2] * col[1],
+
+                        row[2] * col[0]
+                        - row[0] * col[2],
+
+                        row[0] * col[1]
+                        - row[1] * col[0],
+                    ]
+
+                    normal_length = math.sqrt(
+                        sum(v * v for v in normal)
+                    )
+
+                    if normal_length < 1e-6:
+                        self.statusBar().showMessage(
+                            "安全停止：无法确定CT切片法向量"
+                        )
+                        return
+
+                    reference_normal = [
+                        v / normal_length
+                        for v in normal
+                    ]
+
+                else:
+                    # --------------------------------------
+                    # 同一Series方向必须保持一致
+                    # --------------------------------------
+                    row_difference = max(
+                        abs(
+                            row[i]
+                            - reference_row[i]
+                        )
+                        for i in range(3)
+                    )
+
+                    col_difference = max(
+                        abs(
+                            col[i]
+                            - reference_col[i]
+                        )
+                        for i in range(3)
+                    )
+
+                    if (
+                        row_difference > 1e-3
+                        or col_difference > 1e-3
+                    ):
+                        self.statusBar().showMessage(
+                            "安全停止：CT Series内图像方向不一致"
+                        )
+                        return
+
+                # ------------------------------------------
+                # IPP 投影到切片法向量
+                # 得到真正的空间排序位置
+                # ------------------------------------------
+                slice_position = sum(
+                    ipp[i] * reference_normal[i]
+                    for i in range(3)
+                )
+
+                slice_records.append(
+                    (
+                        slice_position,
+                        file_path,
+                    )
+                )
+
+            # ----------------------------------------------
+            # 按真实空间位置排序
+            # ----------------------------------------------
+            slice_records.sort(
+                key=lambda item: item[0]
+            )
+
+            # ----------------------------------------------
+            # 检查重复空间位置
+            # ----------------------------------------------
+            for index in range(
+                1,
+                len(slice_records)
+            ):
+                previous_position = (
+                    slice_records[index - 1][0]
+                )
+
+                current_position = (
+                    slice_records[index][0]
+                )
+
+                if abs(
+                    current_position
+                    - previous_position
+                ) < 1e-3:
+                    self.statusBar().showMessage(
+                        "安全停止：检测到重复CT切片空间位置"
+                    )
+                    return
+
+            dicom_files = [
+                item[1]
+                for item in slice_records
+            ]
+
 
             self.series_files = dicom_files
             self.current_slice_index = 0
