@@ -317,9 +317,12 @@ class MainWindow(QMainWindow):
 
         try:
             series_groups = {}
+            patient_ids = set()
+            study_uids = set()
 
             # ----------------------------------------------
-            # 扫描 CT DICOM，并按 SeriesInstanceUID 分组
+            # 扫描 CT DICOM
+            # 先校验病例 / Study 身份，再按 Series 分组
             # ----------------------------------------------
             for file_name in os.listdir(folder_path):
                 file_path = os.path.join(folder_path, file_name)
@@ -336,13 +339,38 @@ class MainWindow(QMainWindow):
                     if getattr(ds, "Modality", "") != "CT":
                         continue
 
+                    patient_id = str(
+                        getattr(ds, "PatientID", "")
+                    ).strip()
+
+                    study_uid = str(
+                        getattr(ds, "StudyInstanceUID", "")
+                    ).strip()
+
                     series_uid = str(
-                        getattr(
-                            ds,
-                            "SeriesInstanceUID",
-                            "__NO_SERIES_UID__"
+                        getattr(ds, "SeriesInstanceUID", "")
+                    ).strip()
+
+                    if not patient_id:
+                        self.statusBar().showMessage(
+                            "安全停止：CT DICOM 缺失 PatientID"
                         )
-                    )
+                        return
+
+                    if not study_uid:
+                        self.statusBar().showMessage(
+                            "安全停止：CT DICOM 缺失 StudyInstanceUID"
+                        )
+                        return
+
+                    if not series_uid:
+                        self.statusBar().showMessage(
+                            "安全停止：CT DICOM 缺失 SeriesInstanceUID"
+                        )
+                        return
+
+                    patient_ids.add(patient_id)
+                    study_uids.add(study_uid)
 
                     if series_uid not in series_groups:
                         series_groups[series_uid] = []
@@ -355,6 +383,18 @@ class MainWindow(QMainWindow):
             if not series_groups:
                 self.statusBar().showMessage(
                     "未找到可读取的 CT DICOM 文件"
+                )
+                return
+
+            if len(patient_ids) != 1:
+                self.statusBar().showMessage(
+                    "安全停止：检测到多个 PatientID，禁止混合病例"
+                )
+                return
+
+            if len(study_uids) != 1:
+                self.statusBar().showMessage(
+                    "安全停止：检测到多个 StudyInstanceUID，禁止混合检查"
                 )
                 return
 
