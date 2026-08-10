@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QToolBar,
     QFileDialog,
+    QInputDialog,
 )
 from PySide6.QtGui import QAction, QImage, QPixmap
 from PySide6.QtCore import Qt, QPoint
@@ -317,6 +318,9 @@ class MainWindow(QMainWindow):
         try:
             series_groups = {}
 
+            # ----------------------------------------------
+            # 扫描 CT DICOM，并按 SeriesInstanceUID 分组
+            # ----------------------------------------------
             for file_name in os.listdir(folder_path):
                 file_path = os.path.join(folder_path, file_name)
 
@@ -354,11 +358,92 @@ class MainWindow(QMainWindow):
                 )
                 return
 
-            selected_series_uid, dicom_files = max(
-                series_groups.items(),
-                key=lambda item: len(item[1])
-            )
+            series_count = len(series_groups)
 
+            # ----------------------------------------------
+            # 只有一个 Series：直接进入
+            # 多个 Series：必须由医生明确选择
+            # ----------------------------------------------
+            if series_count == 1:
+                selected_series_uid = next(iter(series_groups))
+                dicom_files = series_groups[selected_series_uid]
+
+            else:
+                series_uids = []
+                series_labels = []
+
+                for index, (series_uid, files) in enumerate(
+                    series_groups.items(),
+                    start=1
+                ):
+                    description = "未提供"
+                    series_number = "未提供"
+
+                    try:
+                        header = pydicom.dcmread(
+                            files[0],
+                            stop_before_pixels=True
+                        )
+
+                        description = str(
+                            getattr(
+                                header,
+                                "SeriesDescription",
+                                "未提供"
+                            )
+                        )
+
+                        series_number = str(
+                            getattr(
+                                header,
+                                "SeriesNumber",
+                                "未提供"
+                            )
+                        )
+
+                    except Exception:
+                        pass
+
+                    label = (
+                        f"{index}. "
+                        f"SeriesNumber: {series_number} | "
+                        f"{description} | "
+                        f"{len(files)} 张"
+                    )
+
+                    series_uids.append(series_uid)
+                    series_labels.append(label)
+
+                selected_label, ok = QInputDialog.getItem(
+                    self,
+                    "选择 CT Series",
+                    "检测到多个 CT Series，请由医生明确选择：",
+                    series_labels,
+                    0,
+                    False
+                )
+
+                if not ok:
+                    self.statusBar().showMessage(
+                        "已取消 CT Series 选择，未进入阅片"
+                    )
+                    return
+
+                selected_index = series_labels.index(
+                    selected_label
+                )
+
+                selected_series_uid = series_uids[
+                    selected_index
+                ]
+
+                dicom_files = series_groups[
+                    selected_series_uid
+                ]
+
+            # ----------------------------------------------
+            # 空间排序
+            # ----------------------------------------------
             def get_slice_position(file_path):
                 try:
                     ds = pydicom.dcmread(
@@ -367,7 +452,9 @@ class MainWindow(QMainWindow):
                     )
 
                     if hasattr(ds, "ImagePositionPatient"):
-                        return float(ds.ImagePositionPatient[2])
+                        return float(
+                            ds.ImagePositionPatient[2]
+                        )
 
                     if hasattr(ds, "SliceLocation"):
                         return float(ds.SliceLocation)
@@ -386,7 +473,9 @@ class MainWindow(QMainWindow):
             self.current_slice_index = 0
 
             first_dataset = read_dicom(
-                self.series_files[self.current_slice_index]
+                self.series_files[
+                    self.current_slice_index
+                ]
             )
 
             self._display_dicom_image(first_dataset)
@@ -409,12 +498,17 @@ class MainWindow(QMainWindow):
                 "未提供"
             )
 
-            series_count = len(series_groups)
+            series_number = getattr(
+                first_dataset,
+                "SeriesNumber",
+                "未提供"
+            )
 
             self.left_content_label.setText(
                 "DICOM 信息\n\n"
                 f"Study: {study}\n"
                 f"Series: {series}\n"
+                f"SeriesNumber: {series_number}\n"
                 f"Modality: {modality}\n"
                 f"Images: {len(self.series_files)}\n"
                 f"Slice: 1 / {len(self.series_files)}\n"
