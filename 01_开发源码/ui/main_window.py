@@ -18,6 +18,63 @@ from dicom.pixel import ct_to_hu, normalize_dx, validate_ct_pixel_dataset
 import numpy as np
 import os
 import pydicom
+from pydicom.misc import is_dicom
+from pydicom.uid import UID
+
+
+def _looks_like_ct_dicom_without_preamble(file_path):
+    """
+    判断无标准 DICM 前导的文件是否具有可信 CT DICOM 结构。
+
+    force=True 仅用于身份鉴别，
+    不代表当前 V1 已支持该文件进入正式阅片。
+    """
+
+    try:
+        dataset = pydicom.dcmread(
+            file_path,
+            stop_before_pixels=True,
+            force=True,
+        )
+    except Exception:
+        return False
+
+    modality = str(
+        getattr(dataset, "Modality", "")
+    ).strip().upper()
+
+    if modality != "CT":
+        return False
+
+    required_uids = (
+        "SOPClassUID",
+        "SOPInstanceUID",
+        "StudyInstanceUID",
+        "SeriesInstanceUID",
+    )
+
+    for attribute_name in required_uids:
+        value = str(
+            getattr(
+                dataset,
+                attribute_name,
+                "",
+            )
+        ).strip()
+
+        if not value:
+            return False
+
+        try:
+            uid = UID(value)
+        except Exception:
+            return False
+
+        if not uid.is_valid:
+            return False
+
+    return True
+
 
 class MainWindow(QMainWindow):
     """Project Phoenix 医学影像工作站主窗口。"""
@@ -336,55 +393,180 @@ class MainWindow(QMainWindow):
                 if not os.path.isfile(file_path):
                     continue
 
+                # ------------------------------------------
+                # M8.0-J 文件类型与读取完整性安全门控
+                # ------------------------------------------
+                try:
+                    standard_dicom = is_dicom(
+                        file_path
+                    )
+                except Exception as exc:
+                    self.statusBar().showMessage(
+                        "安全停止：无法检查文件类型："
+                        f"{file_name} | {exc}"
+                    )
+                    return
+
+                # ------------------------------------------
+                # 无 DICM 前导：
+                # 普通文件允许忽略；
+                # 疑似 CT DICOM 不允许静默跳过。
+                # ------------------------------------------
+                if not standard_dicom:
+                    if _looks_like_ct_dicom_without_preamble(
+                        file_path
+                    ):
+                        self.statusBar().showMessage(
+                            "安全停止：检测到无DICM前导的CT DICOM，"
+                            "当前V1暂不支持"
+                        )
+                        return
+
+                    continue
+
+                # ------------------------------------------
+                # 已确认标准 DICOM 后，读取失败必须停止。
+                # ------------------------------------------
                 try:
                     ds = pydicom.dcmread(
                         file_path,
                         stop_before_pixels=True
                     )
+                except Exception as exc:
+                    self.statusBar().showMessage(
+                        "安全停止：标准DICOM读取失败："
+                        f"{file_name} | {exc}"
+                    )
+                    return
 
-                    if getattr(ds, "Modality", "") != "CT":
-                        continue
+                # ------------------------------------------
+                # 标准DICOM最小身份结构检查
+                # 防止损坏文件被pydicom宽松解析后静默忽略
+                # ------------------------------------------
+                dataset_sop_class_uid = str(
+                    getattr(ds, "SOPClassUID", "")
+                ).strip()
 
-                    patient_id = str(
-                        getattr(ds, "PatientID", "")
-                    ).strip()
+                dataset_sop_instance_uid = str(
+                    getattr(ds, "SOPInstanceUID", "")
+                ).strip()
 
-                    study_uid = str(
-                        getattr(ds, "StudyInstanceUID", "")
-                    ).strip()
+                file_meta_sop_class_uid = str(
+                    getattr(
+                        ds.file_meta,
+                        "MediaStorageSOPClassUID",
+                        "",
+                    )
+                ).strip()
 
-                    series_uid = str(
-                        getattr(ds, "SeriesInstanceUID", "")
-                    ).strip()
+                file_meta_sop_instance_uid = str(
+                    getattr(
+                        ds.file_meta,
+                        "MediaStorageSOPInstanceUID",
+                        "",
+                    )
+                ).strip()
 
-                    if not patient_id:
+                effective_sop_class_uid = (
+                    dataset_sop_class_uid
+                    or file_meta_sop_class_uid
+                )
+
+                effective_sop_instance_uid = (
+                    dataset_sop_instance_uid
+                    or file_meta_sop_instance_uid
+                )
+
+                if (
+                    not effective_sop_class_uid
+                    or not effective_sop_instance_uid
+                ):
+                    self.statusBar().showMessage(
+                        "安全停止：标准DICOM缺失基本SOP身份信息，"
+                        "文件可能损坏："
+                        f"{file_name}"
+                    )
+                    return
+
+                # ------------------------------------------
+                # CT身份一致性检查
+                # 防止Modality缺失时静默漏掉CT切片
+                # ------------------------------------------
+                modality = str(
+                    getattr(ds, "Modality", "")
+                ).strip().upper()
+
+                sop_class_uid = str(
+                    getattr(ds, "SOPClassUID", "")
+                ).strip()
+
+                ct_image_storage_uid = (
+                    "1.2.840.10008.5.1.4.1.1.2"
+                )
+
+                if modality == "CT":
+                    if not sop_class_uid:
                         self.statusBar().showMessage(
-                            "安全停止：CT DICOM 缺失 PatientID"
+                            "安全停止：CT DICOM 缺失 SOPClassUID"
                         )
                         return
 
-                    if not study_uid:
+                    if sop_class_uid != ct_image_storage_uid:
                         self.statusBar().showMessage(
-                            "安全停止：CT DICOM 缺失 StudyInstanceUID"
+                            "安全停止：当前V1仅支持标准CT Image Storage"
                         )
                         return
 
-                    if not series_uid:
-                        self.statusBar().showMessage(
-                            "安全停止：CT DICOM 缺失 SeriesInstanceUID"
-                        )
-                        return
+                elif sop_class_uid == ct_image_storage_uid:
+                    self.statusBar().showMessage(
+                        "安全停止：检测到CT Image Storage，"
+                        "但Modality缺失或异常"
+                    )
+                    return
 
-                    patient_ids.add(patient_id)
-                    study_uids.add(study_uid)
-
-                    if series_uid not in series_groups:
-                        series_groups[series_uid] = []
-
-                    series_groups[series_uid].append(file_path)
-
-                except Exception:
+                else:
+                    # 明确不是当前目标CT的其他DICOM允许忽略
                     continue
+
+                patient_id = str(
+                    getattr(ds, "PatientID", "")
+                ).strip()
+
+                study_uid = str(
+                    getattr(ds, "StudyInstanceUID", "")
+                ).strip()
+
+                series_uid = str(
+                    getattr(ds, "SeriesInstanceUID", "")
+                ).strip()
+
+                if not patient_id:
+                    self.statusBar().showMessage(
+                        "安全停止：CT DICOM 缺失 PatientID"
+                    )
+                    return
+
+                if not study_uid:
+                    self.statusBar().showMessage(
+                        "安全停止：CT DICOM 缺失 StudyInstanceUID"
+                    )
+                    return
+
+                if not series_uid:
+                    self.statusBar().showMessage(
+                        "安全停止：CT DICOM 缺失 SeriesInstanceUID"
+                    )
+                    return
+
+                patient_ids.add(patient_id)
+                study_uids.add(study_uid)
+
+                if series_uid not in series_groups:
+                    series_groups[series_uid] = []
+
+                series_groups[series_uid].append(
+                    file_path
+                )
 
             if not series_groups:
                 self.statusBar().showMessage(
