@@ -15,6 +15,9 @@ from PySide6.QtCore import Qt, QPoint
 
 from dicom.reader import read_dicom
 from dicom.pixel import ct_to_hu, normalize_dx, validate_ct_pixel_dataset
+from ai.dual_vision_controller import DualVisionController
+from ai.dual_vision_orchestrator import DualVisionOrchestrator
+from ai.mock_visuals import MockVisualA, MockVisualB
 import numpy as np
 import os
 import pydicom
@@ -82,6 +85,21 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
+        # 双视觉 AI 默认关闭，只有医生主动操作后才允许启动。
+        self.dual_vision_controller = DualVisionController()
+
+        # M9.0-A：
+        # 当前使用 Mock 视觉模型，只验证双通路调度，
+        # 不执行真实医学影像诊断。
+        self.visual_a = MockVisualA()
+        self.visual_b = MockVisualB()
+
+        self.dual_vision_orchestrator = DualVisionOrchestrator(
+            controller=self.dual_vision_controller,
+            visual_a=self.visual_a,
+            visual_b=self.visual_b,
+        )
+
         # CT 窗宽 / 窗位交互状态
         self.current_dataset = None
         self.current_hu_array = None
@@ -133,7 +151,82 @@ class MainWindow(QMainWindow):
         bone_window_action.triggered.connect(self._set_bone_window)
         toolbar.addAction(bone_window_action)
 
+        # 双视觉 AI 默认不可启动。
+        # 只有 CT Series 完成全部安全门控后才允许医生点击。
+        self.dual_vision_action = QAction("启动双视觉AI", self)
+        self.dual_vision_action.setEnabled(False)
+        self.dual_vision_action.triggered.connect(
+            self._toggle_dual_vision_ai
+        )
+        toolbar.addSeparator()
+        toolbar.addAction(self.dual_vision_action)
+
         self.addToolBar(toolbar)
+
+    def _toggle_dual_vision_ai(self):
+        """
+        医生主动启动或停止双视觉 AI。
+
+        M9.0-A 当前使用 Mock 视觉模型，
+        只验证人工激活与双通路调度流程。
+        """
+
+        # --------------------------------------------------
+        # 医生主动停止
+        # --------------------------------------------------
+        if self.dual_vision_controller.is_active:
+            self.dual_vision_controller.stop_by_doctor()
+            self.dual_vision_action.setText("启动双视觉AI")
+            self.statusBar().showMessage(
+                "双视觉AI：已由医生停止"
+            )
+            return
+
+        # --------------------------------------------------
+        # 医生主动启动
+        # --------------------------------------------------
+        started = self.dual_vision_controller.start_by_doctor()
+
+        if not started:
+            return
+
+        self.dual_vision_action.setText("停止双视觉AI")
+
+        # 当前只传递最小 Series 上下文。
+        # M9 后续阶段再扩展为正式医学影像推理上下文。
+        series_context = {
+            "series_files": tuple(self.series_files),
+            "current_slice_index": self.current_slice_index,
+        }
+
+        try:
+            result = self.dual_vision_orchestrator.infer(
+                series_context
+            )
+        except Exception as exc:
+            self.dual_vision_controller.stop_by_doctor()
+            self.dual_vision_action.setText("启动双视觉AI")
+            self.statusBar().showMessage(
+                f"双视觉AI启动失败：{exc}"
+            )
+            return
+
+        status = result.get("status", "unknown")
+
+        if status == "success":
+            self.statusBar().showMessage(
+                "双视觉AI：Mock推理完成 | "
+                "视觉A：成功 | "
+                "视觉B：成功"
+            )
+        elif status == "partial_failure":
+            self.statusBar().showMessage(
+                "双视觉AI：部分通路失败，请检查AI结果"
+            )
+        else:
+            self.statusBar().showMessage(
+                "双视觉AI：双通路推理失败"
+            )
 
     def _build_ui(self):
         central_widget = QWidget()
@@ -368,6 +461,17 @@ class MainWindow(QMainWindow):
         self.image_label.setText("")
         self.image_label.setPixmap(scaled_pixmap)
 
+    def _reset_dual_vision_for_context_change(self):
+        """
+        病例、Study 或 Series 即将变化时调用。
+
+        新影像上下文不得继承上一病例的 AI 激活状态。
+        """
+
+        self.dual_vision_controller.reset_for_context_change()
+        self.dual_vision_action.setText("启动双视觉AI")
+        self.dual_vision_action.setEnabled(False)
+
     def _open_ct_series(self):
         folder_path = QFileDialog.getExistingDirectory(
             self,
@@ -377,6 +481,10 @@ class MainWindow(QMainWindow):
 
         if not folder_path:
             return
+
+        # 新 CT 上下文开始：
+        # 立即停止旧病例 AI，并保持按钮禁用。
+        self._reset_dual_vision_for_context_change()
 
         try:
             series_groups = {}
@@ -977,6 +1085,12 @@ class MainWindow(QMainWindow):
                 f"CT Series: {series_count}"
             )
 
+            # 到这里说明：
+            # 病例 / Study / Series / 空间排序 /
+            # 像素 / HU / 首层显示均已成功。
+            # 此时才允许医生主动点击启动双视觉 AI。
+            self.dual_vision_action.setEnabled(True)
+
             self.statusBar().showMessage(
                 f"CT 序列读取成功 | "
                 f"{len(self.series_files)} 张 | "
@@ -998,6 +1112,10 @@ class MainWindow(QMainWindow):
 
         if not file_path:
             return
+
+        # 真正进入新的单张 DICOM 上下文后，
+        # 立即清除上一 CT Series 的双视觉 AI 状态。
+        self._reset_dual_vision_for_context_change()
 
         try:
             # --------------------------------------------------
