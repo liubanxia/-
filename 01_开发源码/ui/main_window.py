@@ -6,12 +6,13 @@ from PySide6.QtWidgets import (
     QLabel,
     QFrame,
     QListWidget,
+    QPushButton,
     QStatusBar,
     QToolBar,
     QFileDialog,
     QInputDialog,
 )
-from PySide6.QtGui import QAction, QImage, QPixmap
+from PySide6.QtGui import QAction, QImage, QPixmap, QPainter, QPen
 from PySide6.QtCore import Qt, QPoint
 
 from dicom.reader import read_dicom
@@ -94,6 +95,17 @@ class MainWindow(QMainWindow):
         # 视觉B骨折候选容器。
         # 候选只属于当前影像上下文。
         self.fracture_candidate_store = FractureCandidateStore()
+
+        # 当前正在由医生复核的视觉B候选。
+        # None表示当前没有激活的候选叠加。
+        self.active_fracture_candidate = None
+        self.active_fracture_candidate_index = None
+
+        # 视觉B候选医生复核状态。
+        # key为当前FractureCandidateStore中的候选索引。
+        # value仅允许：
+        # pending / accepted / rejected
+        self.fracture_candidate_review_status = {}
 
         # M9.0-A：
         # 当前使用 Mock 视觉模型，只验证双通路调度，
@@ -300,6 +312,35 @@ class MainWindow(QMainWindow):
             self._on_fracture_candidate_clicked
         )
 
+        fracture_review_layout = QHBoxLayout()
+
+        self.accept_fracture_candidate_button = QPushButton(
+            "确认候选"
+        )
+        self.accept_fracture_candidate_button.setEnabled(
+            False
+        )
+        self.accept_fracture_candidate_button.clicked.connect(
+            self._accept_active_fracture_candidate
+        )
+
+        self.reject_fracture_candidate_button = QPushButton(
+            "否定候选"
+        )
+        self.reject_fracture_candidate_button.setEnabled(
+            False
+        )
+        self.reject_fracture_candidate_button.clicked.connect(
+            self._reject_active_fracture_candidate
+        )
+
+        fracture_review_layout.addWidget(
+            self.accept_fracture_candidate_button
+        )
+        fracture_review_layout.addWidget(
+            self.reject_fracture_candidate_button
+        )
+
         report_title = QLabel("AI / 报告")
         report_title.setAlignment(Qt.AlignCenter)
 
@@ -315,6 +356,9 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(
             self.fracture_candidate_list,
             1,
+        )
+        right_layout.addLayout(
+            fracture_review_layout
         )
         right_layout.addWidget(report_title)
         right_layout.addWidget(
@@ -472,6 +516,155 @@ class MainWindow(QMainWindow):
         self._show_image_array(image_8bit)
 
 
+    def _build_fracture_overlay_pixmap(self):
+        """
+        基于原始current_pixmap生成视觉B候选显示副本。
+
+        不修改原始DICOM、HU数组或current_pixmap。
+        当前只支持bbox：
+        (x1, y1, x2, y2)，坐标基于原始影像像素。
+        """
+
+        if (
+            not hasattr(self, "current_pixmap")
+            or self.current_pixmap.isNull()
+        ):
+            return None
+
+        # 永远在副本上绘制，不修改原始影像pixmap。
+        display_pixmap = self.current_pixmap.copy()
+
+        candidate = self.active_fracture_candidate
+
+        if candidate is None:
+            return display_pixmap
+
+        if not isinstance(candidate, FractureCandidate):
+            return display_pixmap
+
+        # 当前阶段只支持bbox。
+        if candidate.region_type != "bbox":
+            return display_pixmap
+
+        # 候选必须属于当前CT层。
+        if candidate.slice_index != self.current_slice_index:
+            return display_pixmap
+
+        dataset = self.current_dataset
+
+        if dataset is None:
+            return display_pixmap
+
+        actual_sop_uid = str(
+            getattr(
+                dataset,
+                "SOPInstanceUID",
+                "",
+            )
+        ).strip()
+
+        # 显示层再次进行SOP身份核对。
+        if (
+            actual_sop_uid
+            != candidate.sop_instance_uid
+        ):
+            return display_pixmap
+
+        try:
+            coordinates = np.asarray(
+                candidate.region,
+                dtype=float,
+            )
+        except (TypeError, ValueError):
+            return display_pixmap
+
+        if coordinates.shape != (4,):
+            return display_pixmap
+
+        if not np.isfinite(coordinates).all():
+            return display_pixmap
+
+        x1, y1, x2, y2 = coordinates
+
+        image_width = display_pixmap.width()
+        image_height = display_pixmap.height()
+
+        if image_width <= 0 or image_height <= 0:
+            return display_pixmap
+
+        # bbox必须具有正面积。
+        if x2 <= x1 or y2 <= y1:
+            return display_pixmap
+
+        # 限制到当前真实影像边界。
+        x1 = max(
+            0.0,
+            min(x1, image_width - 1),
+        )
+        y1 = max(
+            0.0,
+            min(y1, image_height - 1),
+        )
+        x2 = max(
+            0.0,
+            min(x2, image_width - 1),
+        )
+        y2 = max(
+            0.0,
+            min(y2, image_height - 1),
+        )
+
+        if x2 <= x1 or y2 <= y1:
+            return display_pixmap
+
+        painter = QPainter(
+            display_pixmap
+        )
+
+        try:
+            pen = QPen(Qt.red)
+            pen.setWidth(2)
+            painter.setPen(pen)
+
+            painter.drawRect(
+                int(round(x1)),
+                int(round(y1)),
+                max(
+                    1,
+                    int(round(x2 - x1)),
+                ),
+                max(
+                    1,
+                    int(round(y2 - y1)),
+                ),
+            )
+        finally:
+            painter.end()
+
+        return display_pixmap
+
+    def _render_current_pixmap(self):
+        """
+        统一显示原始影像及当前可用视觉叠加。
+        """
+        display_pixmap = (
+            self._build_fracture_overlay_pixmap()
+        )
+
+        if display_pixmap is None:
+            return
+
+        scaled_pixmap = display_pixmap.scaled(
+            self.image_label.size(),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+
+        self.image_label.setText("")
+        self.image_label.setPixmap(
+            scaled_pixmap
+        )
+
     def _show_image_array(self, image_8bit):
         """将 8-bit 灰阶数组显示到中央影像区。"""
         image_8bit = np.ascontiguousarray(image_8bit)
@@ -490,14 +683,7 @@ class MainWindow(QMainWindow):
         pixmap = QPixmap.fromImage(qimage)
         self.current_pixmap = pixmap
 
-        scaled_pixmap = self.current_pixmap.scaled(
-            self.image_label.size(),
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation,
-        )
-
-        self.image_label.setText("")
-        self.image_label.setPixmap(scaled_pixmap)
+        self._render_current_pixmap()
 
     def _reset_dual_vision_for_context_change(self):
         """
@@ -511,6 +697,21 @@ class MainWindow(QMainWindow):
         # 新病例 / Study / Series不得继承旧骨折候选。
         self.fracture_candidate_store.clear()
         self.fracture_candidate_list.clear()
+        self.active_fracture_candidate = None
+        self.active_fracture_candidate_index = None
+        self.fracture_candidate_review_status.clear()
+
+        # 上下文失效后立即移除旧候选叠加，
+        # 即使新影像随后加载失败，也不得残留旧bbox。
+        if hasattr(self, "current_pixmap"):
+            self._render_current_pixmap()
+
+        self.accept_fracture_candidate_button.setEnabled(
+            False
+        )
+        self.reject_fracture_candidate_button.setEnabled(
+            False
+        )
 
         self.dual_vision_action.setText("启动双视觉AI")
         self.dual_vision_action.setEnabled(False)
@@ -539,9 +740,228 @@ class MainWindow(QMainWindow):
 
         candidate = candidates[row]
 
-        self._jump_to_fracture_candidate(
+        self.accept_fracture_candidate_button.setEnabled(
+            False
+        )
+        self.reject_fracture_candidate_button.setEnabled(
+            False
+        )
+
+        # 点击新的候选前先取消旧候选叠加，
+        # 防止定位失败时继续显示旧框造成误导。
+        self.active_fracture_candidate = None
+        self.active_fracture_candidate_index = None
+        self._render_current_pixmap()
+
+        success = self._jump_to_fracture_candidate(
             candidate
         )
+
+        if not success:
+            return
+
+        # 只有真实CT定位及SOP身份核对成功后，
+        # 才允许将该候选设为当前医生复核对象。
+        self.active_fracture_candidate = candidate
+        self.active_fracture_candidate_index = row
+        self._render_current_pixmap()
+
+        self.accept_fracture_candidate_button.setEnabled(
+            True
+        )
+        self.reject_fracture_candidate_button.setEnabled(
+            True
+        )
+
+    def _review_active_fracture_candidate(
+        self,
+        status,
+    ):
+        """
+        保存医生对当前视觉B候选的复核意见。
+
+        只修改医生复核状态，
+        不修改模型原始FractureCandidate。
+        """
+
+        candidate = self.active_fracture_candidate
+        candidate_index = (
+            self.active_fracture_candidate_index
+        )
+
+        candidates = (
+            self.fracture_candidate_store.get_all()
+        )
+
+        valid_index = (
+            isinstance(candidate_index, int)
+            and not isinstance(candidate_index, bool)
+            and 0 <= candidate_index < len(candidates)
+        )
+
+        if (
+            candidate is None
+            or not valid_index
+            or candidates[candidate_index] is not candidate
+        ):
+            self.active_fracture_candidate = None
+            self.active_fracture_candidate_index = None
+
+            self.accept_fracture_candidate_button.setEnabled(
+                False
+            )
+            self.reject_fracture_candidate_button.setEnabled(
+                False
+            )
+
+            self._render_current_pixmap()
+
+            self.statusBar().showMessage(
+                "安全停止：当前视觉B复核候选身份失效"
+            )
+            return False
+
+        try:
+            self._set_fracture_candidate_review_status(
+                candidate_index,
+                status,
+            )
+        except Exception as exc:
+            self.statusBar().showMessage(
+                "安全停止：视觉B候选复核状态写入失败："
+                f"{exc}"
+            )
+            return False
+
+        self._refresh_fracture_candidate_list()
+
+        # 刷新列表后恢复当前医生复核项的选中位置。
+        self.fracture_candidate_list.setCurrentRow(
+            candidate_index
+        )
+
+        if status == "accepted":
+            status_text = "医生已确认保留候选"
+        elif status == "rejected":
+            status_text = "医生已否定候选"
+        else:
+            status_text = "候选恢复待复核"
+
+        self.statusBar().showMessage(
+            f"视觉B候选复核：{status_text} | "
+            f"Slice: {candidate.slice_index + 1} | "
+            f"Confidence: {candidate.confidence:.3f}"
+        )
+
+        return True
+
+    def _accept_active_fracture_candidate(self):
+        """
+        医生确认保留当前视觉B候选。
+        """
+
+        return self._review_active_fracture_candidate(
+            "accepted"
+        )
+
+    def _reject_active_fracture_candidate(self):
+        """
+        医生否定当前视觉B候选。
+        """
+        return self._review_active_fracture_candidate(
+            "rejected"
+        )
+
+    def _get_fracture_candidate_review_status(
+        self,
+        candidate_index,
+    ):
+        """
+        返回指定视觉B候选的医生复核状态。
+        """
+
+        if (
+            not isinstance(candidate_index, int)
+            or isinstance(candidate_index, bool)
+        ):
+            raise TypeError(
+                "候选索引必须是整数"
+            )
+
+        if candidate_index < 0:
+            raise ValueError(
+                "候选索引不能小于0"
+            )
+
+        candidates = (
+            self.fracture_candidate_store.get_all()
+        )
+
+        if candidate_index >= len(candidates):
+            raise IndexError(
+                "候选索引超出当前视觉B候选范围"
+            )
+
+        return self.fracture_candidate_review_status.get(
+            candidate_index,
+            "pending",
+        )
+
+    def _set_fracture_candidate_review_status(
+        self,
+        candidate_index,
+        status,
+    ):
+        """
+        设置医生对视觉B候选的复核状态。
+
+        仅记录医生复核结果，
+        不修改模型原始FractureCandidate。
+        """
+
+        if (
+            not isinstance(candidate_index, int)
+            or isinstance(candidate_index, bool)
+        ):
+            raise TypeError(
+                "候选索引必须是整数"
+            )
+
+        if candidate_index < 0:
+            raise ValueError(
+                "候选索引不能小于0"
+            )
+
+        candidates = (
+            self.fracture_candidate_store.get_all()
+        )
+
+        if candidate_index >= len(candidates):
+            raise IndexError(
+                "候选索引超出当前视觉B候选范围"
+            )
+
+        if status not in (
+            "pending",
+            "accepted",
+            "rejected",
+        ):
+            raise ValueError(
+                "候选复核状态仅允许"
+                "pending、accepted或rejected"
+            )
+
+        if status == "pending":
+            self.fracture_candidate_review_status.pop(
+                candidate_index,
+                None,
+            )
+        else:
+            self.fracture_candidate_review_status[
+                candidate_index
+            ] = status
+
+        return status
 
     def _refresh_fracture_candidate_list(self):
         """
@@ -560,10 +980,24 @@ class MainWindow(QMainWindow):
         for index, candidate in enumerate(
             candidates
         ):
+            review_status = (
+                self._get_fracture_candidate_review_status(
+                    index
+                )
+            )
+
+            if review_status == "accepted":
+                review_text = "已保留"
+            elif review_status == "rejected":
+                review_text = "已否定"
+            else:
+                review_text = "待复核"
+
             display_text = (
                 f"{index + 1}. "
                 f"Slice {candidate.slice_index + 1} | "
-                f"Confidence {candidate.confidence:.3f}"
+                f"Confidence {candidate.confidence:.3f} | "
+                f"{review_text}"
             )
 
             self.fracture_candidate_list.addItem(
@@ -1658,9 +2092,4 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
 
         if hasattr(self, "current_pixmap"):
-            scaled_pixmap = self.current_pixmap.scaled(
-                self.image_label.size(),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation,
-            )
-            self.image_label.setPixmap(scaled_pixmap)
+            self._render_current_pixmap()
