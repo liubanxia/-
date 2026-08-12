@@ -230,6 +230,16 @@ class MainWindow(QMainWindow):
             )
             return
 
+        # 视觉B结果必须经过标准候选安全入口。
+        # 当前MockVisualB返回的是未解析字典，
+        # 因此不会覆盖现有真实候选。
+        self._apply_visual_b_inference_result(
+            result.get(
+                "vision_b",
+                {},
+            )
+        )
+
         status = result.get("status", "unknown")
 
         if status == "success":
@@ -246,6 +256,93 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 "双视觉AI：双通路推理失败"
             )
+
+    def _apply_visual_b_inference_result(
+        self,
+        vision_b_result,
+    ):
+        """
+        安全接收一轮视觉B推理结果。
+
+        只有视觉B明确成功并返回标准
+        FractureCandidate tuple时，
+        才允许替换当前候选。
+
+        推理失败、解析失败或格式异常时，
+        必须保留医生当前已经看到的旧候选。
+        """
+
+        if not isinstance(
+            vision_b_result,
+            dict,
+        ):
+            self.statusBar().showMessage(
+                "视觉B结果未采用：通路结果格式异常，"
+                "保留上一轮候选"
+            )
+            return False
+
+        error = vision_b_result.get(
+            "error"
+        )
+
+        if error is not None:
+            self.statusBar().showMessage(
+                "视觉B本轮推理失败，"
+                "保留上一轮有效候选"
+            )
+            return False
+
+        candidates = vision_b_result.get(
+            "result"
+        )
+
+        # VisualBOutputParser标准输出固定为tuple。
+        # 防止原始ONNX输出、Mock字典或其他未解析结果
+        # 被错误注入候选Store。
+        if not isinstance(
+            candidates,
+            tuple,
+        ):
+            self.statusBar().showMessage(
+                "视觉B结果未采用："
+                "尚未转换为标准候选批次，"
+                "保留上一轮候选"
+            )
+            return False
+
+        if not all(
+            isinstance(
+                candidate,
+                FractureCandidate,
+            )
+            for candidate in candidates
+        ):
+            self.statusBar().showMessage(
+                "视觉B结果未采用："
+                "候选批次包含非法对象，"
+                "保留上一轮候选"
+            )
+            return False
+
+        try:
+            count = self._replace_visual_b_candidates(
+                candidates
+            )
+        except Exception as exc:
+            self.statusBar().showMessage(
+                "视觉B候选更新失败，"
+                "保留上一轮有效候选："
+                f"{exc}"
+            )
+            return False
+
+        self.statusBar().showMessage(
+            "视觉B本轮候选已安全更新 | "
+            f"候选数量：{count}"
+        )
+
+        return True
 
     def _build_ui(self):
         central_widget = QWidget()
@@ -962,6 +1059,52 @@ class MainWindow(QMainWindow):
             ] = status
 
         return status
+
+    def _replace_visual_b_candidates(
+        self,
+        candidates,
+    ):
+        """
+        将一轮新的视觉B候选原子注入当前CT上下文。
+
+        安全顺序：
+        1. 先由Store完整验证并替换；
+        2. 只有替换成功后才清理上一轮UI复核状态；
+        3. 最后刷新右侧候选列表。
+
+        新批次非法时，旧候选及旧UI状态保持不变。
+        """
+
+        count = (
+            self.fracture_candidate_store.replace_all(
+                candidates
+            )
+        )
+
+        # Store替换成功后，上一轮候选上下文失效。
+        self.active_fracture_candidate = None
+        self.active_fracture_candidate_index = None
+        self.fracture_candidate_review_status.clear()
+
+        self.accept_fracture_candidate_button.setEnabled(
+            False
+        )
+        self.reject_fracture_candidate_button.setEnabled(
+            False
+        )
+
+        # 立即移除上一轮候选bbox。
+        if hasattr(self, "current_pixmap"):
+            self._render_current_pixmap()
+
+        self._refresh_fracture_candidate_list()
+
+        self.statusBar().showMessage(
+            "视觉B候选已更新 | "
+            f"候选数量：{count}"
+        )
+
+        return count
 
     def _refresh_fracture_candidate_list(self):
         """

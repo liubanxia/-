@@ -71,6 +71,31 @@ class FractureCandidateStore:
 
         return start_index
 
+    def replace_all(self, candidates):
+        """
+        原子替换当前全部视觉B候选。
+
+        先完整验证新候选批次；
+        任一候选非法时，原Store保持不变。
+        """
+
+        candidates = list(candidates)
+
+        for candidate in candidates:
+            if not isinstance(
+                candidate,
+                FractureCandidate,
+            ):
+                raise TypeError(
+                    "视觉B候选容器仅允许FractureCandidate"
+                )
+
+        self._candidates = candidates
+
+        return len(
+            self._candidates
+        )
+
     def get_all(self):
         """
         返回当前全部候选的只读副本。

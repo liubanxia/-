@@ -138,7 +138,8 @@ class OnnxVisualB(VisualBInterface):
 
         if self.output_parser is not None:
             return self.output_parser(
-                raw_outputs
+                raw_outputs,
+                series_context,
             )
 
         return {
