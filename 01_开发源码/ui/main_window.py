@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QFrame,
+    QListWidget,
     QStatusBar,
     QToolBar,
     QFileDialog,
@@ -16,6 +17,8 @@ from PySide6.QtCore import Qt, QPoint
 from dicom.reader import read_dicom
 from dicom.pixel import ct_to_hu, normalize_dx, validate_ct_pixel_dataset
 from ai.dual_vision_controller import DualVisionController
+from ai.fracture_candidate_store import FractureCandidateStore
+from ai.fracture_candidate import FractureCandidate
 from ai.dual_vision_orchestrator import DualVisionOrchestrator
 from ai.mock_visuals import MockVisualA, MockVisualB
 import numpy as np
@@ -87,6 +90,10 @@ class MainWindow(QMainWindow):
 
         # 双视觉 AI 默认关闭，只有医生主动操作后才允许启动。
         self.dual_vision_controller = DualVisionController()
+
+        # 视觉B骨折候选容器。
+        # 候选只属于当前影像上下文。
+        self.fracture_candidate_store = FractureCandidateStore()
 
         # M9.0-A：
         # 当前使用 Mock 视觉模型，只验证双通路调度，
@@ -278,10 +285,41 @@ class MainWindow(QMainWindow):
         image_layout.addWidget(image_title)
         image_layout.addWidget(self.image_label, 1)
 
-        right_panel = self._create_panel(
-            "AI / 报告",
-            "AI分析结果\n\n结构化报告\n\n医生审核区",
-            300,
+        right_panel = QFrame()
+        right_panel.setFrameShape(QFrame.StyledPanel)
+        right_panel.setMinimumWidth(300)
+
+        right_layout = QVBoxLayout(right_panel)
+
+        fracture_title = QLabel("视觉B骨折候选")
+        fracture_title.setAlignment(Qt.AlignCenter)
+
+        self.fracture_candidate_list = QListWidget()
+        self.fracture_candidate_list.setMinimumHeight(220)
+        self.fracture_candidate_list.itemClicked.connect(
+            self._on_fracture_candidate_clicked
+        )
+
+        report_title = QLabel("AI / 报告")
+        report_title.setAlignment(Qt.AlignCenter)
+
+        report_placeholder = QLabel(
+            "AI分析结果\n\n"
+            "结构化报告\n\n"
+            "医生审核区"
+        )
+        report_placeholder.setAlignment(Qt.AlignCenter)
+        report_placeholder.setWordWrap(True)
+
+        right_layout.addWidget(fracture_title)
+        right_layout.addWidget(
+            self.fracture_candidate_list,
+            1,
+        )
+        right_layout.addWidget(report_title)
+        right_layout.addWidget(
+            report_placeholder,
+            1,
         )
 
         workspace_layout.addWidget(left_panel)
@@ -469,8 +507,164 @@ class MainWindow(QMainWindow):
         """
 
         self.dual_vision_controller.reset_for_context_change()
+
+        # 新病例 / Study / Series不得继承旧骨折候选。
+        self.fracture_candidate_store.clear()
+        self.fracture_candidate_list.clear()
+
         self.dual_vision_action.setText("启动双视觉AI")
         self.dual_vision_action.setEnabled(False)
+
+    def _on_fracture_candidate_clicked(self, item):
+        """
+        医生点击右侧视觉B候选时执行。
+
+        列表项只负责选择候选；
+        真正跳层仍由FractureCandidate身份门控负责。
+        """
+
+        row = self.fracture_candidate_list.row(
+            item
+        )
+
+        candidates = (
+            self.fracture_candidate_store.get_all()
+        )
+
+        if not 0 <= row < len(candidates):
+            self.statusBar().showMessage(
+                "安全停止：骨折候选列表索引异常"
+            )
+            return
+
+        candidate = candidates[row]
+
+        self._jump_to_fracture_candidate(
+            candidate
+        )
+
+    def _refresh_fracture_candidate_list(self):
+        """
+        将当前视觉B骨折候选同步到右侧列表。
+
+        当前只负责显示候选，
+        不执行跳层、不修改候选结果。
+        """
+
+        self.fracture_candidate_list.clear()
+
+        candidates = (
+            self.fracture_candidate_store.get_all()
+        )
+
+        for index, candidate in enumerate(
+            candidates
+        ):
+            display_text = (
+                f"{index + 1}. "
+                f"Slice {candidate.slice_index + 1} | "
+                f"Confidence {candidate.confidence:.3f}"
+            )
+
+            self.fracture_candidate_list.addItem(
+                display_text
+            )
+
+    def _resolve_fracture_candidate_dataset(self, candidate):
+        """
+        将视觉B骨折候选严格绑定到当前CT Series中的真实切片。
+
+        安全规则：
+        1. 必须是FractureCandidate；
+        2. 当前必须存在CT Series；
+        3. slice_index必须位于当前Series范围内；
+        4. 对应切片的SOPInstanceUID必须与候选完全一致；
+        5. 只有全部一致时才返回真实DICOM dataset。
+        """
+
+        if not isinstance(candidate, FractureCandidate):
+            raise TypeError(
+                "候选跳层仅允许FractureCandidate"
+            )
+
+        if not self.series_files:
+            raise RuntimeError(
+                "当前没有可用于候选定位的CT Series"
+            )
+
+        slice_index = candidate.slice_index
+
+        if slice_index >= len(self.series_files):
+            raise IndexError(
+                "骨折候选slice_index超出当前CT Series范围"
+            )
+
+        file_path = self.series_files[
+            slice_index
+        ]
+
+        dataset = read_dicom(
+            file_path
+        )
+
+        actual_sop_uid = str(
+            getattr(
+                dataset,
+                "SOPInstanceUID",
+                "",
+            )
+        ).strip()
+
+        if not actual_sop_uid:
+            raise RuntimeError(
+                "候选对应CT切片缺失SOPInstanceUID"
+            )
+
+        if actual_sop_uid != candidate.sop_instance_uid:
+            raise RuntimeError(
+                "骨折候选与当前CT切片SOPInstanceUID不一致，禁止跳转"
+            )
+
+        return dataset
+
+    def _jump_to_fracture_candidate(self, candidate):
+        """
+        跳转到视觉B骨折候选对应的真实CT切片。
+
+        流程：
+        1. 严格核对candidate类型；
+        2. 核对slice_index范围；
+        3. 核对SOPInstanceUID；
+        4. 身份一致后调用统一CT切片显示入口；
+        5. 不自行创建第二套切片显示逻辑。
+        """
+
+        try:
+            # 先完成候选与真实DICOM身份核对。
+            self._resolve_fracture_candidate_dataset(
+                candidate
+            )
+
+            # 身份确认后，才允许显示对应层。
+            dataset = self._show_ct_series_slice(
+                candidate.slice_index
+            )
+
+        except Exception as exc:
+            self.statusBar().showMessage(
+                "安全停止：骨折候选定位失败："
+                f"{exc}"
+            )
+            return False
+
+        self.statusBar().showMessage(
+            "视觉B骨折候选定位成功 | "
+            f"Slice: {candidate.slice_index + 1}"
+            f"/{len(self.series_files)} | "
+            f"Confidence: {candidate.confidence:.3f}"
+        )
+
+        return True
 
     def _open_ct_series(self):
         folder_path = QFileDialog.getExistingDirectory(
@@ -1271,40 +1465,39 @@ class MainWindow(QMainWindow):
 
         super().mouseDoubleClickEvent(event)
 
-    def wheelEvent(self, event):
+    def _show_ct_series_slice(self, target_index):
+        """
+        显示当前CT Series中的指定切片。
+
+        统一负责：
+        - 索引范围检查；
+        - DICOM读取；
+        - 保持当前窗宽窗位；
+        - 显示失败时恢复原状态；
+        - 更新左侧Slice信息；
+        - 更新状态栏。
+
+        后续滚轮翻层与骨折候选跳层统一调用本方法。
+        """
+
         if not self.series_files:
-            super().wheelEvent(event)
-            return
+            raise RuntimeError(
+                "当前没有已加载的CT Series"
+            )
+
+        if not isinstance(target_index, int):
+            raise TypeError(
+                "CT切片索引必须是整数"
+            )
 
         total_number = len(self.series_files)
 
-        if total_number <= 0:
-            event.accept()
-            return
+        if not 0 <= target_index < total_number:
+            raise IndexError(
+                "CT切片索引超出当前Series范围"
+            )
 
-        delta = event.angleDelta().y()
-
-        # 保存翻层前索引，运行时异常时恢复
         previous_slice_index = self.current_slice_index
-
-        # PACS 风格循环翻层
-        # 向上：上一层；第一层继续滚则跳到最后一层
-        if delta > 0:
-            self.current_slice_index = (
-                self.current_slice_index - 1
-            ) % total_number
-
-        # 向下：下一层；最后一层继续滚则回到第一层
-        elif delta < 0:
-            self.current_slice_index = (
-                self.current_slice_index + 1
-            ) % total_number
-
-        else:
-            event.accept()
-            return
-
-        # 保留翻层前显示与CT状态
         previous_window_center = self.window_center
         previous_window_width = self.window_width
         previous_dataset = self.current_dataset
@@ -1325,8 +1518,12 @@ class MainWindow(QMainWindow):
         try:
             dataset = read_dicom(
                 self.series_files[
-                    self.current_slice_index
+                    target_index
                 ]
+            )
+
+            self.current_slice_index = (
+                target_index
             )
 
             self._display_dicom_image(
@@ -1346,8 +1543,7 @@ class MainWindow(QMainWindow):
                 )
                 self._render_ct_window()
 
-        except Exception as exc:
-            # 恢复到翻层前状态，禁止索引与显示影像错位
+        except Exception:
             self.current_slice_index = (
                 previous_slice_index
             )
@@ -1369,34 +1565,29 @@ class MainWindow(QMainWindow):
             self.default_window_width = (
                 previous_default_window_width
             )
-
-            self.statusBar().showMessage(
-                "安全停止：CT切片读取或显示失败："
-                f"{exc}"
-            )
-
-            event.accept()
-            return
+            raise
 
         modality = getattr(
             dataset,
             "Modality",
-            "UNKNOWN"
+            "UNKNOWN",
         )
+
         study = getattr(
             dataset,
             "StudyDescription",
-            "未提供"
+            "未提供",
         )
+
         series = getattr(
             dataset,
             "SeriesDescription",
-            "未提供"
+            "未提供",
         )
 
-        # 内部索引 0～39
-        # 界面显示 1～40
-        current_number = self.current_slice_index + 1
+        current_number = (
+            self.current_slice_index + 1
+        )
 
         self.left_content_label.setText(
             "DICOM 信息\n\n"
@@ -1413,6 +1604,53 @@ class MainWindow(QMainWindow):
             f"WL: {self.window_center:.0f} | "
             f"WW: {self.window_width:.0f}"
         )
+
+        return dataset
+
+    def wheelEvent(self, event):
+        """
+        CT Series滚轮翻层。
+
+        实际切片读取、显示、窗宽窗位保持和失败回滚，
+        统一交给_show_ct_series_slice()处理。
+        """
+
+        if not self.series_files:
+            super().wheelEvent(event)
+            return
+
+        total_number = len(self.series_files)
+
+        if total_number <= 0:
+            event.accept()
+            return
+
+        delta = event.angleDelta().y()
+
+        if delta > 0:
+            target_index = (
+                self.current_slice_index - 1
+            ) % total_number
+
+        elif delta < 0:
+            target_index = (
+                self.current_slice_index + 1
+            ) % total_number
+
+        else:
+            event.accept()
+            return
+
+        try:
+            self._show_ct_series_slice(
+                target_index
+            )
+
+        except Exception as exc:
+            self.statusBar().showMessage(
+                "安全停止：CT切片读取或显示失败："
+                f"{exc}"
+            )
 
         event.accept()
 
