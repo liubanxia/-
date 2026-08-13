@@ -1,4 +1,5 @@
 from ai.onnx_cpu_adapter import OnnxCpuModelAdapter
+from ai.visual_b_model_contract import VisualBModelContract
 from ai.visual_interfaces import VisualAInterface, VisualBInterface
 
 
@@ -88,11 +89,20 @@ class OnnxVisualB(VisualBInterface):
         self,
         model_path,
         input_builder,
+        model_contract,
         output_parser=None,
     ):
         if not callable(input_builder):
             raise TypeError(
                 "视觉B input_builder必须是可调用函数"
+            )
+
+        if not isinstance(
+            model_contract,
+            VisualBModelContract,
+        ):
+            raise TypeError(
+                "视觉B model_contract必须是VisualBModelContract"
             )
 
         if (
@@ -104,12 +114,17 @@ class OnnxVisualB(VisualBInterface):
             )
 
         self.input_builder = input_builder
+        self.model_contract = model_contract
         self.output_parser = output_parser
 
         self.adapter = OnnxCpuModelAdapter(
             model_path=model_path,
             model_name=self.name,
         )
+
+        # 契约验证延迟到第一次真实infer。
+        # 创建主窗口或视觉对象时不得自动加载ONNX模型。
+        self._contract_validated = False
 
     @property
     def is_loaded(self):
@@ -118,9 +133,14 @@ class OnnxVisualB(VisualBInterface):
     def unload(self):
         """
         显式释放当前视觉通路的ONNX模型Session。
+
+        Session释放后必须重新进行模型契约验证。
         """
 
-        return self.adapter.unload()
+        was_loaded = self.adapter.unload()
+        self._contract_validated = False
+
+        return was_loaded
 
     def infer(self, series_context):
         input_feed = self.input_builder(
@@ -131,6 +151,17 @@ class OnnxVisualB(VisualBInterface):
             raise TypeError(
                 "视觉B预处理结果必须是ONNX输入字典"
             )
+
+        self.model_contract.validate_input_feed(
+            input_feed
+        )
+
+        if not self._contract_validated:
+            self.model_contract.validate_onnx_metadata(
+                input_metadata=self.adapter.get_input_metadata(),
+                output_metadata=self.adapter.get_output_metadata(),
+            )
+            self._contract_validated = True
 
         raw_outputs = self.adapter.infer(
             input_feed
