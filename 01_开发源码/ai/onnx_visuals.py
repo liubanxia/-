@@ -113,6 +113,26 @@ class OnnxVisualB(VisualBInterface):
                 "视觉B output_parser必须是可调用函数或None"
             )
 
+        if output_parser is not None:
+            parser_contract = getattr(
+                output_parser,
+                "model_contract",
+                None,
+            )
+
+            if not isinstance(
+                parser_contract,
+                VisualBModelContract,
+            ):
+                raise TypeError(
+                    "视觉B output_parser必须显式绑定VisualBModelContract"
+                )
+
+            if parser_contract != model_contract:
+                raise ValueError(
+                    "视觉B output_parser模型契约与OnnxVisualB不一致"
+                )
+
         self.input_builder = input_builder
         self.model_contract = model_contract
         self.output_parser = output_parser

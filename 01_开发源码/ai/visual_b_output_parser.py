@@ -99,7 +99,8 @@ class VisualBOutputParser:
 
         for draft in decoded_candidates:
             if not self._passes_model_contract(
-                draft
+                draft,
+                series_files,
             ):
                 continue
 
@@ -117,6 +118,7 @@ class VisualBOutputParser:
     def _passes_model_contract(
         self,
         draft,
+        series_files,
     ):
         """
         在读取目标DICOM前执行模型级候选约束。
@@ -143,6 +145,33 @@ class VisualBOutputParser:
             raise ValueError(
                 "视觉B候选草稿缺少字段："
                 + ", ".join(missing_fields)
+            )
+
+        slice_index = draft[
+            "slice_index"
+        ]
+
+        if (
+            not isinstance(slice_index, int)
+            or isinstance(slice_index, bool)
+        ):
+            raise TypeError(
+                "视觉B候选slice_index必须是整数"
+            )
+
+        if slice_index < 0:
+            raise ValueError(
+                "视觉B候选slice_index不能小于0"
+            )
+
+        if slice_index >= len(series_files):
+            raise IndexError(
+                "视觉B候选slice_index超出当前CT Series范围"
+            )
+
+        if draft["region"] is None:
+            raise ValueError(
+                "视觉B候选必须包含候选空间区域"
             )
 
         confidence = draft[
@@ -185,6 +214,64 @@ class VisualBOutputParser:
                 "视觉B候选region_type不符合当前模型契约："
                 f"{region_type}"
             )
+
+        if region_type == "bbox":
+            region = draft["region"]
+
+            if isinstance(
+                region,
+                (str, bytes, dict),
+            ):
+                raise TypeError(
+                    "视觉B bbox必须是4个数值坐标"
+                )
+
+            try:
+                coordinates = tuple(
+                    region
+                )
+            except TypeError as exc:
+                raise TypeError(
+                    "视觉B bbox必须是4个数值坐标"
+                ) from exc
+
+            if len(coordinates) != 4:
+                raise ValueError(
+                    "视觉B bbox必须包含4个坐标"
+                )
+
+            normalized_coordinates = []
+
+            for value in coordinates:
+                if isinstance(value, bool):
+                    raise ValueError(
+                        "视觉B bbox坐标必须是有限数值"
+                    )
+
+                try:
+                    value = float(
+                        value
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        "视觉B bbox坐标必须是有限数值"
+                    ) from exc
+
+                if not math.isfinite(value):
+                    raise ValueError(
+                        "视觉B bbox坐标必须是有限数值"
+                    )
+
+                normalized_coordinates.append(
+                    value
+                )
+
+            x1, y1, x2, y2 = normalized_coordinates
+
+            if x2 <= x1 or y2 <= y1:
+                raise ValueError(
+                    "视觉B bbox必须具有正面积"
+                )
 
         return (
             confidence

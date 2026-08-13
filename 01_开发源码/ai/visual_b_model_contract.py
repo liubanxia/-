@@ -358,7 +358,7 @@ class VisualBModelContract:
             input_feed.keys()
         )
 
-        if actual_input_names != self.expected_input_names:
+        if set(actual_input_names) != set(self.expected_input_names):
             raise RuntimeError(
                 "视觉B input_builder输出名称与模型契约不一致："
                 f"expected={self.expected_input_names}, "

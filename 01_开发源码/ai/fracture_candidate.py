@@ -125,6 +125,68 @@ class FractureCandidate:
                 "骨折候选必须包含候选空间区域"
             )
 
+        if region_type == "bbox":
+            if isinstance(
+                self.region,
+                (str, bytes, dict),
+            ):
+                raise TypeError(
+                    "骨折候选bbox必须是4个数值坐标"
+                )
+
+            try:
+                coordinates = tuple(
+                    self.region
+                )
+            except TypeError as exc:
+                raise TypeError(
+                    "骨折候选bbox必须是4个数值坐标"
+                ) from exc
+
+            if len(coordinates) != 4:
+                raise ValueError(
+                    "骨折候选bbox必须包含4个坐标"
+                )
+
+            normalized_coordinates = []
+
+            for value in coordinates:
+                if isinstance(value, bool):
+                    raise ValueError(
+                        "骨折候选bbox坐标必须是有限数值"
+                    )
+
+                try:
+                    value = float(
+                        value
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        "骨折候选bbox坐标必须是有限数值"
+                    ) from exc
+
+                if not math.isfinite(value):
+                    raise ValueError(
+                        "骨折候选bbox坐标必须是有限数值"
+                    )
+
+                normalized_coordinates.append(
+                    value
+                )
+
+            x1, y1, x2, y2 = normalized_coordinates
+
+            if x2 <= x1 or y2 <= y1:
+                raise ValueError(
+                    "骨折候选bbox必须具有正面积"
+                )
+
+            object.__setattr__(
+                self,
+                "region",
+                tuple(normalized_coordinates),
+            )
+
         object.__setattr__(
             self,
             "region_type",
