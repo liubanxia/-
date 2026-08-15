@@ -186,6 +186,29 @@ class MainWindow(QMainWindow):
         )
         toolbar.addSeparator()
         toolbar.addAction(self.dual_vision_action)
+        # DR segmentation Mask显示开关。
+        self._phoenix_mask_overlay_visible = True
+
+        self.phoenix_mask_overlay_action = QAction(
+            "显示Mask",
+            self
+        )
+
+        self.phoenix_mask_overlay_action.setCheckable(
+            True
+        )
+
+        self.phoenix_mask_overlay_action.setChecked(
+            True
+        )
+
+        self.phoenix_mask_overlay_action.triggered.connect(
+            self._toggle_phoenix_mask_overlay
+        )
+
+        toolbar.addAction(
+            self.phoenix_mask_overlay_action
+        )
 
         # Phoenix右侧AI辅助阅片结果区
         self._setup_phoenix_result_panel()
@@ -295,6 +318,124 @@ class MainWindow(QMainWindow):
 
         # 默认显示，但内容为空。
         self.phoenix_result_dock.show()
+
+
+    def _sync_phoenix_dr_segmentation_masks(
+        self,
+        result
+    ):
+        """
+        将Phoenix DR segmentation polygon保存为
+        当前病例的独立显示覆盖层。
+
+        不写回DICOM。
+        """
+        if not isinstance(result, dict):
+            self._phoenix_segmentation_masks = []
+            return 0
+
+        if str(
+            result.get(
+                "modality_route",
+                ""
+            )
+        ).upper() != "DR":
+            self._phoenix_segmentation_masks = []
+            return 0
+        dataset = getattr(
+            self,
+            "current_dataset",
+            None
+        )
+
+        if dataset is None:
+            self._phoenix_segmentation_masks = []
+            return 0
+
+        sop_uid = str(
+            getattr(
+                dataset,
+                "SOPInstanceUID",
+                ""
+            )
+        ).strip()
+
+        payloads = []
+
+        outputs = result.get(
+            "ai_outputs",
+            []
+        ) or []
+
+        for output in outputs:
+
+            model_name = str(
+                output.get(
+                    "model",
+                    ""
+                )
+            )
+
+            masks = output.get(
+                "masks",
+                []
+            ) or []
+
+            for mask in masks:
+
+                polygon = mask.get(
+                    "polygon_xy"
+                )
+
+                try:
+                    coordinates = np.asarray(
+                        polygon,
+                        dtype=float
+                    )
+                except Exception:
+                    continue
+
+                if (
+                    coordinates.ndim != 2
+                    or coordinates.shape[1] != 2
+                    or len(coordinates) < 3
+                    or not np.isfinite(
+                        coordinates
+                    ).all()
+                ):
+                    continue
+
+                payloads.append({
+                    "sop_instance_uid":
+                        sop_uid,
+                    "model":
+                        model_name,
+                    "label":
+                        str(
+                            mask.get(
+                                "label",
+                                ""
+                            )
+                        ),
+                    "confidence":
+                        float(
+                            mask.get(
+                                "confidence",
+                                0.0
+                            )
+                            or 0.0
+                        ),
+                    "polygon_xy":
+                        coordinates.tolist(),
+                })
+
+        self._phoenix_segmentation_masks = (
+            payloads
+        )
+
+        self._render_current_pixmap()
+
+        return len(payloads)
 
 
     def _sync_phoenix_dr_fracture_candidates(
@@ -753,6 +894,12 @@ class MainWindow(QMainWindow):
                 )
             )
 
+            dr_mask_overlay_count = (
+                self._sync_phoenix_dr_segmentation_masks(
+                    result
+                )
+            )
+
             analysis_lines.append(
                 "【DR视觉B：骨折漏诊防护】"
             )
@@ -817,6 +964,7 @@ class MainWindow(QMainWindow):
                 "--------------------------------",
                 f"总检测候选：{total_findings}",
                 f"已注入视觉B候选列表：{dr_candidate_count}",
+                f"已注入Mask覆盖层：{dr_mask_overlay_count}",
                 f"总Mask：{total_masks}",
                 "",
                 "说明：以上为视觉B安全防护候选，"
@@ -1636,6 +1784,182 @@ class MainWindow(QMainWindow):
         self._show_image_array(image_8bit)
 
 
+    def _draw_phoenix_segmentation_overlay(
+        self,
+        display_pixmap
+    ):
+        """
+        在pixmap副本上绘制半透明segmentation polygon。
+
+        原始DICOM、current_pixmap和HU数组均不修改。
+        """
+        if display_pixmap is None:
+            return display_pixmap
+
+        if not getattr(
+            self,
+            "_phoenix_mask_overlay_visible",
+            True
+        ):
+            return display_pixmap
+
+        masks = getattr(
+            self,
+            "_phoenix_segmentation_masks",
+            []
+        ) or []
+
+        if not masks:
+            return display_pixmap
+
+        dataset = getattr(
+            self,
+            "current_dataset",
+            None
+        )
+
+        if dataset is None:
+            return display_pixmap
+
+        current_sop = str(
+            getattr(
+                dataset,
+                "SOPInstanceUID",
+                ""
+            )
+        ).strip()
+
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import (
+            QColor,
+            QBrush,
+            QPolygonF,
+        )
+
+        painter = QPainter(
+            display_pixmap
+        )
+        try:
+            # 半透明填充 + 边缘
+            fill_color = QColor(
+                255, 0, 255, 70
+            )
+
+            edge_color = QColor(
+                255, 0, 255, 210
+            )
+
+            pen = QPen(
+                edge_color
+            )
+
+            pen.setWidth(2)
+
+            painter.setPen(
+                pen
+            )
+
+            painter.setBrush(
+                QBrush(
+                    fill_color
+                )
+            )
+
+            width = (
+                display_pixmap.width()
+            )
+
+            height = (
+                display_pixmap.height()
+            )
+
+            for mask in masks:
+
+                if (
+                    str(
+                        mask.get(
+                            "sop_instance_uid",
+                            ""
+                        )
+                    ).strip()
+                    != current_sop
+                ):
+                    continue
+
+                points = mask.get(
+                    "polygon_xy",
+                    []
+                )
+
+                polygon = QPolygonF()
+
+                for point in points:
+
+                    try:
+                        x = float(
+                            point[0]
+                        )
+
+                        y = float(
+                            point[1]
+                        )
+                    except Exception:
+                        continue
+
+                    if not (
+                        np.isfinite(x)
+                        and np.isfinite(y)
+                    ):
+                        continue
+
+                    x = max(
+                        0.0,
+                        min(
+                            x,
+                            width - 1
+                        )
+                    )
+
+                    y = max(
+                        0.0,
+                        min(
+                            y,
+                            height - 1
+                        )
+                    )
+
+                    polygon.append(
+                        QPointF(
+                            x,
+                            y
+                        )
+                    )
+
+                if polygon.count() >= 3:
+                    painter.drawPolygon(
+                        polygon
+                    )
+
+        finally:
+            painter.end()
+
+        return display_pixmap
+
+
+    def _toggle_phoenix_mask_overlay(
+        self,
+        checked
+    ):
+        """
+        医生显示/隐藏Mask覆盖层。
+        """
+        self._phoenix_mask_overlay_visible = bool(
+            checked
+        )
+
+        self._render_current_pixmap()
+
+
     def _build_fracture_overlay_pixmap(self):
         """
         基于原始current_pixmap生成视觉B候选显示副本。
@@ -1653,6 +1977,14 @@ class MainWindow(QMainWindow):
 
         # 永远在副本上绘制，不修改原始影像pixmap。
         display_pixmap = self.current_pixmap.copy()
+
+        # 先绘制segmentation半透明层，
+        # 再由现有逻辑绘制活动bbox。
+        display_pixmap = (
+            self._draw_phoenix_segmentation_overlay(
+                display_pixmap
+            )
+        )
 
         candidate = self.active_fracture_candidate
 
@@ -1827,6 +2159,9 @@ class MainWindow(QMainWindow):
         self.active_fracture_candidate = None
         self.active_fracture_candidate_index = None
         self.fracture_candidate_review_status.clear()
+
+        # 新病例不得继承上一病例Mask。
+        self._phoenix_segmentation_masks = []
 
         # 上下文失效后立即移除旧候选叠加，
         # 即使新影像随后加载失败，也不得残留旧bbox。

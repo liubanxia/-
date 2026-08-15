@@ -53,8 +53,8 @@ class PhoenixDICOMInferenceService:
         # BodyPartRegression模型本身仍然延迟加载
         self.ct_adapter = BodyPartRegressionCTAdapter(
             project_root=self.base_dir.parent.parent,
-            repo_path=Path(r"G:\project_phoenix\04_AI模型\工程工作区\模型拆解\BodyPartRegression\BodyPartRegression-develop"),
-            model_dir=Path(r"G:\project_phoenix\04_AI模型\路由模型\BodyPartRegression\weights\public_bpr_model\public_bpr_model"),
+            repo_path=Path(r"D:\project_phoenix\04_AI模型\工程工作区\模型拆解\BodyPartRegression\BodyPartRegression-develop"),
+            model_dir=Path(r"D:\project_phoenix\04_AI模型\路由模型\BodyPartRegression\weights\public_bpr_model\public_bpr_model"),
         )
 
     # ========================================================
@@ -273,15 +273,112 @@ class PhoenixDICOMInferenceService:
             None
         )
 
-        mask_count = (
-            len(masks.data)
-            if masks is not None
-            and getattr(
-                masks,
-                "data",
-                None
-            ) is not None
-            else 0
+        # ----------------------------------------------------
+        # Instance segmentation真实轮廓
+        #
+        # Ultralytics Masks.xy：
+        # 每个实例对应一个原始图像像素坐标polygon。
+        # 转成纯Python float，便于Phoenix UI和JSON使用。
+        # ----------------------------------------------------
+        mask_payloads = []
+
+        if masks is not None:
+
+            try:
+                polygons = masks.xy
+            except Exception:
+                polygons = []
+
+            for mask_index, polygon in enumerate(
+                polygons
+            ):
+
+                try:
+                    points = np.asarray(
+                        polygon,
+                        dtype=float
+                    )
+                except Exception:
+                    continue
+
+                if (
+                    points.ndim != 2
+                    or points.shape[1] != 2
+                    or points.shape[0] < 3
+                    or not np.isfinite(points).all()
+                ):
+                    continue
+
+                # 非常复杂的轮廓做轻量降采样，
+                # 避免Qt绘制和结果JSON过大。
+                max_points = 512
+
+                if len(points) > max_points:
+                    step = int(
+                        np.ceil(
+                            len(points)
+                            / max_points
+                        )
+                    )
+
+                    points = points[::step]
+
+                label = ""
+                confidence = 0.0
+                class_id = None
+
+                # segmentation实例与boxes顺序一致时，
+                # 同步类别及confidence。
+                try:
+                    if (
+                        boxes is not None
+                        and mask_index < len(boxes)
+                    ):
+                        box = boxes[mask_index]
+
+                        class_id = int(
+                            box.cls[0].item()
+                        )
+
+                        confidence = float(
+                            box.conf[0].item()
+                        )
+
+                        if isinstance(names, dict):
+                            label = str(
+                                names.get(
+                                    class_id,
+                                    class_id
+                                )
+                            )
+                        else:
+                            label = str(
+                                class_id
+                            )
+
+                except Exception:
+                    pass
+
+                mask_payloads.append({
+                    "type": "segmentation",
+                    "model": model_name,
+                    "class_id": class_id,
+                    "label": label,
+                    "confidence": round(
+                        confidence,
+                        5
+                    ),
+                    "polygon_xy": [
+                        [
+                            round(float(x), 2),
+                            round(float(y), 2)
+                        ]
+                        for x, y in points
+                    ],
+                })
+
+        mask_count = len(
+            mask_payloads
         )
 
         return {
@@ -289,6 +386,7 @@ class PhoenixDICOMInferenceService:
             "finding_count": len(findings),
             "mask_count": int(mask_count),
             "findings": findings,
+            "masks": mask_payloads,
         }
 
     # ========================================================
