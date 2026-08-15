@@ -1,3 +1,4 @@
+from pacs_auto.pacs_button_worker import PacsAIWorker
 from report_learning import PassReportMonitor, FocusedUIATextReader
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -1236,6 +1237,59 @@ class MainWindow(QMainWindow):
         return None
 
 
+    def _start_external_pacs_ai(self):
+        self._pacs_ai_worker = PacsAIWorker()
+        self._pacs_ai_worker.start()
+
+        self.dual_vision_action.setEnabled(False)
+        self.dual_vision_action.setText("PACS AI分析中…")
+        self.statusBar().showMessage("正在自动识别PACS并分析…")
+
+        QTimer.singleShot(300, self._poll_external_pacs_ai)
+
+    def _poll_external_pacs_ai(self):
+        w=self._pacs_ai_worker
+
+        if w.running:
+            QTimer.singleShot(300, self._poll_external_pacs_ai)
+            return
+
+        self.dual_vision_action.setText("启动双视觉AI")
+        self.dual_vision_action.setEnabled(True)
+
+        if w.error:
+            self.statusBar().showMessage("PACS AI失败："+w.error)
+            return
+
+        r=w.result or {}
+        status=r.get("status")
+
+        if status=="success":
+            ai=r["ai"]
+            self.phoenix_result_header.setText("Phoenix PACS DR AI分析完成")
+            self.phoenix_analysis_text.setPlainText(
+                "骨折候选："+str(len(ai["boxes"]))
+                +"\nMask："+str(len(ai["masks"]))
+            )
+            self.phoenix_report_text.setPlainText(ai["report"])
+            self.statusBar().showMessage("PACS AI完成 | RAM-only")
+
+        elif status=="ct_detected":
+            self.statusBar().showMessage(
+                "已识别CT PACS | 下一阶段进入自动翻层采集"
+            )
+
+        elif status=="modality_unknown":
+            self.statusBar().showMessage(
+                "已识别PACS，但模态无法安全确认，未运行模型"
+            )
+
+        else:
+            self.statusBar().showMessage(
+                "检测到疑似PACS，首次需要安全确认"
+            )
+
+
     def _toggle_dual_vision_ai(self):
         """
         医生主动启动Phoenix AI。
@@ -1258,9 +1312,7 @@ class MainWindow(QMainWindow):
             )
 
             if not dicom_path:
-                self.statusBar().showMessage(
-                    "当前没有可供AI处理的DICOM病例"
-                )
+                self._start_external_pacs_ai()
                 return
 
             self._phoenix_ai_case_token = str(
@@ -2438,7 +2490,7 @@ class MainWindow(QMainWindow):
         )
 
         self.dual_vision_action.setText("启动双视觉AI")
-        self.dual_vision_action.setEnabled(False)
+        self.dual_vision_action.setEnabled(True)
 
     def _on_fracture_candidate_clicked(self, item):
         """
