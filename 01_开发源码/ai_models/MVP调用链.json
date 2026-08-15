@@ -1,0 +1,36 @@
+{
+  "CT": {
+    "路由模型": [
+      "BodyPartRegression"
+    ],
+    "视觉A": [],
+    "视觉B": [],
+    "备用路由": [
+      "DICOM.Modality",
+      "DICOM.BodyPartExamined",
+      "DICOM.StudyDescription",
+      "DICOM.SeriesDescription",
+      "DICOM.ProtocolName"
+    ]
+  },
+  "DR": {
+    "路由模型": [],
+    "视觉A": [],
+    "视觉B": [
+      "YOLOv8_ResCBAM",
+      "FracAtlas_localization",
+      "FracAtlas_segmentation"
+    ],
+    "备用路由": [
+      "DICOM.Modality",
+      "DICOM.BodyPartExamined",
+      "DICOM.StudyDescription",
+      "DICOM.SeriesDescription",
+      "DICOM.ProtocolName"
+    ]
+  },
+  "安全规则": {
+    "未激活病例禁止模型加载": true,
+    "未激活病例禁止推理": true
+  }
+}

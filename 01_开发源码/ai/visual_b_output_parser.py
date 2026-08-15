@@ -1,3 +1,4 @@
+import inspect
 from collections.abc import Iterable
 import math
 
@@ -75,9 +76,23 @@ class VisualBOutputParser:
                 "视觉B series_files不能为空"
             )
 
-        decoded_candidates = self.decoder(
-            raw_outputs
-        )
+        # 新版视觉B decoder可同时接收series_context，
+        # 以完成LetterBox坐标反变换等上下文相关处理。
+        # 旧的一参数decoder继续兼容。
+        try:
+            inspect.signature(self.decoder).bind(
+                raw_outputs,
+                series_context,
+            )
+        except (TypeError, ValueError):
+            decoded_candidates = self.decoder(
+                raw_outputs
+            )
+        else:
+            decoded_candidates = self.decoder(
+                raw_outputs,
+                series_context,
+            )
 
         if isinstance(
             decoded_candidates,

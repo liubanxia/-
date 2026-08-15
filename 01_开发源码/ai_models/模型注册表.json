@@ -1,0 +1,165 @@
+{
+  "项目": "Project Phoenix",
+  "版本": "MVP-模型栈-v1",
+  "运行原则": {
+    "自动后台推理": false,
+    "医生触发": true,
+    "视觉A默认关闭": true,
+    "视觉B默认关闭": true,
+    "完全离线": true,
+    "延迟加载": true
+  },
+  "模型": {
+    "BodyPartRegression": {
+      "用途": "CT身体层面/部位路由",
+      "层级": "CT路由",
+      "医生点击后运行": true,
+      "默认后台运行": false,
+      "保留决策": true,
+      "状态": "READY",
+      "主模型": "G:\\project_phoenix\\04_AI模型\\路由模型\\BodyPartRegression\\phoenix_export\\BodyPartRegression_128x128.onnx",
+      "发现文件": [
+        "G:\\project_phoenix\\04_AI模型\\._BodyPartRegression-develop.zip",
+        "G:\\project_phoenix\\04_AI模型\\00_批量部署暂存\\下载包\\BodyPartRegression_develop.zip",
+        "G:\\project_phoenix\\04_AI模型\\BodyPartRegression-develop.zip",
+        "G:\\project_phoenix\\04_AI模型\\路由模型\\BodyPartRegression\\phoenix_export\\BodyPartRegression_128x128.onnx",
+        "G:\\project_phoenix\\04_AI模型\\路由模型\\BodyPartRegression\\weights\\public_bpr_model.zip",
+        "G:\\project_phoenix\\04_AI模型\\路由模型\\BodyPartRegression\\weights\\public_bpr_model\\public_bpr_model\\model.pt",
+        "G:\\project_phoenix\\04_AI模型\\路由模型\\BodyPartRegression_develop.zip"
+      ],
+      "适用模态": [
+        "CT"
+      ],
+      "MVP启用": true,
+      "适配器": "G:\\project_phoenix\\01_开发源码\\ai_models\\ct_bodypart_adapter.py",
+      "CT输入格式": "DICOM Series → HU numpy volume",
+      "官方推理入口": "InferenceModel.npy2json",
+      "模型范围": "成人骨盆至头部CT",
+      "范围外": [
+        "儿童",
+        "孕妇",
+        "腿部"
+      ]
+    },
+    "YOLOv8_ResCBAM": {
+      "用途": "X线骨折检测；不作为通用视觉A，不用于CT",
+      "层级": "视觉B骨折防护",
+      "医生点击后运行": true,
+      "默认后台运行": false,
+      "保留决策": true,
+      "状态": "READY",
+      "主模型": "G:\\project_phoenix\\04_AI模型\\视觉B_骨折防护\\YOLOv8_ResCBAM.onnx",
+      "发现文件": [
+        "G:\\project_phoenix\\04_AI模型\\视觉B_骨折防护\\YOLOv8_ResCBAM.onnx",
+        "G:\\project_phoenix\\04_AI模型\\视觉B_骨折防护\\YOLOv8_ResCBAM.pt"
+      ],
+      "适用模态": [
+        "DX",
+        "DR",
+        "CR",
+        "XR"
+      ],
+      "MVP启用": true
+    },
+    "FracAtlas_localization": {
+      "用途": "肌骨X线骨折定位",
+      "层级": "视觉B骨折防护",
+      "医生点击后运行": true,
+      "默认后台运行": false,
+      "保留决策": true,
+      "状态": "READY",
+      "主模型": "G:\\project_phoenix\\04_AI模型\\00_批量部署暂存\\原始权重\\yolov8_localization_fractureAtlas.pt",
+      "发现文件": [
+        "G:\\project_phoenix\\04_AI模型\\00_批量部署暂存\\下载包\\FracAtlas_master.zip"
+      ],
+      "适用模态": [
+        "DX",
+        "DR",
+        "CR",
+        "XR"
+      ],
+      "MVP启用": true,
+      "部署状态": "READY"
+    },
+    "FracAtlas_segmentation": {
+      "用途": "肌骨X线骨折区域分割",
+      "层级": "视觉B骨折防护",
+      "医生点击后运行": true,
+      "默认后台运行": false,
+      "保留决策": true,
+      "状态": "READY",
+      "主模型": "G:\\project_phoenix\\04_AI模型\\00_批量部署暂存\\原始权重\\yolov8_segmentation_fractureAtlas.pt",
+      "发现文件": [],
+      "适用模态": [
+        "DX",
+        "DR",
+        "CR",
+        "XR"
+      ],
+      "MVP启用": true,
+      "部署状态": "READY"
+    },
+    "DICOM_Imaging_Router": {
+      "用途": "DR身体部位一级路由",
+      "层级": "DR路由候选",
+      "医生点击后运行": true,
+      "默认后台运行": false,
+      "保留决策": "待最终裁决",
+      "状态": "未发现可运行权重",
+      "主模型": null,
+      "发现文件": [
+        "G:\\project_phoenix\\04_AI模型\\._DICOM-Imaging-Router-main 3.zip",
+        "G:\\project_phoenix\\04_AI模型\\00_批量部署暂存\\下载包\\DICOM-Imaging-Router_main.zip",
+        "G:\\project_phoenix\\04_AI模型\\DICOM-Imaging-Router-main 3.zip"
+      ],
+      "适用模态": [
+        "DX",
+        "DR",
+        "CR",
+        "XR"
+      ],
+      "MVP启用": false,
+      "部署状态": "冻结：当前缺训练权重",
+      "替代方案": "暂用DICOM元数据路由"
+    },
+    "CTBodyPartRecognition": {
+      "用途": "CT身体区域识别候选",
+      "层级": "CT路由候选",
+      "医生点击后运行": true,
+      "默认后台运行": false,
+      "保留决策": "待最终裁决",
+      "状态": "未发现可运行权重",
+      "主模型": null,
+      "发现文件": [],
+      "适用模态": [
+        "CT"
+      ],
+      "MVP启用": false,
+      "部署状态": "冻结：当前缺BestModel.pth；MVP已有BodyPartRegression"
+    }
+  },
+  "MVP能力": {
+    "CT": {
+      "路由": "BodyPartRegression",
+      "视觉A": "尚未指定医院直接运行的轻量通用视觉模型",
+      "视觉B": "当前骨折模型不直接用于CT"
+    },
+    "DR_XRAY": {
+      "路由": "DICOM元数据优先；DICOM-Imaging-Router待权重",
+      "视觉A": "尚未指定医院直接运行的轻量通用视觉模型",
+      "视觉B": [
+        "YOLOv8_ResCBAM",
+        "FracAtlas_localization",
+        "FracAtlas_segmentation"
+      ]
+    }
+  },
+  "运行硬规则": {
+    "医生必须主动点击启动": true,
+    "自动后台分析": false,
+    "视觉模型默认关闭": true,
+    "模型延迟加载": true,
+    "病例结束释放模型": true,
+    "完全离线": true
+  }
+}

@@ -27,6 +27,8 @@ import os
 import pydicom
 from pydicom.misc import is_dicom
 from pydicom.uid import UID
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QDockWidget, QWidget, QVBoxLayout, QLabel, QTextEdit, QTabWidget
 
 
 def _looks_like_ct_dicom_without_preamble(file_path):
@@ -122,8 +124,13 @@ class MainWindow(QMainWindow):
         # CT 窗宽 / 窗位交互状态
         self.current_dataset = None
         self.current_hu_array = None
+
+        # 当前用于显示及视觉模型输入的8-bit二维影像。
+        # CT为当前窗宽窗位渲染结果，DX为normalize_dx标准化结果。
+        self.current_image_array = None
         # CT 序列状态
         self.series_files = []
+        self.current_dicom_path = None
         self.current_slice_index = 0
 
         self.window_center = None
@@ -180,82 +187,1098 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addAction(self.dual_vision_action)
 
+        # Phoenix右侧AI辅助阅片结果区
+        self._setup_phoenix_result_panel()
+
         self.addToolBar(toolbar)
 
-    def _toggle_dual_vision_ai(self):
+    def _setup_phoenix_result_panel(self):
         """
-        医生主动启动或停止双视觉 AI。
+        Phoenix右侧AI辅助阅片面板。
 
-        M9.0-A 当前使用 Mock 视觉模型，
-        只验证人工激活与双通路调度流程。
+        这里只展示AI辅助信息。
+        不自动写入最终诊断，不替代医生审核。
+        """
+        self.phoenix_result_dock = QDockWidget(
+            "Phoenix AI辅助阅片",
+            self
+        )
+
+        self.phoenix_result_dock.setObjectName(
+            "PhoenixAIResultDock"
+        )
+
+        container = QWidget(
+            self.phoenix_result_dock
+        )
+
+        layout = QVBoxLayout(container)
+
+        self.phoenix_result_header = QLabel(
+            "AI待机 | 打开病例后由医生点击“启动双视觉AI”"
+        )
+
+        self.phoenix_result_header.setWordWrap(
+            True
+        )
+
+        layout.addWidget(
+            self.phoenix_result_header
+        )
+
+        self.phoenix_result_tabs = QTabWidget(
+            container
+        )
+
+        # ----------------------------------------------------
+        # 1. AI分析结果
+        # ----------------------------------------------------
+        self.phoenix_analysis_text = QTextEdit()
+        self.phoenix_analysis_text.setReadOnly(
+            True
+        )
+
+        self.phoenix_analysis_text.setPlainText(
+            "尚未运行AI。"
+        )
+
+        self.phoenix_result_tabs.addTab(
+            self.phoenix_analysis_text,
+            "AI分析结果"
+        )
+
+        # ----------------------------------------------------
+        # 2. 结构化报告草稿
+        # ----------------------------------------------------
+        self.phoenix_report_text = QTextEdit()
+
+        self.phoenix_report_text.setPlaceholderText(
+            "AI完成后生成结构化辅助草稿。\n"
+            "最终报告必须由医生审核、修改和确认。"
+        )
+
+        self.phoenix_result_tabs.addTab(
+            self.phoenix_report_text,
+            "结构化报告"
+        )
+
+        # ----------------------------------------------------
+        # 3. 医生审核
+        # ----------------------------------------------------
+        self.phoenix_review_text = QTextEdit()
+
+        self.phoenix_review_text.setPlaceholderText(
+            "医生审核区：\n"
+            "可记录AI错误、遗漏、修改原因等。\n"
+            "本阶段暂不自动写入学习库。"
+        )
+
+        self.phoenix_result_tabs.addTab(
+            self.phoenix_review_text,
+            "医生审核"
+        )
+
+        layout.addWidget(
+            self.phoenix_result_tabs
+        )
+
+        container.setLayout(layout)
+
+        self.phoenix_result_dock.setWidget(
+            container
+        )
+
+        self.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea,
+            self.phoenix_result_dock
+        )
+
+        # 默认显示，但内容为空。
+        self.phoenix_result_dock.show()
+
+
+    def _sync_phoenix_dr_fracture_candidates(
+        self,
+        result
+    ):
+        """
+        将Phoenix DR视觉B bbox结果转换成现有
+        FractureCandidate并注入候选系统。
+
+        只修改显示候选状态，不修改原始DICOM。
         """
 
-        # --------------------------------------------------
-        # 医生主动停止
-        # --------------------------------------------------
-        if self.dual_vision_controller.is_active:
-            self.dual_vision_controller.stop_by_doctor()
-            self.dual_vision_action.setText("启动双视觉AI")
-            self.statusBar().showMessage(
-                "双视觉AI：已由医生停止"
-            )
-            return
+        if not isinstance(result, dict):
+            return 0
 
-        # --------------------------------------------------
-        # 医生主动启动
-        # --------------------------------------------------
-        started = self.dual_vision_controller.start_by_doctor()
-
-        if not started:
-            return
-
-        self.dual_vision_action.setText("停止双视觉AI")
-
-        # 当前只传递最小 Series 上下文。
-        # M9 后续阶段再扩展为正式医学影像推理上下文。
-        series_context = {
-            "series_files": tuple(self.series_files),
-            "current_slice_index": self.current_slice_index,
-        }
-
-        try:
-            result = self.dual_vision_orchestrator.infer(
-                series_context
-            )
-        except Exception as exc:
-            self.dual_vision_controller.stop_by_doctor()
-            self.dual_vision_action.setText("启动双视觉AI")
-            self.statusBar().showMessage(
-                f"双视觉AI启动失败：{exc}"
-            )
-            return
-
-        # 视觉B结果必须经过标准候选安全入口。
-        # 当前MockVisualB返回的是未解析字典，
-        # 因此不会覆盖现有真实候选。
-        self._apply_visual_b_inference_result(
+        route = str(
             result.get(
-                "vision_b",
-                {},
+                "modality_route",
+                ""
+            )
+        ).upper()
+
+        if route != "DR":
+            return 0
+
+        dataset = getattr(
+            self,
+            "current_dataset",
+            None
+        )
+
+        if dataset is None:
+            return 0
+
+        sop_uid = str(
+            getattr(
+                dataset,
+                "SOPInstanceUID",
+                ""
+            )
+        ).strip()
+
+        if not sop_uid:
+            return 0
+
+        # DR是单幅影像，当前slice索引固定使用现有上下文索引。
+        slice_index = getattr(
+            self,
+            "current_slice_index",
+            0
+        )
+
+        if (
+            not isinstance(slice_index, int)
+            or isinstance(slice_index, bool)
+            or slice_index < 0
+        ):
+            slice_index = 0
+
+        # 获取当前原始显示尺寸，用于bbox安全裁剪。
+        image_width = None
+        image_height = None
+
+        pixmap = getattr(
+            self,
+            "current_pixmap",
+            None
+        )
+
+        if (
+            pixmap is not None
+            and not pixmap.isNull()
+        ):
+            image_width = int(
+                pixmap.width()
+            )
+            image_height = int(
+                pixmap.height()
+            )
+
+        image_array = getattr(
+            self,
+            "current_image_array",
+            None
+        )
+
+        if (
+            image_array is not None
+            and getattr(
+                image_array,
+                "ndim",
+                0
+            ) >= 2
+        ):
+            image_height = int(
+                image_array.shape[0]
+            )
+            image_width = int(
+                image_array.shape[1]
+            )
+
+        candidates_with_meta = []
+
+        outputs = result.get(
+            "ai_outputs",
+            []
+        ) or []
+
+        for output in outputs:
+
+            model_name = str(
+                output.get(
+                    "model",
+                    "视觉B"
+                )
+            )
+
+            findings = output.get(
+                "findings",
+                []
+            ) or []
+
+            for finding in findings:
+
+                bbox = finding.get(
+                    "bbox_xyxy"
+                )
+
+                if bbox is None:
+                    continue
+
+                try:
+                    coordinates = np.asarray(
+                        bbox,
+                        dtype=float
+                    )
+                except (
+                    TypeError,
+                    ValueError
+                ):
+                    continue
+
+                if coordinates.shape != (4,):
+                    continue
+
+                if not np.isfinite(
+                    coordinates
+                ).all():
+                    continue
+
+                x1, y1, x2, y2 = [
+                    float(x)
+                    for x in coordinates
+                ]
+                # 在写入候选之前先限制到真实影像范围。
+                if (
+                    image_width is not None
+                    and image_height is not None
+                    and image_width > 0
+                    and image_height > 0
+                ):
+                    x1 = max(
+                        0.0,
+                        min(
+                            x1,
+                            image_width - 1
+                        )
+                    )
+
+                    y1 = max(
+                        0.0,
+                        min(
+                            y1,
+                            image_height - 1
+                        )
+                    )
+
+                    x2 = max(
+                        0.0,
+                        min(
+                            x2,
+                            image_width - 1
+                        )
+                    )
+
+                    y2 = max(
+                        0.0,
+                        min(
+                            y2,
+                            image_height - 1
+                        )
+                    )
+
+                if (
+                    x2 <= x1
+                    or y2 <= y1
+                ):
+                    continue
+
+                try:
+                    confidence = float(
+                        finding.get(
+                            "confidence",
+                            0.0
+                        )
+                    )
+                except (
+                    TypeError,
+                    ValueError
+                ):
+                    continue
+
+                if not np.isfinite(
+                    confidence
+                ):
+                    continue
+
+                confidence = max(
+                    0.0,
+                    min(
+                        confidence,
+                        1.0
+                    )
+                )
+
+                try:
+                    candidate = FractureCandidate(
+                        slice_index=slice_index,
+                        sop_instance_uid=sop_uid,
+                        confidence=confidence,
+                        region_type="bbox",
+                        region=(
+                            x1,
+                            y1,
+                            x2,
+                            y2
+                        ),
+                    )
+                except Exception:
+                    continue
+
+                candidates_with_meta.append(
+                    (
+                        candidate,
+                        {
+                            "model":
+                                model_name,
+                            "label":
+                                str(
+                                    finding.get(
+                                        "label",
+                                        ""
+                                    )
+                                ),
+                            "confidence":
+                                confidence,
+                        }
+                    )
+                )
+
+        # 高置信度候选优先显示。
+        candidates_with_meta.sort(
+            key=lambda x:
+                x[0].confidence,
+            reverse=True
+        )
+
+        candidates = [
+            x[0]
+            for x in candidates_with_meta
+        ]
+
+        metadata = [
+            x[1]
+            for x in candidates_with_meta
+        ]
+
+        # 原子替换上一病例/上一轮AI候选。
+        count = (
+            self.fracture_candidate_store.replace_all(
+                candidates
             )
         )
 
-        status = result.get("status", "unknown")
+        self._phoenix_dr_candidate_metadata = (
+            metadata
+        )
 
-        if status == "success":
-            self.statusBar().showMessage(
-                "双视觉AI：Mock推理完成 | "
-                "视觉A：成功 | "
-                "视觉B：成功"
+        self.active_fracture_candidate = None
+        self.active_fracture_candidate_index = None
+
+        self.fracture_candidate_review_status.clear()
+
+        self.accept_fracture_candidate_button.setEnabled(
+            False
+        )
+
+        self.reject_fracture_candidate_button.setEnabled(
+            False
+        )
+
+        self._refresh_fracture_candidate_list()
+
+        # 若存在候选，默认激活最高置信度候选。
+        if count > 0:
+
+            current_candidates = (
+                self.fracture_candidate_store.get_all()
             )
-        elif status == "partial_failure":
-            self.statusBar().showMessage(
-                "双视觉AI：部分通路失败，请检查AI结果"
+
+            first = current_candidates[0]
+
+            self.active_fracture_candidate = first
+            self.active_fracture_candidate_index = 0
+
+            self.accept_fracture_candidate_button.setEnabled(
+                True
             )
+
+            self.reject_fracture_candidate_button.setEnabled(
+                True
+            )
+
+            try:
+                self.fracture_candidate_list.setCurrentRow(
+                    0
+                )
+            except Exception:
+                pass
+
+        # 统一通过现有渲染链重绘。
+        self._render_current_pixmap()
+
+        return count
+
+
+    def _render_phoenix_ai_result(
+        self,
+        result
+    ):
+        """
+        把Phoenix统一结果显示到右侧面板。
+
+        不读取患者姓名/PatientID。
+        """
+        if not isinstance(result, dict):
+            self.phoenix_result_header.setText(
+                "AI结果格式异常"
+            )
+
+            self.phoenix_analysis_text.setPlainText(
+                str(result)
+            )
+
+            return
+
+        route = str(
+            result.get(
+                "modality_route",
+                ""
+            )
+        ).upper()
+
+        outputs = result.get(
+            "ai_outputs",
+            []
+        ) or []
+
+        analysis_lines = []
+        report_lines = []
+
+        # ====================================================
+        # CT
+        # ====================================================
+        if route == "CT":
+
+            self.phoenix_result_header.setText(
+                "Phoenix CT AI分析完成"
+            )
+
+            analysis_lines.append(
+                "【CT身体部位路由】"
+            )
+
+            if outputs:
+
+                item = outputs[0]
+
+                display = (
+                    item.get(
+                        "body_part_display"
+                    )
+                    or item.get(
+                        "body_part_examined_tag"
+                    )
+                    or "部位未确定"
+                )
+
+                raw_tag = item.get(
+                    "body_part_examined_tag_raw"
+                )
+
+                regions = item.get(
+                    "active_body_regions",
+                    []
+                )
+
+                analysis_lines.extend([
+                    f"模型：{item.get('model', 'BodyPartRegression')}",
+                    f"Phoenix判定部位：{display}",
+                    f"模型原始Tag：{raw_tag}",
+                    f"活动区域：{regions}",
+                    f"CT切片数：{item.get('slice_count', '')}",
+                    f"矩阵：{item.get('matrix', '')}",
+                    f"像素间距(mm)：{item.get('pixel_spacings_mm', '')}",
+                    f"Valid Z-spacing：{item.get('valid_z_spacing', '')}",
+                    "",
+                    "说明：BodyPartRegression当前用于CT身体部位/层面路由，"
+                    "不等同于病灶诊断。"
+                ])
+
+                report_lines.extend([
+                    "【检查类型】",
+                    "CT",
+                    "",
+                    "【AI部位路由】",
+                    str(display),
+                    "",
+                    "【AI影像学所见】",
+                    "当前阶段仅完成身体部位路由，"
+                    "尚未由通用视觉A生成病灶级影像学所见。",
+                    "",
+                    "【诊断意见】",
+                    "待医生阅片及后续视觉模型结果。",
+                ])
+
+            else:
+                analysis_lines.append(
+                    "BodyPartRegression未返回有效输出。"
+                )
+
+        # ====================================================
+        # DR / X-ray
+        # ====================================================
+        elif route == "DR":
+
+            self.phoenix_result_header.setText(
+                "Phoenix DR AI分析完成"
+            )
+
+            # 将bbox结果接入既有视觉B候选列表和覆盖层。
+            dr_candidate_count = (
+                self._sync_phoenix_dr_fracture_candidates(
+                    result
+                )
+            )
+
+            analysis_lines.append(
+                "【DR视觉B：骨折漏诊防护】"
+            )
+
+            total_findings = 0
+            total_masks = 0
+
+            for item in outputs:
+
+                model_name = item.get(
+                    "model",
+                    "Unknown"
+                )
+
+                finding_count = int(
+                    item.get(
+                        "finding_count",
+                        0
+                    )
+                    or 0
+                )
+
+                mask_count = int(
+                    item.get(
+                        "mask_count",
+                        0
+                    )
+                    or 0
+                )
+
+                total_findings += finding_count
+                total_masks += mask_count
+
+                analysis_lines.extend([
+                    "",
+                    f"模型：{model_name}",
+                    f"检测候选：{finding_count}",
+                    f"Mask：{mask_count}",
+                ])
+
+                findings = item.get(
+                    "findings",
+                    []
+                ) or []
+
+                for index, finding in enumerate(
+                    findings[:20],
+                    start=1
+                ):
+                    analysis_lines.append(
+                        "  "
+                        f"{index}. "
+                        f"{finding.get('label', '')} | "
+                        f"confidence="
+                        f"{finding.get('confidence', '')} | "
+                        f"bbox="
+                        f"{finding.get('bbox_xyxy', '')}"
+                    )
+
+            analysis_lines.extend([
+                "",
+                "--------------------------------",
+                f"总检测候选：{total_findings}",
+                f"已注入视觉B候选列表：{dr_candidate_count}",
+                f"总Mask：{total_masks}",
+                "",
+                "说明：以上为视觉B安全防护候选，"
+                "不得直接等同于最终骨折诊断。"
+            ])
+
+            report_lines.extend([
+                "【检查类型】",
+                "DR / X-ray",
+                "",
+                "【AI骨折安全防护】",
+                f"候选检测数：{total_findings}",
+                f"分割Mask数：{total_masks}",
+                "",
+                "【AI影像学所见】",
+            ])
+
+            if total_findings:
+                report_lines.append(
+                    "视觉B提示存在骨折候选区域，"
+                    "请医生结合原始影像逐一复核。"
+                )
+            else:
+                report_lines.append(
+                    "视觉B当前未检出超过默认阈值的骨折候选。"
+                )
+
+            report_lines.extend([
+                "",
+                "【诊断意见】",
+                "由医生审核原始影像后填写。",
+            ])
+
+        # ====================================================
+        # 其他
+        # ====================================================
         else:
-            self.statusBar().showMessage(
-                "双视觉AI：双通路推理失败"
+
+            self.phoenix_result_header.setText(
+                "Phoenix AI分析完成"
             )
+
+            analysis_lines.append(
+                f"未知模态路由：{route}"
+            )
+
+            analysis_lines.append(
+                str(result)
+            )
+
+        self.phoenix_analysis_text.setPlainText(
+            "\n".join(
+                str(x)
+                for x in analysis_lines
+            )
+        )
+
+        # 只覆盖AI草稿区；
+        # 医生审核区永远不自动覆盖。
+        self.phoenix_report_text.setPlainText(
+            "\n".join(
+                str(x)
+                for x in report_lines
+            )
+        )
+
+        self.phoenix_result_tabs.setCurrentWidget(
+            self.phoenix_analysis_text
+        )
+
+        self.phoenix_result_dock.show()
+        self.phoenix_result_dock.raise_()
+
+
+    def _render_phoenix_ai_error(
+        self,
+        error
+    ):
+        """
+        AI运行错误显示。
+        """
+        if not isinstance(error, dict):
+            error = {
+                "message": str(error)
+            }
+
+        message = str(
+            error.get(
+                "message",
+                "未知错误"
+            )
+        )
+
+        self.phoenix_result_header.setText(
+            "Phoenix AI运行失败"
+        )
+
+        self.phoenix_analysis_text.setPlainText(
+            "AI运行失败\n\n"
+            f"{message}"
+        )
+
+        self.phoenix_result_dock.show()
+
+    def _ensure_phoenix_ai_controller(self):
+        """
+        延迟创建Phoenix AI控制器。
+        创建控制器本身不会加载模型。
+        """
+        controller = getattr(
+            self,
+            "_phoenix_ai_controller",
+            None
+        )
+
+        if controller is not None:
+            return controller
+
+        from pathlib import Path
+        import sys
+
+        source_root = (
+            Path(__file__).resolve().parents[1]
+        )
+
+        if str(source_root) not in sys.path:
+            sys.path.insert(
+                0,
+                str(source_root)
+            )
+
+        from ui_agent.phoenix_ai_button_controller import (
+            PhoenixAIButtonController
+        )
+
+        controller = PhoenixAIButtonController(
+            source_root / "ai_models"
+        )
+
+        self._phoenix_ai_controller = controller
+
+        timer = QTimer(self)
+        timer.setInterval(250)
+        timer.timeout.connect(
+            self._poll_phoenix_ai
+        )
+
+        self._phoenix_ai_poll_timer = timer
+
+        return controller
+
+
+    def _current_phoenix_dicom_path(self):
+        """
+        返回当前病例实际DICOM路径。
+        """
+        path = getattr(
+            self,
+            "current_dicom_path",
+            None
+        )
+
+        if path:
+            return path
+
+        series_files = getattr(
+            self,
+            "series_files",
+            []
+        )
+
+        if series_files:
+            index = getattr(
+                self,
+                "current_slice_index",
+                0
+            )
+
+            if not isinstance(index, int):
+                index = 0
+
+            index = max(
+                0,
+                min(
+                    index,
+                    len(series_files) - 1
+                )
+            )
+
+            return series_files[index]
+
+        dataset = getattr(
+            self,
+            "current_dataset",
+            None
+        )
+
+        if dataset is not None:
+            filename = getattr(
+                dataset,
+                "filename",
+                None
+            )
+
+            if filename:
+                return filename
+
+        return None
+
+
+    def _toggle_dual_vision_ai(self):
+        """
+        医生主动启动Phoenix AI。
+
+        打开病例不会触发本函数。
+        """
+        try:
+            controller = (
+                self._ensure_phoenix_ai_controller()
+            )
+
+            if controller.is_running():
+                self.statusBar().showMessage(
+                    "AI正在分析，请等待当前任务结束"
+                )
+                return
+
+            dicom_path = (
+                self._current_phoenix_dicom_path()
+            )
+
+            if not dicom_path:
+                self.statusBar().showMessage(
+                    "当前没有可供AI处理的DICOM病例"
+                )
+                return
+
+            self._phoenix_ai_case_token = str(
+                dicom_path
+            )
+
+            # 只登记病例
+            controller.set_current_case(
+                dicom_path
+            )
+
+            # 此处才是真正的医生主动触发点
+            controller.click_ai_button()
+
+            self.dual_vision_action.setText(
+                "AI分析中…"
+            )
+
+            self.dual_vision_action.setEnabled(
+                False
+            )
+
+            self.statusBar().showMessage(
+                "医生已启动Phoenix AI，正在分析…"
+            )
+
+            self.phoenix_result_header.setText(
+                "Phoenix AI正在分析…"
+            )
+
+            self.phoenix_analysis_text.setPlainText(
+                "模型运行中，请等待分析完成。"
+            )
+
+            self._phoenix_ai_poll_timer.start()
+
+        except Exception as exc:
+
+            self.dual_vision_action.setText(
+                "启动双视觉AI"
+            )
+
+            self.dual_vision_action.setEnabled(
+                True
+            )
+
+            self.statusBar().showMessage(
+                f"Phoenix AI启动失败：{exc}"
+            )
+
+
+    def _poll_phoenix_ai(self):
+        """
+        Qt主线程轮询AI工作线程。
+        工作线程不直接修改Qt控件。
+        """
+        controller = getattr(
+            self,
+            "_phoenix_ai_controller",
+            None
+        )
+
+        if controller is None:
+            return
+
+        if controller.is_running():
+            return
+
+        timer = getattr(
+            self,
+            "_phoenix_ai_poll_timer",
+            None
+        )
+
+        if timer is not None:
+            timer.stop()
+
+        launched_case = getattr(
+            self,
+            "_phoenix_ai_case_token",
+            None
+        )
+
+        current_case = (
+            self._current_phoenix_dicom_path()
+        )
+
+        same_case = (
+            launched_case is not None
+            and current_case is not None
+            and str(current_case)
+            == launched_case
+        )
+
+        if (
+            controller.state
+            == controller.STATE_COMPLETE
+        ):
+            result = controller.get_result()
+
+            self.phoenix_ai_result = result
+
+            # 将AI结果送入右侧辅助阅片面板
+            self._render_phoenix_ai_result(
+                result
+            )
+
+            if same_case:
+                self.statusBar().showMessage(
+                    self._summarize_phoenix_ai_result(
+                        result
+                    )
+                )
+            else:
+                self.statusBar().showMessage(
+                    "AI分析完成，但当前病例已经切换；"
+                    "上一病例结果未显示"
+                )
+
+        elif (
+            controller.state
+            == controller.STATE_ERROR
+        ):
+            error = (
+                controller.get_error()
+                or {}
+            )
+
+            self.statusBar().showMessage(
+                "Phoenix AI分析失败："
+                + str(
+                    error.get(
+                        "message",
+                        "未知错误"
+                    )
+                )
+            )
+
+            self._render_phoenix_ai_error(
+                error
+            )
+
+        self.dual_vision_action.setText(
+            "启动双视觉AI"
+        )
+
+        self.dual_vision_action.setEnabled(
+            self._current_phoenix_dicom_path()
+            is not None
+        )
+
+
+    def _summarize_phoenix_ai_result(
+        self,
+        result
+    ):
+        """
+        将Phoenix结果转换为主界面状态栏摘要。
+        """
+        if not isinstance(result, dict):
+            return "Phoenix AI分析完成"
+
+        route = str(
+            result.get(
+                "modality_route",
+                ""
+            )
+        ).upper()
+
+        outputs = result.get(
+            "ai_outputs",
+            []
+        )
+
+        if route == "CT":
+
+            if outputs:
+                item = outputs[0]
+
+                body = (
+                    item.get(
+                        "body_part_display"
+                    )
+                    or item.get(
+                        "body_part_examined_tag"
+                    )
+                    or "部位未确定"
+                )
+
+                return (
+                    "Phoenix CT AI完成 | "
+                    f"BodyPart: {body}"
+                )
+
+            return "Phoenix CT AI完成"
+
+        if route == "DR":
+
+            finding_count = 0
+            mask_count = 0
+
+            for item in outputs:
+
+                finding_count += int(
+                    item.get(
+                        "finding_count",
+                        0
+                    )
+                    or 0
+                )
+
+                mask_count += int(
+                    item.get(
+                        "mask_count",
+                        0
+                    )
+                    or 0
+                )
+
+            return (
+                "Phoenix DR AI完成 | "
+                f"模型: {len(outputs)} | "
+                f"检测: {finding_count} | "
+                f"Mask: {mask_count}"
+            )
+
+        return "Phoenix AI分析完成"
 
     def _apply_visual_b_inference_result(
         self,
@@ -766,6 +1789,10 @@ class MainWindow(QMainWindow):
         """将 8-bit 灰阶数组显示到中央影像区。"""
         image_8bit = np.ascontiguousarray(image_8bit)
 
+        # 保存当前实际显示的二维影像快照，
+        # 供视觉模型显式启动后构建输入。
+        self.current_image_array = image_8bit.copy()
+
         height, width = image_8bit.shape
         bytes_per_line = image_8bit.strides[0]
 
@@ -790,6 +1817,9 @@ class MainWindow(QMainWindow):
         """
 
         self.dual_vision_controller.reset_for_context_change()
+
+        # 病例/Study/Series变化后立即使旧AI影像输入失效。
+        self.current_image_array = None
 
         # 新病例 / Study / Series不得继承旧骨折候选。
         self.fracture_candidate_store.clear()
@@ -1813,6 +2843,14 @@ class MainWindow(QMainWindow):
             self.series_files = dicom_files
             self.current_slice_index = 0
 
+            # Phoenix正式AI入口：
+            # 加载病例时只登记DICOM，绝不启动AI。
+            self.current_dicom_path = (
+                self.series_files[0]
+                if self.series_files
+                else None
+            )
+
             first_dataset = read_dicom(
                 self.series_files[
                     self.current_slice_index
@@ -1903,6 +2941,21 @@ class MainWindow(QMainWindow):
             series = getattr(dataset, "SeriesDescription", "未提供")
 
             self._display_dicom_image(dataset)
+
+            # Phoenix DR正式AI入口：
+            # 打开影像只登记病例，不启动模型。
+            self.current_dataset = dataset
+            self.current_dicom_path = file_path
+
+            if str(modality).strip().upper() in {
+                "DX", "DR", "CR", "XR"
+            }:
+                self.dual_vision_action.setText(
+                    "启动双视觉AI"
+                )
+                self.dual_vision_action.setEnabled(
+                    True
+                )
 
             self.left_content_label.setText(
                 "DICOM 信息\n\n"
