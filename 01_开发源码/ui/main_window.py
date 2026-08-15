@@ -1,3 +1,4 @@
+from report_learning import PassReportMonitor, FocusedUIATextReader
 from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -208,6 +209,66 @@ class MainWindow(QMainWindow):
 
         toolbar.addAction(
             self.phoenix_mask_overlay_action
+        )
+
+
+        # PASS报告学习：必须医生主动操作
+        self.pass_bind_action = QAction(
+            "绑定PASS报告框",
+            self
+        )
+        toolbar.addAction(
+            self.pass_bind_action
+        )
+
+        self.pass_bind_action.triggered.connect(
+            self._begin_pass_report_binding
+        )
+
+        self.pass_learning_action = QAction(
+            "开始PASS学习",
+            self
+        )
+        self.pass_learning_action.setEnabled(
+            False
+        )
+        toolbar.addAction(
+            self.pass_learning_action
+        )
+
+
+        self.pass_learning_finish_action = QAction(
+            "结束PASS学习",
+            self
+        )
+
+        self.pass_learning_finish_action.setEnabled(
+            False
+        )
+
+        toolbar.addAction(
+            self.pass_learning_finish_action
+        )
+
+        self.pass_learning_finish_action.triggered.connect(
+            self._finish_pass_learning
+        )
+
+        self.pass_learning_action.triggered.connect(
+            self._start_pass_learning
+        )
+
+        self.pass_learning_timer = QTimer(self)
+        self.pass_learning_timer.setInterval(2000)
+        self.pass_learning_timer.timeout.connect(
+            self._poll_pass_learning
+        )
+
+
+        # PASS报告学习链：仅RAM使用
+        self.pass_text_reader = FocusedUIATextReader()
+        self.pass_report_monitor = PassReportMonitor(
+            reader=self.pass_text_reader
         )
 
         # Phoenix右侧AI辅助阅片结果区
@@ -1946,6 +2007,162 @@ class MainWindow(QMainWindow):
         return display_pixmap
 
 
+    def _start_pass_learning(self):
+        try:
+            ai_draft = (
+                self.phoenix_report_text
+                .toPlainText()
+                .strip()
+            )
+
+            if not ai_draft:
+                self.statusBar().showMessage(
+                    "没有可学习的AI结构化报告"
+                )
+                return
+
+            if getattr(
+                self.pass_text_reader,
+                "_bound_wrapper",
+                None
+            ) is None:
+                self.statusBar().showMessage(
+                    "请先绑定PASS报告框"
+                )
+                return
+
+            case_token = (
+                "RAM_CASE_"
+                + str(id(
+                    getattr(
+                        self,
+                        "current_dataset",
+                        self
+                    )
+                ))
+            )
+
+            self.pass_report_monitor.arm_case(
+                case_token,
+                ai_draft
+            )
+
+            self.pass_report_monitor.capture_baseline()
+
+            self.pass_learning_timer.start()
+
+            self.pass_learning_action.setEnabled(
+                False
+            )
+
+            self.pass_learning_finish_action.setEnabled(
+                True
+            )
+
+            self.statusBar().showMessage(
+                "PASS学习监控中 | RAM-only"
+            )
+
+        except Exception as exc:
+            self.statusBar().showMessage(
+                "PASS学习启动失败："
+                + str(exc)
+            )
+
+    def _finish_pass_learning(self):
+        self.pass_learning_timer.stop()
+
+        try:
+            stats = (
+                self.pass_report_monitor
+                .finalize_ephemeral()
+            )
+
+            self.statusBar().showMessage(
+                "PASS学习完成 | 修改数："
+                + str(stats["change_count"])
+                + " | 病例数据已清空"
+            )
+
+        except Exception as exc:
+            self.pass_report_monitor.clear_sensitive_memory()
+
+            self.statusBar().showMessage(
+                "PASS学习结束失败："
+                + str(exc)
+                + " | 内存已清空"
+            )
+
+        finally:
+            self.pass_learning_finish_action.setEnabled(
+                False
+            )
+
+            # finalize_ephemeral会解绑PASS控件，
+            # 下一病例必须重新人工绑定。
+            self.pass_learning_action.setEnabled(
+                False
+            )
+
+
+    def _poll_pass_learning(self):
+        try:
+            self.pass_report_monitor.poll_once()
+
+        except Exception as exc:
+            self.pass_learning_timer.stop()
+
+            self.statusBar().showMessage(
+                "PASS读取停止："
+                + str(exc)
+            )
+
+
+    def _begin_pass_report_binding(self):
+        self.statusBar().showMessage(
+            "5秒内切到PASS并点击报告编辑框..."
+        )
+
+        self.pass_bind_action.setEnabled(
+            False
+        )
+
+        QTimer.singleShot(
+            5000,
+            self._complete_pass_report_binding
+        )
+
+    def _complete_pass_report_binding(self):
+        try:
+            info = (
+                self.pass_text_reader
+                .bind_focused_control()
+            )
+
+            self.pass_learning_action.setEnabled(
+                True
+            )
+
+            self.statusBar().showMessage(
+                "PASS报告框绑定成功 | "
+                + str(info.get(
+                    "control_type",
+                    ""
+                ))
+            )
+
+        except Exception as exc:
+            self.statusBar().showMessage(
+                "PASS报告框绑定失败："
+                + str(exc)
+            )
+
+        finally:
+            self.pass_bind_action.setEnabled(
+                True
+            )
+
+
     def _toggle_phoenix_mask_overlay(
         self,
         checked
@@ -2142,6 +2359,51 @@ class MainWindow(QMainWindow):
         self._render_current_pixmap()
 
     def _reset_dual_vision_for_context_change(self):
+        # 病例切换/关闭：强制结束PASS RAM-only学习
+        timer = getattr(
+            self,
+            "pass_learning_timer",
+            None
+        )
+
+        if timer is not None:
+            timer.stop()
+
+        monitor = getattr(
+            self,
+            "pass_report_monitor",
+            None
+        )
+
+        if monitor is not None:
+            try:
+                monitor.stop_monitoring()
+            except Exception:
+                pass
+
+            try:
+                monitor.clear_sensitive_memory()
+            except Exception:
+                pass
+
+        action = getattr(
+            self,
+            "pass_learning_action",
+            None
+        )
+
+        if action is not None:
+            action.setEnabled(False)
+
+        finish_action = getattr(
+            self,
+            "pass_learning_finish_action",
+            None
+        )
+
+        if finish_action is not None:
+            finish_action.setEnabled(False)
+
         """
         病例、Study 或 Series 即将变化时调用。
 

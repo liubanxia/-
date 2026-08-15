@@ -1,5 +1,12 @@
 import sys
 
+# Qt + pywinauto 共存：
+# 主UI线程固定使用STA COM模式。
+if sys.platform == "win32":
+    sys.coinit_flags = 2
+
+import sys
+
 from PySide6.QtWidgets import QApplication
 
 from config.settings import *
