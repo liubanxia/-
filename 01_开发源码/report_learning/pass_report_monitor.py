@@ -189,6 +189,8 @@ class PassReportMonitor:
         与AI原始草稿进行差异比较。
         """
 
+        self.stop_monitoring()
+
         if self.case_token is None:
             raise RuntimeError(
                 "当前没有已绑定病例"
@@ -260,3 +262,117 @@ class PassReportMonitor:
         self._last_hash = None
 
         self.last_error = None
+
+    def start_monitoring(self, interval_seconds=2.0):
+        if self.state != self.STATE_ARMED:
+            raise RuntimeError(
+                "请先arm_case()"
+            )
+
+        self._stop_event = threading.Event()
+        self._interval_seconds = max(
+            1.0,
+            float(interval_seconds)
+        )
+
+        self.state = self.STATE_WATCHING
+
+        self._thread = threading.Thread(
+            target=self._monitor_loop,
+            daemon=True,
+        )
+
+        self._thread.start()
+
+    def _monitor_loop(self):
+        while not self._stop_event.wait(
+            self._interval_seconds
+        ):
+            try:
+                self.poll_once()
+
+            except Exception as exc:
+                self.last_error = str(exc)
+                self.state = self.STATE_ERROR
+                return
+
+    def stop_monitoring(self):
+        if not hasattr(
+            self,
+            "_stop_event"
+        ):
+            return
+
+        self._stop_event.set()
+
+        thread = getattr(
+            self,
+            "_thread",
+            None
+        )
+
+        if (
+            thread is not None
+            and thread.is_alive()
+        ):
+            thread.join(timeout=3)
+
+        if self.state == self.STATE_WATCHING:
+            self.state = self.STATE_ARMED
+
+    def clear_sensitive_memory(self):
+        if (
+            self.reader is not None
+            and hasattr(self.reader, "clear_binding")
+        ):
+            try:
+                self.reader.clear_binding()
+            except Exception:
+                pass
+
+        self.case_token = None
+        self.ai_draft = ""
+
+        self.baseline_snapshot = None
+        self.latest_snapshot = None
+        self.final_snapshot = None
+
+        self.snapshots.clear()
+        self._last_hash = None
+        self.last_error = None
+
+        self.state = self.STATE_IDLE
+
+    def finalize_ephemeral(self, consumer=None):
+        """
+        RAM-only病例结束流程。
+
+        完整报告和Diff仅在consumer执行期间存在。
+        无论成功或异常，最后都清空病例级内存。
+        """
+        result = None
+
+        try:
+            result = self.finalize()
+
+            if consumer is not None:
+                consumer(result)
+
+            summary = result["diff"]["summary"]
+
+            return {
+                "change_count":
+                    summary["change_count"],
+                "add_count":
+                    summary["add_count"],
+                "delete_count":
+                    summary["delete_count"],
+                "replace_count":
+                    summary["replace_count"],
+                "exact_match":
+                    result["diff"]["exact_match"],
+            }
+
+        finally:
+            result = None
+            self.clear_sensitive_memory()
