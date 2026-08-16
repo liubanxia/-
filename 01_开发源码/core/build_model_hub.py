@@ -5,6 +5,7 @@ from model_adapters.body_part import BodyPartAdapter
 from model_adapters.yolo_lesion import YoloLesionAdapter
 from model_adapters.hf_directory import HFDirectoryAdapter
 from model_adapters.medsam2 import MedSAM2Adapter
+from model_adapters.torchxrayvision_chest import TorchXRayVisionChestAdapter
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -17,6 +18,13 @@ def build_model_hub():
     hub.register(
         BodyPartAdapter(
             ROOT / "路由模型/BodyPartRegression/phoenix_export/BodyPartRegression_128x128.onnx"
+        )
+    )
+
+    hub.register(
+        TorchXRayVisionChestAdapter(
+            ROOT / "教师模型/00_源码_TorchXRayVision",
+            ROOT / "胸片模型/TorchXRayVision_weights",
         )
     )
 

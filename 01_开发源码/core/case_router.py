@@ -87,6 +87,11 @@ def select_models(case):
     if modalities & XRAY_MODALITIES:
         region = get_xray_region(case)
 
+        if region == "chest":
+            return [
+                "torchxrayvision_chest",
+            ]
+
         if region == "bone":
             return [
                 "fracture_rescbam",
@@ -94,8 +99,7 @@ def select_models(case):
                 "fractureatlas_segmentation",
             ]
 
-        # 胸片和其他DR等待通用模型，
-        # 不再错误调用骨折模型。
+        # 其他DR等待Hulu通用主模型。
         return []
 
     return []
