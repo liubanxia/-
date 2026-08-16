@@ -143,12 +143,15 @@ class BlastCTAdapter(ModelAdapter):
                     except ValueError:
                         image_index = int(z)
 
+                    voxel_count = int(len(coords))
+
                     lesions.append({
                         "label": label,
                         "confidence": 0.0,
                         "series_uid": series.series_uid,
                         "image_index": image_index,
                         "point": (int(x), int(y)),
+                        "voxel_count": voxel_count,
                     })
 
             return {
