@@ -65,6 +65,30 @@ def main():
             len(result["analysis"].lesions),
         )
 
+        print("\n模型真实执行结果：")
+
+        raw = result["analysis"].raw_model_results
+
+        for name in result["selected_models"]:
+            data = raw.get(name)
+
+            if data is None:
+                print(f"{name}: 未执行")
+                continue
+
+            if isinstance(data, dict) and "error" in data:
+                print(
+                    f"{name}: ERROR - {data['error']}"
+                )
+                continue
+
+            if isinstance(data, dict):
+                print(
+                    f"{name}: "
+                    f"processed={data.get('processed_images', '?')} "
+                    f"lesions={len(data.get('lesions', []))}"
+                )
+
         dispatcher = ResultDispatcher(
             args.mode
         )

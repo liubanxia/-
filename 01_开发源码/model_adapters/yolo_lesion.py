@@ -29,16 +29,19 @@ class YoloLesionAdapter(ModelAdapter):
 
         for series in case.series:
             for index, path in enumerate(series.files):
+
                 try:
                     image, _, ds = read_dicom_image(path)
 
-                    if str(
+                    photo = str(
                         getattr(
                             ds,
                             "PhotometricInterpretation",
                             "",
                         )
-                    ).upper() == "MONOCHROME1":
+                    ).upper()
+
+                    if photo == "MONOCHROME1":
                         image = (
                             float(np.max(image))
                             + float(np.min(image))
@@ -62,6 +65,7 @@ class YoloLesionAdapter(ModelAdapter):
                     continue
 
                 for output in outputs:
+
                     boxes = getattr(
                         output,
                         "boxes",
@@ -71,9 +75,24 @@ class YoloLesionAdapter(ModelAdapter):
                     if boxes is None:
                         continue
 
+                    masks = getattr(
+                        output,
+                        "masks",
+                        None,
+                    )
+
+                    polygons = []
+
+                    if masks is not None:
+                        try:
+                            polygons = masks.xy
+                        except Exception:
+                            polygons = []
+
                     names = output.names
 
-                    for box in boxes:
+                    for i, box in enumerate(boxes):
+
                         xyxy = (
                             box.xyxy[0]
                             .detach()
@@ -103,15 +122,31 @@ class YoloLesionAdapter(ModelAdapter):
 
                         x1, y1, x2, y2 = xyxy
 
+                        point = (
+                            int((x1 + x2) / 2),
+                            int((y1 + y2) / 2),
+                        )
+                        # 分割模型优先用mask几何中心
+                        if i < len(polygons):
+                            poly = np.asarray(
+                                polygons[i]
+                            )
+
+                            if (
+                                poly.ndim == 2
+                                and len(poly) >= 3
+                            ):
+                                point = (
+                                    int(poly[:, 0].mean()),
+                                    int(poly[:, 1].mean()),
+                                )
+
                         lesions.append({
                             "label": label,
                             "confidence": conf,
                             "series_uid": series.series_uid,
                             "image_index": index,
-                            "point": (
-                                int((x1 + x2) / 2),
-                                int((y1 + y2) / 2),
-                            ),
+                            "point": point,
                             "box": [
                                 int(x1),
                                 int(y1),
@@ -132,6 +167,7 @@ class YoloLesionAdapter(ModelAdapter):
 
         return {
             "model": self.name,
+            "task": self.task,
             "processed_images": processed,
             "lesions": lesions,
             "warnings": errors,
