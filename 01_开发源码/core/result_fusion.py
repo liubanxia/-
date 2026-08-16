@@ -20,6 +20,7 @@ def fuse_results(raw_results):
                     image_index=item.get("image_index"),
                     point=item.get("point"),
                     box=tuple(box) if box else None,
+                    voxel_count=int(item.get("voxel_count", 0)),
                     source_model=model_name,
                 )
             )

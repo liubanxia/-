@@ -10,6 +10,7 @@ class Lesion:
     image_index: Optional[int] = None
     point: Optional[Tuple[int, int]] = None
     box: Optional[Tuple[int, int, int, int]] = None
+    voxel_count: int = 0
     source_model: str = ""
 
 

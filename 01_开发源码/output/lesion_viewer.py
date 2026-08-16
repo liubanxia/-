@@ -5,7 +5,11 @@ from PIL import Image, ImageDraw, ImageTk
 class LesionViewer:
 
     def show(self, memory):
-        items = list(memory.images.values())
+        items = sorted(
+            memory.images.values(),
+            key=lambda x: x.get("voxel_count", 0),
+            reverse=True,
+        )
 
         if not items:
             return
@@ -50,6 +54,7 @@ class LesionViewer:
 
             label = item.get("label", "候选病灶")
             confidence = item.get("confidence", 0)
+            voxel_count = item.get("voxel_count", 0)
 
             info.configure(
                 text=(
@@ -58,6 +63,10 @@ class LesionViewer:
                     + (
                         f"  置信度 {confidence:.2f}"
                         if confidence else ""
+                    )
+                    + (
+                        f"  候选区 {voxel_count} voxels"
+                        if voxel_count else ""
                     )
                 )
             )

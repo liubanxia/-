@@ -39,5 +39,6 @@ def capture_lesions(case, lesions, memory):
                 "point": lesion.point,
                 "label": lesion.label,
                 "confidence": lesion.confidence,
+                "voxel_count": lesion.voxel_count,
             }
         )
