@@ -23,7 +23,7 @@ def build_model_hub():
     hub.register(
         YoloLesionAdapter(
             "fracture_rescbam",
-            ROOT / "视觉B_骨折防护/YOLOv8_ResCBAM.pt",
+            ROOT / "视觉B_骨折防护/YOLOv8_ResCBAM.onnx",
         )
     )
 

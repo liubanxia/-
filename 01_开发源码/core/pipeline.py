@@ -13,19 +13,40 @@ class PhoenixPipeline:
     def analyze(self, case):
         selected = select_models(case)
 
-        self.model_hub.load_selected(selected)
+        self.model_hub.load_selected(
+            selected
+        )
 
         raw = self.model_hub.predict_selected(
             case,
             selected,
         )
 
+        incomplete = []
+
+        for name in selected:
+            if self.model_hub.status.get(name) != "loaded":
+                incomplete.append(name)
+                continue
+
+            data = raw.get(name)
+
+            if isinstance(data, dict) and "error" in data:
+                incomplete.append(name)
+
         result = fuse_results(raw)
-        result = generate_report(result)
+
+        result = generate_report(
+            result,
+            incomplete,
+        )
 
         return {
             "case_id": case.case_id,
             "selected_models": selected,
+            "incomplete_models": incomplete,
             "analysis": result,
-            "overlays": build_overlays(result.lesions),
+            "overlays": build_overlays(
+                result.lesions
+            ),
         }

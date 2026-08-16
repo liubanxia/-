@@ -1,5 +1,4 @@
 from pathlib import Path
-
 from core.model_adapter import ModelAdapter
 
 
@@ -21,11 +20,9 @@ class MedSAM2Adapter(ModelAdapter):
             )
 
     def predict(self, case):
-        return {
-            "model": self.name,
-            "status": "adapter_ready",
-            "checkpoint": (
-                str(self.checkpoint)
-                if self.checkpoint else None
-            ),
-        }
+        raise RuntimeError(
+            "MedSAM2真实自动病灶推理尚未接入"
+        )
+
+    def unload(self):
+        pass
