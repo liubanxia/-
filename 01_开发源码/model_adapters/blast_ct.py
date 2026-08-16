@@ -127,8 +127,28 @@ class BlastCTAdapter(ModelAdapter):
                     if len(coords) == 0:
                         continue
 
-                    z, y, x = np.round(
-                        coords.mean(axis=0)
+                    # 每个3D连通区只生成一个候选。
+                    # 选择病灶截面积最大的层作为代表层，
+                    # 比直接使用3D几何中心更适合阅片显示。
+                    z_values, z_counts = np.unique(
+                        coords[:, 0],
+                        return_counts=True,
+                    )
+
+                    z = int(
+                        z_values[
+                            np.argmax(z_counts)
+                        ]
+                    )
+
+                    slice_coords = coords[
+                        coords[:, 0] == z
+                    ]
+
+                    y, x = np.round(
+                        slice_coords[:, 1:3].mean(
+                            axis=0
+                        )
                     ).astype(int)
 
                     if z >= len(ordered):
@@ -153,6 +173,14 @@ class BlastCTAdapter(ModelAdapter):
                         "point": (int(x), int(y)),
                         "voxel_count": voxel_count,
                     })
+
+            lesions.sort(
+                key=lambda item: item.get(
+                    "voxel_count",
+                    0,
+                ),
+                reverse=True,
+            )
 
             return {
                 "model": self.name,
