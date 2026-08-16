@@ -35,13 +35,14 @@ def generate_report(result, incomplete_models=None):
 
     result.diagnosis = labels
 
+    counts = {}
+
+    for lesion in result.lesions:
+        counts[lesion.label] = counts.get(lesion.label, 0) + 1
+
     findings = "；".join(
-        f"{x.label}"
-        + (
-            f"（置信度{x.confidence:.2f}）"
-            if x.confidence else ""
-        )
-        for x in result.lesions
+        f"{label}（{count}处候选区域）"
+        for label, count in counts.items()
     )
 
     result.report_draft = (
