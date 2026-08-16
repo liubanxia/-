@@ -1,5 +1,6 @@
 from output.result_window import ResultWindow
 from output.pacs_report_writer import VendorPacsWriter
+from output.lesion_button import LesionButton
 
 
 class ResultDispatcher:
@@ -19,10 +20,22 @@ class ResultDispatcher:
         if self.mode == "B":
             writer = self.pacs_writer or VendorPacsWriter()
 
-            return writer.write_report(
+            write_result = writer.write_report(
                 case,
                 result["analysis"].report_draft,
             )
+
+            if memory and memory.images:
+                import threading
+
+                threading.Thread(
+                    target=lambda: LesionButton().show(
+                        memory
+                    ),
+                    daemon=True,
+                ).start()
+
+            return write_result
 
         raise ValueError(
             f"未知输出模式: {self.mode}"
