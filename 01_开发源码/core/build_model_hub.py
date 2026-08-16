@@ -99,3 +99,21 @@ def add_teacher_models(hub):
 def build_full_model_hub():
     hub = build_model_hub()
     return add_teacher_models(hub)
+
+
+def add_segmentation_models(hub):
+    from model_adapters.sam_med3d import SAMMed3DAdapter
+    from model_adapters.totalsegmentator import TotalSegmentatorAdapter
+
+    hub.register(
+        SAMMed3DAdapter(
+            ROOT / "待接入模型/SAM-Med3D",
+            ROOT / "待接入模型/SAM-Med3D/checkpoint/sam_med3d_turbo.pth",
+        )
+    )
+
+    hub.register(
+        TotalSegmentatorAdapter()
+    )
+
+    return hub
