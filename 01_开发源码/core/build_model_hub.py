@@ -24,6 +24,7 @@ def build_model_hub():
         YoloLesionAdapter(
             "fracture_rescbam",
             ROOT / "视觉B_骨折防护/YOLOv8_ResCBAM.onnx",
+            task="detect",
         )
     )
 
@@ -31,6 +32,7 @@ def build_model_hub():
         YoloLesionAdapter(
             "fractureatlas_localization",
             ROOT / "00_批量部署暂存/原始权重/yolov8_localization_fractureAtlas.pt",
+            task="detect",
         )
     )
 
@@ -38,6 +40,7 @@ def build_model_hub():
         YoloLesionAdapter(
             "fractureatlas_segmentation",
             ROOT / "00_批量部署暂存/原始权重/yolov8_segmentation_fractureAtlas.pt",
+            task="segment",
         )
     )
 

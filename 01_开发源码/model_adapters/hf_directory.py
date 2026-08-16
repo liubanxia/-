@@ -9,7 +9,6 @@ class HFDirectoryAdapter(ModelAdapter):
         self.name = name
         self.model_path = Path(model_path)
         self.role = role
-        self.model = None
 
     def load(self):
         if not self.model_path.exists():
@@ -18,12 +17,9 @@ class HFDirectoryAdapter(ModelAdapter):
             )
 
     def predict(self, case):
-        return {
-            "model": self.name,
-            "role": self.role,
-            "status": "available",
-            "case_id": case.case_id,
-        }
+        raise RuntimeError(
+            f"{self.name} 真实前向推理尚未接入"
+        )
 
     def unload(self):
-        self.model = None
+        pass

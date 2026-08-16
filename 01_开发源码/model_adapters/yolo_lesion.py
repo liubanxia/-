@@ -7,16 +7,18 @@ from core.image_preprocess import to_rgb
 
 class YoloLesionAdapter(ModelAdapter):
 
-    def __init__(self, name, model_path):
+    def __init__(self, name, model_path, task="detect"):
         self.name = name
         self.model_path = Path(model_path)
+        self.task = task
         self.model = None
 
     def load(self):
         from ultralytics import YOLO
 
         self.model = YOLO(
-            str(self.model_path)
+            str(self.model_path),
+            task=self.task,
         )
 
     def predict(self, case):
@@ -25,52 +27,29 @@ class YoloLesionAdapter(ModelAdapter):
         for series in case.series:
             for index, path in enumerate(series.files):
                 try:
-                    image, _, _ = read_dicom_image(
-                        path
-                    )
-
+                    image, _, _ = read_dicom_image(path)
                     rgb = to_rgb(image)
 
                     outputs = self.model.predict(
                         rgb,
+                        device="cpu",
                         verbose=False,
                     )
-
                 except Exception:
                     continue
 
                 for output in outputs:
-                    boxes = getattr(
-                        output,
-                        "boxes",
-                        None,
-                    )
+                    boxes = getattr(output, "boxes", None)
 
                     if boxes is None:
                         continue
 
                     for box in boxes:
-                        xyxy = (
-                            box.xyxy[0]
-                            .detach()
-                            .cpu()
-                            .tolist()
-                        )
+                        xyxy = box.xyxy[0].detach().cpu().tolist()
+                        conf = float(box.conf[0].detach().cpu())
+                        cls_id = int(box.cls[0].detach().cpu())
 
-                        conf = float(
-                            box.conf[0]
-                            .detach()
-                            .cpu()
-                        )
-
-                        cls_id = int(
-                            box.cls[0]
-                            .detach()
-                            .cpu()
-                        )
-
-                        names = output.names
-                        label = names.get(
+                        label = output.names.get(
                             cls_id,
                             str(cls_id),
                         )
