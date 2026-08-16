@@ -7,7 +7,8 @@ from model_adapters.hf_directory import HFDirectoryAdapter
 from model_adapters.medsam2 import MedSAM2Adapter
 
 
-ROOT = Path("04_AI模型")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ROOT = PROJECT_ROOT / "04_AI模型"
 
 
 def build_model_hub():
