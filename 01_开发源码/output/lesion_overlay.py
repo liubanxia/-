@@ -12,6 +12,7 @@ def build_overlays(lesions):
             "series_uid": lesion.series_uid,
             "label": lesion.label,
             "confidence": lesion.confidence,
+            "source_model": lesion.source_model,
         })
 
     return overlays
