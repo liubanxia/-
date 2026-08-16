@@ -17,21 +17,21 @@
       "默认后台运行": false,
       "保留决策": true,
       "状态": "READY",
-      "主模型": "G:\\project_phoenix\\04_AI模型\\路由模型\\BodyPartRegression\\phoenix_export\\BodyPartRegression_128x128.onnx",
+      "主模型": "D:\\project_phoenix\\04_AI模型\\路由模型\\BodyPartRegression\\phoenix_export\\BodyPartRegression_128x128.onnx",
       "发现文件": [
-        "G:\\project_phoenix\\04_AI模型\\._BodyPartRegression-develop.zip",
-        "G:\\project_phoenix\\04_AI模型\\00_批量部署暂存\\下载包\\BodyPartRegression_develop.zip",
-        "G:\\project_phoenix\\04_AI模型\\BodyPartRegression-develop.zip",
-        "G:\\project_phoenix\\04_AI模型\\路由模型\\BodyPartRegression\\phoenix_export\\BodyPartRegression_128x128.onnx",
-        "G:\\project_phoenix\\04_AI模型\\路由模型\\BodyPartRegression\\weights\\public_bpr_model.zip",
-        "G:\\project_phoenix\\04_AI模型\\路由模型\\BodyPartRegression\\weights\\public_bpr_model\\public_bpr_model\\model.pt",
-        "G:\\project_phoenix\\04_AI模型\\路由模型\\BodyPartRegression_develop.zip"
+        "D:\\project_phoenix\\04_AI模型\\._BodyPartRegression-develop.zip",
+        "D:\\project_phoenix\\04_AI模型\\00_批量部署暂存\\下载包\\BodyPartRegression_develop.zip",
+        "D:\\project_phoenix\\04_AI模型\\BodyPartRegression-develop.zip",
+        "D:\\project_phoenix\\04_AI模型\\路由模型\\BodyPartRegression\\phoenix_export\\BodyPartRegression_128x128.onnx",
+        "D:\\project_phoenix\\04_AI模型\\路由模型\\BodyPartRegression\\weights\\public_bpr_model.zip",
+        "D:\\project_phoenix\\04_AI模型\\路由模型\\BodyPartRegression\\weights\\public_bpr_model\\public_bpr_model\\model.pt",
+        "D:\\project_phoenix\\04_AI模型\\路由模型\\BodyPartRegression_develop.zip"
       ],
       "适用模态": [
         "CT"
       ],
       "MVP启用": true,
-      "适配器": "G:\\project_phoenix\\01_开发源码\\ai_models\\ct_bodypart_adapter.py",
+      "适配器": "D:\\project_phoenix\\01_开发源码\\ai_models\\ct_bodypart_adapter.py",
       "CT输入格式": "DICOM Series → HU numpy volume",
       "官方推理入口": "InferenceModel.npy2json",
       "模型范围": "成人骨盆至头部CT",
@@ -48,10 +48,10 @@
       "默认后台运行": false,
       "保留决策": true,
       "状态": "READY",
-      "主模型": "G:\\project_phoenix\\04_AI模型\\视觉B_骨折防护\\YOLOv8_ResCBAM.onnx",
+      "主模型": "D:\\project_phoenix\\04_AI模型\\视觉B_骨折防护\\YOLOv8_ResCBAM.onnx",
       "发现文件": [
-        "G:\\project_phoenix\\04_AI模型\\视觉B_骨折防护\\YOLOv8_ResCBAM.onnx",
-        "G:\\project_phoenix\\04_AI模型\\视觉B_骨折防护\\YOLOv8_ResCBAM.pt"
+        "D:\\project_phoenix\\04_AI模型\\视觉B_骨折防护\\YOLOv8_ResCBAM.onnx",
+        "D:\\project_phoenix\\04_AI模型\\视觉B_骨折防护\\YOLOv8_ResCBAM.pt"
       ],
       "适用模态": [
         "DX",
@@ -68,9 +68,9 @@
       "默认后台运行": false,
       "保留决策": true,
       "状态": "READY",
-      "主模型": "G:\\project_phoenix\\04_AI模型\\00_批量部署暂存\\原始权重\\yolov8_localization_fractureAtlas.pt",
+      "主模型": "D:\\project_phoenix\\04_AI模型\\00_批量部署暂存\\原始权重\\yolov8_localization_fractureAtlas.pt",
       "发现文件": [
-        "G:\\project_phoenix\\04_AI模型\\00_批量部署暂存\\下载包\\FracAtlas_master.zip"
+        "D:\\project_phoenix\\04_AI模型\\00_批量部署暂存\\下载包\\FracAtlas_master.zip"
       ],
       "适用模态": [
         "DX",
@@ -88,7 +88,7 @@
       "默认后台运行": false,
       "保留决策": true,
       "状态": "READY",
-      "主模型": "G:\\project_phoenix\\04_AI模型\\00_批量部署暂存\\原始权重\\yolov8_segmentation_fractureAtlas.pt",
+      "主模型": "D:\\project_phoenix\\04_AI模型\\00_批量部署暂存\\原始权重\\yolov8_segmentation_fractureAtlas.pt",
       "发现文件": [],
       "适用模态": [
         "DX",
@@ -108,9 +108,9 @@
       "状态": "未发现可运行权重",
       "主模型": null,
       "发现文件": [
-        "G:\\project_phoenix\\04_AI模型\\._DICOM-Imaging-Router-main 3.zip",
-        "G:\\project_phoenix\\04_AI模型\\00_批量部署暂存\\下载包\\DICOM-Imaging-Router_main.zip",
-        "G:\\project_phoenix\\04_AI模型\\DICOM-Imaging-Router-main 3.zip"
+        "D:\\project_phoenix\\04_AI模型\\._DICOM-Imaging-Router-main 3.zip",
+        "D:\\project_phoenix\\04_AI模型\\00_批量部署暂存\\下载包\\DICOM-Imaging-Router_main.zip",
+        "D:\\project_phoenix\\04_AI模型\\DICOM-Imaging-Router-main 3.zip"
       ],
       "适用模态": [
         "DX",

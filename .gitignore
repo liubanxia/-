@@ -62,3 +62,9 @@ venv/
 Thumbs.db
 desktop.ini
 .DS_Store
+# Phoenix 本地大文件和临时备份
+00_离线安装包/
+04_AI模型/待接入模型/
+*.bak_before_*
+01_开发源码/ai_models/model_manager_stage2_backup.py
+07_测试/AI小人按钮_UI接入候选.txt

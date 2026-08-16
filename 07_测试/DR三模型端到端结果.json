@@ -1,0 +1,33 @@
+{
+  "status": "DR_INFERENCE_COMPLETE",
+  "modality": "DR",
+  "body_part": "",
+  "description": "Synthetic DX Test",
+  "matrix": [
+    64,
+    64
+  ],
+  "technical_test_only": true,
+  "models": [
+    {
+      "model": "YOLOv8_ResCBAM",
+      "finding_count": 0,
+      "mask_count": 0,
+      "findings": []
+    },
+    {
+      "model": "FracAtlas_localization",
+      "finding_count": 0,
+      "mask_count": 0,
+      "findings": []
+    },
+    {
+      "model": "FracAtlas_segmentation",
+      "finding_count": 0,
+      "mask_count": 0,
+      "findings": []
+    }
+  ],
+  "inference_seconds": 14.853,
+  "patient_identifiers_exported": false
+}
