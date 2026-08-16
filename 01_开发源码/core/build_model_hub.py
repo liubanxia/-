@@ -151,3 +151,19 @@ def add_ct_lesion_models(hub):
     )
 
     return hub
+
+
+# Phoenix 最小系统最终模型装配入口
+# 放在文件末尾，覆盖前面旧定义
+def build_full_model_hub():
+    hub = build_model_hub()
+
+    hub = add_teacher_models(hub)
+
+    if "add_segmentation_models" in globals():
+        hub = add_segmentation_models(hub)
+
+    if "add_ct_lesion_models" in globals():
+        hub = add_ct_lesion_models(hub)
+
+    return hub
