@@ -9,6 +9,7 @@ class Lesion:
     series_uid: str = ""
     image_index: Optional[int] = None
     point: Optional[Tuple[int, int]] = None
+    box: Optional[Tuple[int, int, int, int]] = None
     source_model: str = ""
 
 

@@ -10,6 +10,8 @@ def fuse_results(raw_results):
             continue
 
         for item in data.get("lesions", []):
+            box = item.get("box")
+
             result.lesions.append(
                 Lesion(
                     label=item.get("label", "异常"),
@@ -17,6 +19,7 @@ def fuse_results(raw_results):
                     series_uid=item.get("series_uid", ""),
                     image_index=item.get("image_index"),
                     point=item.get("point"),
+                    box=tuple(box) if box else None,
                     source_model=model_name,
                 )
             )
