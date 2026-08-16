@@ -21,3 +21,12 @@ class ModelHub:
     def unload_all(self):
         for model in self.models.values():
             model.unload()
+
+    def summary(self):
+        return {
+            name: self.status.get(
+                name,
+                "not_loaded",
+            )
+            for name in self.models
+        }
