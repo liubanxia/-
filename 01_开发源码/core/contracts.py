@@ -9,6 +9,7 @@ class Lesion:
     series_uid: str = ""
     image_index: Optional[int] = None
     point: Optional[Tuple[int, int]] = None
+    source_model: str = ""
 
 
 @dataclass
@@ -16,3 +17,4 @@ class AnalysisResult:
     diagnosis: List[str] = field(default_factory=list)
     lesions: List[Lesion] = field(default_factory=list)
     report_draft: str = ""
+    raw_model_results: dict = field(default_factory=dict)

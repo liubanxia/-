@@ -1,4 +1,6 @@
-from .contracts import AnalysisResult
+from .result_fusion import fuse_results
+from .report_generator import generate_report
+from output.lesion_overlay import build_overlays
 
 
 class PhoenixPipeline:
@@ -9,8 +11,15 @@ class PhoenixPipeline:
     def analyze(self, case):
         raw = self.model_hub.predict_all(case)
 
-        result = AnalysisResult()
+        result = fuse_results(raw)
+        result = generate_report(result)
 
-        result.raw_model_results = raw
+        overlays = build_overlays(
+            result.lesions
+        )
 
-        return result
+        return {
+            "case_id": case.case_id,
+            "analysis": result,
+            "overlays": overlays,
+        }
