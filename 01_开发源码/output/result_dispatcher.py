@@ -8,6 +8,7 @@ class ResultDispatcher:
     def __init__(self, mode="A", pacs_writer=None):
         self.mode = mode.upper()
         self.pacs_writer = pacs_writer
+        self.lesion_button = LesionButton()
 
     def show(self, case, result, memory):
         if self.mode == "A":
@@ -26,7 +27,7 @@ class ResultDispatcher:
             )
 
             if memory and memory.images:
-                LesionButton().show(
+                self.lesion_button.start(
                     memory
                 )
 
@@ -35,3 +36,6 @@ class ResultDispatcher:
         raise ValueError(
             f"未知输出模式: {self.mode}"
         )
+
+    def close(self):
+        self.lesion_button.close()
