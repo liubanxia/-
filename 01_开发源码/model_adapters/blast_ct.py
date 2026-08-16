@@ -1,0 +1,171 @@
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import numpy as np
+import SimpleITK as sitk
+from scipy import ndimage
+
+from core.model_adapter import ModelAdapter
+from core.ct_nifti import series_to_nifti
+
+
+LABELS = {
+    1: "脑实质内出血",
+    2: "脑外出血",
+    3: "病灶周围水肿",
+    4: "脑室内出血",
+}
+
+
+class BlastCTAdapter(ModelAdapter):
+
+    name = "blast_ct_head"
+
+    def __init__(self, cache_dir):
+        self.cache_dir = Path(cache_dir)
+        self.cli = None
+
+    def load(self):
+        cli = (
+            Path(sys.executable).parent
+            / "blast-ct.exe"
+        )
+
+        if not cli.exists():
+            found = shutil.which("blast-ct")
+            if not found:
+                raise RuntimeError(
+                    "未找到 blast-ct 程序"
+                )
+            cli = Path(found)
+
+        if not self.cache_dir.exists():
+            raise FileNotFoundError(
+                str(self.cache_dir)
+            )
+
+        self.cli = cli
+
+    def predict(self, case):
+        ct_series = [
+            s for s in case.series
+            if str(s.modality).upper() == "CT"
+        ]
+
+        if not ct_series:
+            return {
+                "model": self.name,
+                "error": "没有CT序列",
+            }
+
+        series = max(
+            ct_series,
+            key=lambda s: len(s.files),
+        )
+
+        with tempfile.TemporaryDirectory(
+            prefix="phoenix_blast_"
+        ) as temp:
+            temp = Path(temp)
+
+            input_nii = temp / "ct.nii.gz"
+            output_nii = temp / "blast.nii.gz"
+
+            ordered_files = series_to_nifti(
+                series,
+                input_nii,
+            )
+
+            env = os.environ.copy()
+            env["BLAST_CT_CACHE_DIR"] = str(
+                self.cache_dir
+            )
+
+            cmd = [
+                str(self.cli),
+                "--input",
+                str(input_nii),
+                "--output",
+                str(output_nii),
+                "--device",
+                "cpu",
+            ]
+
+            run = subprocess.run(
+                cmd,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+
+            if run.returncode != 0:
+                return {
+                    "model": self.name,
+                    "error": run.stderr[-1500:],
+                }
+
+            seg = sitk.GetArrayFromImage(
+                sitk.ReadImage(
+                    str(output_nii)
+                )
+            )
+
+            lesions = []
+
+            for class_id, label_name in LABELS.items():
+                cc, count = ndimage.label(
+                    seg == class_id
+                )
+
+                for component in range(
+                    1,
+                    count + 1,
+                ):
+                    coords = np.argwhere(
+                        cc == component
+                    )
+
+                    if len(coords) == 0:
+                        continue
+
+                    z, y, x = np.round(
+                        coords.mean(axis=0)
+                    ).astype(int)
+
+                    if z >= len(ordered_files):
+                        continue
+
+                    path = ordered_files[z]
+
+                    try:
+                        image_index = (
+                            series.files.index(path)
+                        )
+                    except ValueError:
+                        image_index = z
+
+                    lesions.append({
+                        "label": label_name,
+                        "confidence": 0.0,
+                        "series_uid": series.series_uid,
+                        "image_index": image_index,
+                        "point": (
+                            int(x),
+                            int(y),
+                        ),
+                    })
+
+            return {
+                "model": self.name,
+                "processed_images": len(
+                    ordered_files
+                ),
+                "lesions": lesions,
+            }
+
+    def unload(self):
+        self.cli = None

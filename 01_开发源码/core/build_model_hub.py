@@ -121,3 +121,18 @@ def add_segmentation_models(hub):
     )
 
     return hub
+
+
+def add_ct_lesion_models(hub):
+    from model_adapters.blast_ct import BlastCTAdapter
+
+    hub.register(
+        BlastCTAdapter(
+            ROOT
+            / "CT病灶模型"
+            / "BLAST_CT_头颅出血"
+            / "cache"
+        )
+    )
+
+    return hub

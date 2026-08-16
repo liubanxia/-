@@ -16,7 +16,7 @@ def select_models(case):
     if "CT" in modalities:
         return [
             "body_part_regression",
-            "medsam2",
+            "blast_ct_head",
         ]
 
     if modalities & XRAY_MODALITIES:
