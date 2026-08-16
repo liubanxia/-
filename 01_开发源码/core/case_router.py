@@ -24,11 +24,6 @@ def select_models(case):
             "fracture_rescbam",
             "fractureatlas_localization",
             "fractureatlas_segmentation",
-            "rad_dino",
-            "medsiglip_448",
         ]
 
-    return [
-        "rad_dino",
-        "medsiglip_448",
-    ]
+    return []

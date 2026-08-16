@@ -1,4 +1,5 @@
 from pathlib import Path
+import numpy as np
 
 from core.model_adapter import ModelAdapter
 from core.dicom_pixels import read_dicom_image
@@ -23,11 +24,27 @@ class YoloLesionAdapter(ModelAdapter):
 
     def predict(self, case):
         lesions = []
+        processed = 0
+        errors = []
 
         for series in case.series:
             for index, path in enumerate(series.files):
                 try:
-                    image, _, _ = read_dicom_image(path)
+                    image, _, ds = read_dicom_image(path)
+
+                    if str(
+                        getattr(
+                            ds,
+                            "PhotometricInterpretation",
+                            "",
+                        )
+                    ).upper() == "MONOCHROME1":
+                        image = (
+                            float(np.max(image))
+                            + float(np.min(image))
+                            - image
+                        )
+
                     rgb = to_rgb(image)
 
                     outputs = self.model.predict(
@@ -35,24 +52,54 @@ class YoloLesionAdapter(ModelAdapter):
                         device="cpu",
                         verbose=False,
                     )
-                except Exception:
+
+                    processed += 1
+
+                except Exception as exc:
+                    errors.append(
+                        f"{path.name}: {exc}"
+                    )
                     continue
 
                 for output in outputs:
-                    boxes = getattr(output, "boxes", None)
+                    boxes = getattr(
+                        output,
+                        "boxes",
+                        None,
+                    )
 
                     if boxes is None:
                         continue
 
-                    for box in boxes:
-                        xyxy = box.xyxy[0].detach().cpu().tolist()
-                        conf = float(box.conf[0].detach().cpu())
-                        cls_id = int(box.cls[0].detach().cpu())
+                    names = output.names
 
-                        label = output.names.get(
-                            cls_id,
-                            str(cls_id),
+                    for box in boxes:
+                        xyxy = (
+                            box.xyxy[0]
+                            .detach()
+                            .cpu()
+                            .tolist()
                         )
+
+                        conf = float(
+                            box.conf[0]
+                            .detach()
+                            .cpu()
+                        )
+
+                        cls_id = int(
+                            box.cls[0]
+                            .detach()
+                            .cpu()
+                        )
+
+                        if isinstance(names, dict):
+                            label = names.get(
+                                cls_id,
+                                str(cls_id),
+                            )
+                        else:
+                            label = names[cls_id]
 
                         x1, y1, x2, y2 = xyxy
 
@@ -73,9 +120,21 @@ class YoloLesionAdapter(ModelAdapter):
                             ],
                         })
 
+        if processed == 0:
+            return {
+                "model": self.name,
+                "error": (
+                    errors[0]
+                    if errors
+                    else "没有成功处理影像"
+                ),
+            }
+
         return {
             "model": self.name,
+            "processed_images": processed,
             "lesions": lesions,
+            "warnings": errors,
         }
 
     def unload(self):
