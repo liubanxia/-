@@ -26,14 +26,9 @@ class ResultDispatcher:
             )
 
             if memory and memory.images:
-                import threading
-
-                threading.Thread(
-                    target=lambda: LesionButton().show(
-                        memory
-                    ),
-                    daemon=True,
-                ).start()
+                LesionButton().show(
+                    memory
+                )
 
             return write_result
 
