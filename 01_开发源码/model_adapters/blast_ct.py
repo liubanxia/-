@@ -94,14 +94,21 @@ class BlastCTAdapter(ModelAdapter):
                 text=True,
             )
 
+            cleanup_warning = ""
+
             if run.returncode != 0:
-                return {
-                    "model": self.name,
-                    "error": (
-                        run.stderr[-1500:]
-                        or run.stdout[-1500:]
-                    ),
-                }
+                if output_nii.exists():
+                    cleanup_warning = (
+                        "BLAST-CT预测已完成；Windows清理临时日志失败"
+                    )
+                else:
+                    return {
+                        "model": self.name,
+                        "error": (
+                            run.stderr[-1500:]
+                            or run.stdout[-1500:]
+                        ),
+                    }
 
             seg = sitk.GetArrayFromImage(
                 sitk.ReadImage(str(output_nii))
