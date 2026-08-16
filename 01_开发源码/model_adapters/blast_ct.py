@@ -30,17 +30,12 @@ class BlastCTAdapter(ModelAdapter):
         self.cli = None
 
     def load(self):
-        cli = (
-            Path(sys.executable).parent
-            / "blast-ct.exe"
-        )
+        cli = Path(sys.executable).parent / "blast-ct.exe"
 
         if not cli.exists():
             found = shutil.which("blast-ct")
             if not found:
-                raise RuntimeError(
-                    "未找到 blast-ct 程序"
-                )
+                raise RuntimeError("未找到 blast-ct")
             cli = Path(found)
 
         if not self.cache_dir.exists():
@@ -52,8 +47,8 @@ class BlastCTAdapter(ModelAdapter):
 
     def predict(self, case):
         ct_series = [
-            s for s in case.series
-            if str(s.modality).upper() == "CT"
+            x for x in case.series
+            if str(x.modality).upper() == "CT"
         ]
 
         if not ct_series:
@@ -64,18 +59,18 @@ class BlastCTAdapter(ModelAdapter):
 
         series = max(
             ct_series,
-            key=lambda s: len(s.files),
+            key=lambda x: len(x.files),
         )
 
         with tempfile.TemporaryDirectory(
             prefix="phoenix_blast_"
-        ) as temp:
-            temp = Path(temp)
+        ) as td:
+            td = Path(td)
 
-            input_nii = temp / "ct.nii.gz"
-            output_nii = temp / "blast.nii.gz"
+            input_nii = td / "ct.nii.gz"
+            output_nii = td / "blast.nii.gz"
 
-            ordered_files = series_to_nifti(
+            ordered = series_to_nifti(
                 series,
                 input_nii,
             )
@@ -87,12 +82,9 @@ class BlastCTAdapter(ModelAdapter):
 
             cmd = [
                 str(self.cli),
-                "--input",
-                str(input_nii),
-                "--output",
-                str(output_nii),
-                "--device",
-                "cpu",
+                "--input", str(input_nii),
+                "--output", str(output_nii),
+                "--device", "cpu",
             ]
 
             run = subprocess.run(
@@ -105,29 +97,25 @@ class BlastCTAdapter(ModelAdapter):
             if run.returncode != 0:
                 return {
                     "model": self.name,
-                    "error": run.stderr[-1500:],
+                    "error": (
+                        run.stderr[-1500:]
+                        or run.stdout[-1500:]
+                    ),
                 }
 
             seg = sitk.GetArrayFromImage(
-                sitk.ReadImage(
-                    str(output_nii)
-                )
+                sitk.ReadImage(str(output_nii))
             )
 
             lesions = []
 
-            for class_id, label_name in LABELS.items():
+            for class_id, label in LABELS.items():
                 cc, count = ndimage.label(
                     seg == class_id
                 )
 
-                for component in range(
-                    1,
-                    count + 1,
-                ):
-                    coords = np.argwhere(
-                        cc == component
-                    )
+                for n in range(1, count + 1):
+                    coords = np.argwhere(cc == n)
 
                     if len(coords) == 0:
                         continue
@@ -136,34 +124,29 @@ class BlastCTAdapter(ModelAdapter):
                         coords.mean(axis=0)
                     ).astype(int)
 
-                    if z >= len(ordered_files):
+                    if z >= len(ordered):
                         continue
 
-                    path = ordered_files[z]
+                    file_path = ordered[z]
 
                     try:
-                        image_index = (
-                            series.files.index(path)
+                        image_index = series.files.index(
+                            file_path
                         )
                     except ValueError:
-                        image_index = z
+                        image_index = int(z)
 
                     lesions.append({
-                        "label": label_name,
+                        "label": label,
                         "confidence": 0.0,
                         "series_uid": series.series_uid,
                         "image_index": image_index,
-                        "point": (
-                            int(x),
-                            int(y),
-                        ),
+                        "point": (int(x), int(y)),
                     })
 
             return {
                 "model": self.name,
-                "processed_images": len(
-                    ordered_files
-                ),
+                "processed_images": len(ordered),
                 "lesions": lesions,
             }
 

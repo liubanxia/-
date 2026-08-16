@@ -1,9 +1,8 @@
-from pathlib import Path
 import pydicom
 import SimpleITK as sitk
 
 
-def _sort_key(path):
+def _z(path):
     ds = pydicom.dcmread(
         str(path),
         stop_before_pixels=True,
@@ -20,16 +19,11 @@ def _sort_key(path):
     except Exception:
         pass
 
-    return float(
-        getattr(ds, "InstanceNumber", 0)
-    )
+    return float(getattr(ds, "InstanceNumber", 0))
 
 
 def series_to_nifti(series, output_path):
-    files = sorted(
-        series.files,
-        key=_sort_key,
-    )
+    files = sorted(series.files, key=_z)
 
     reader = sitk.ImageSeriesReader()
     reader.SetFileNames(
@@ -37,7 +31,6 @@ def series_to_nifti(series, output_path):
     )
 
     image = reader.Execute()
-
     sitk.WriteImage(
         image,
         str(output_path),
