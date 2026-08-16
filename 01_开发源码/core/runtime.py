@@ -50,9 +50,17 @@ class PhoenixRuntime:
         if self.case is None:
             raise RuntimeError("当前没有病例")
 
-        return self.pipeline.analyze(
-            self.case
+        result = self.pipeline.analyze(self.case)
+
+        from output.lesion_capture import capture_lesions
+
+        capture_lesions(
+            self.case,
+            result["analysis"].lesions,
+            self.memory,
         )
+
+        return result
 
     def close_case(self):
         self.memory.clear()
