@@ -34,13 +34,6 @@ def main():
     phoenix = PhoenixRuntime()
 
     try:
-        print("加载模型...")
-        phoenix.load_models()
-
-        print("\n模型状态：")
-        for name, status in phoenix.model_hub.summary().items():
-            print(f"{name}: {status}")
-
         kwargs = {}
 
         if args.source == "orthanc":

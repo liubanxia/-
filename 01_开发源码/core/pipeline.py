@@ -13,6 +13,8 @@ class PhoenixPipeline:
     def analyze(self, case):
         selected = select_models(case)
 
+        self.model_hub.load_selected(selected)
+
         raw = self.model_hub.predict_selected(
             case,
             selected,
@@ -21,13 +23,9 @@ class PhoenixPipeline:
         result = fuse_results(raw)
         result = generate_report(result)
 
-        overlays = build_overlays(
-            result.lesions
-        )
-
         return {
             "case_id": case.case_id,
             "selected_models": selected,
             "analysis": result,
-            "overlays": overlays,
+            "overlays": build_overlays(result.lesions),
         }
