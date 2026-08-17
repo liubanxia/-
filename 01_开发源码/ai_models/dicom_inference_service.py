@@ -65,11 +65,58 @@ class PhoenixDICOMInferenceService:
 
         path = Path(dicom_path)
 
-        ds = pydicom.dcmread(
-            str(path),
-            stop_before_pixels=True,
-            force=True
-        )
+        probe_path = None
+        ds = None
+
+        if path.is_dir():
+
+            for candidate in sorted(path.rglob("*")):
+
+                if not candidate.is_file():
+                    continue
+
+                try:
+                    candidate_ds = pydicom.dcmread(
+                        str(candidate),
+                        stop_before_pixels=True,
+                        force=True
+                    )
+                except Exception:
+                    continue
+
+                modality = str(
+                    getattr(
+                        candidate_ds,
+                        "Modality",
+                        ""
+                    )
+                ).upper().strip()
+
+                if modality in {
+                    "CT",
+                    "DX",
+                    "CR",
+                    "DR",
+                    "MG",
+                }:
+                    probe_path = candidate
+                    ds = candidate_ds
+                    break
+
+            if ds is None:
+                raise RuntimeError(
+                    f"目录中没有可识别的CT/DR DICOM: {path}"
+                )
+
+        else:
+
+            probe_path = path
+
+            ds = pydicom.dcmread(
+                str(path),
+                stop_before_pixels=True,
+                force=True
+            )
 
         modality = str(
             getattr(ds, "Modality", "")
@@ -134,7 +181,55 @@ class PhoenixDICOMInferenceService:
         self.manager.activate_for_case()
 
         self.active = True
-        self.current_file = Path(dicom_path)
+        original_path = Path(dicom_path)
+
+        if route == "CT":
+            # CT keeps the complete YUNPACS case directory.
+            self.current_file = original_path
+
+        else:
+            # DR inference requires one actual DICOM file.
+            if original_path.is_dir():
+
+                selected = None
+
+                for candidate in sorted(
+                    original_path.rglob("*")
+                ):
+                    if not candidate.is_file():
+                        continue
+
+                    try:
+                        test_ds = pydicom.dcmread(
+                            str(candidate),
+                            stop_before_pixels=True,
+                            force=True
+                        )
+                    except Exception:
+                        continue
+
+                    test_modality = str(
+                        getattr(
+                            test_ds,
+                            "Modality",
+                            ""
+                        )
+                    ).upper().strip()
+
+                    if test_modality in self.XRAY_MODALITIES:
+                        selected = candidate
+                        break
+
+                if selected is None:
+                    raise RuntimeError(
+                        "YUNPACS病例目录中没有可用DR DICOM"
+                    )
+
+                self.current_file = selected
+
+            else:
+                self.current_file = original_path
+
         self.current_modality = route
         self.metadata = metadata
 

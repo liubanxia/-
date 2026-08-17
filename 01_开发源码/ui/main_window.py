@@ -1312,8 +1312,32 @@ class MainWindow(QMainWindow):
             )
 
             if not dicom_path:
-                self._start_external_pacs_ai()
-                return
+                import os
+
+                from pacs_io.yunpacs_cache_adapter import (
+                    YUNPACSLocalCacheAdapter,
+                )
+
+                yun_root = os.environ.get(
+                    "PHOENIX_YUNPACS_ROOT",
+                    "D:/YUNPACS/放射诊断/ImageDir_r",
+                )
+
+                yun = YUNPACSLocalCacheAdapter(
+                    root=yun_root
+                )
+
+                yun_case = yun.latest_case(
+                    wait=True
+                )
+
+                if yun_case is None:
+                    self.statusBar().showMessage(
+                        "当前没有可供Phoenix分析的PACS病例"
+                    )
+                    return
+
+                dicom_path = yun_case.directory
 
             self._phoenix_ai_case_token = str(
                 dicom_path

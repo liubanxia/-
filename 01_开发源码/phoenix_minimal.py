@@ -14,7 +14,7 @@ def main():
 
     parser.add_argument(
         "--source",
-        choices=["folder", "orthanc"],
+        choices=["folder", "orthanc", "yunpacs"],
         default="folder",
     )
 
@@ -29,6 +29,12 @@ def main():
         default="http://127.0.0.1:8042",
     )
 
+    parser.add_argument(
+        "--yunpacs-root",
+        default="D:/YUNPACS/放射诊断/ImageDir_r",
+        help="YUNPACS本地DICOM缓存目录",
+    )
+
     args = parser.parse_args()
 
     phoenix = PhoenixRuntime()
@@ -38,6 +44,9 @@ def main():
 
         if args.source == "orthanc":
             kwargs["url"] = args.orthanc_url
+
+        if args.source == "yunpacs":
+            kwargs["root"] = args.yunpacs_root
 
         print("\n读取病例...")
 
