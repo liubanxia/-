@@ -1,0 +1,74 @@
+[
+  {
+    "name": "13_MedSigLIP_448_ModelScope",
+    "path": "D:\\project_phoenix\\04_AI模型\\教师模型\\13_MedSigLIP_448_ModelScope",
+    "task": "medical_vision_encoder",
+    "enabled": false,
+    "status": "REGISTERED_UNTESTED",
+    "doctor_trigger_only": true
+  },
+  {
+    "name": "vista3d_pretrained_model",
+    "path": "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_分割\\NV-Segment-CT\\vista3d_pretrained_model",
+    "task": "segmentation",
+    "enabled": false,
+    "status": "REGISTERED_UNTESTED",
+    "doctor_trigger_only": true
+  },
+  {
+    "name": "vista3d_pretrained_model",
+    "path": "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_分割\\NV-Segment-CTMR\\vista3d_pretrained_model",
+    "task": "segmentation",
+    "enabled": false,
+    "status": "REGISTERED_UNTESTED",
+    "doctor_trigger_only": true
+  },
+  {
+    "name": "M3D-CLIP",
+    "path": "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_通用\\M3D-CLIP",
+    "task": "ct_3d_encoder",
+    "enabled": false,
+    "status": "REGISTERED_UNTESTED",
+    "doctor_trigger_only": true
+  },
+  {
+    "name": "SegVol",
+    "path": "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_分割\\SegVol",
+    "task": "segmentation",
+    "enabled": false,
+    "status": "REGISTERED_UNTESTED",
+    "doctor_trigger_only": true
+  },
+  {
+    "name": "BioViL-T",
+    "path": "D:\\project_phoenix\\04_AI模型\\批量专家池\\DR_胸片\\BioViL-T",
+    "task": "medical_vision_encoder",
+    "enabled": false,
+    "status": "REGISTERED_UNTESTED",
+    "doctor_trigger_only": true
+  },
+  {
+    "name": "vista3d_pretrained_model",
+    "path": "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_分割\\VISTA3D-HF\\vista3d_pretrained_model",
+    "task": "segmentation",
+    "enabled": false,
+    "status": "REGISTERED_UNTESTED",
+    "doctor_trigger_only": true
+  },
+  {
+    "name": "SegVol-ModelScope",
+    "path": "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_分割\\SegVol-ModelScope",
+    "task": "segmentation",
+    "enabled": false,
+    "status": "REGISTERED_UNTESTED",
+    "doctor_trigger_only": true
+  },
+  {
+    "name": "04_SegVol_ModelScope",
+    "path": "D:\\project_phoenix\\04_AI模型\\教师模型\\04_SegVol_ModelScope",
+    "task": "segmentation",
+    "enabled": false,
+    "status": "REGISTERED_UNTESTED",
+    "doctor_trigger_only": true
+  }
+]
