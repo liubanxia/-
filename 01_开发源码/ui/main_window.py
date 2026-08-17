@@ -1290,7 +1290,39 @@ class MainWindow(QMainWindow):
             )
 
 
+    def _show_phoenix_ai_report(self):
+        """打开当前病例的 Phoenix AI 报告窗口。"""
+        try:
+            from core.clinical_case_controller import (
+                CLINICAL_CASE_CONTROLLER,
+            )
+
+            return CLINICAL_CASE_CONTROLLER.show_ai_report_window(
+                parent=self
+            )
+
+        except Exception as e:
+            try:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self,
+                    "Phoenix AI报告",
+                    str(e),
+                )
+            except Exception:
+                pass
+
+        return None
+
+
     def _toggle_dual_vision_ai(self):
+        # Phoenix clinical expert stack:
+        # 仅医生点击时登记，不改变原有推理逻辑。
+        try:
+            from core.doctor_ai_hook import DOCTOR_AI_HOOK
+            DOCTOR_AI_HOOK.on_doctor_click(self)
+        except Exception:
+            pass
         """
         医生主动启动Phoenix AI。
 
@@ -1438,6 +1470,23 @@ class MainWindow(QMainWindow):
             result = controller.get_result()
 
             self.phoenix_ai_result = result
+
+            try:
+                if hasattr(self, "phoenix_ai_report_button"):
+                    self.phoenix_ai_report_button.setEnabled(True)
+                    self.phoenix_ai_report_button.setText("AI报告")
+            except Exception:
+                pass
+
+            # 已有 CT/DR 模型结果进入 Phoenix 新专家融合链。
+            # 保留原显示逻辑，不因新链失败而影响原功能。
+            try:
+                from output.result_dispatcher import (
+                    dispatch_legacy_ai_result_to_phoenix,
+                )
+                dispatch_legacy_ai_result_to_phoenix(result)
+            except Exception:
+                pass
 
             # 将AI结果送入右侧辅助阅片面板
             self._render_phoenix_ai_result(
@@ -1745,6 +1794,22 @@ class MainWindow(QMainWindow):
         fracture_review_layout.addWidget(
             self.reject_fracture_candidate_button
         )
+
+        self.phoenix_ai_report_button = QPushButton("AI报告")
+
+        try:
+            self.phoenix_ai_report_button.setStyleSheet(
+                self.reject_fracture_candidate_button.styleSheet()
+            )
+        except Exception:
+            pass
+
+        self.phoenix_ai_report_button.clicked.connect(
+            self._show_phoenix_ai_report
+        )
+
+        fracture_review_layout.addWidget(self.phoenix_ai_report_button)
+
 
         report_title = QLabel("AI / 报告")
         report_title.setAlignment(Qt.AlignCenter)
@@ -3962,3 +4027,17 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, "current_pixmap"):
             self._render_current_pixmap()
+
+
+def _phoenix_show_ai_report(window):
+    """
+    Phoenix AI报告窗口入口。
+    可绑定到现有工具栏/悬浮按钮。
+    """
+    from core.clinical_case_controller import (
+        CLINICAL_CASE_CONTROLLER,
+    )
+
+    return CLINICAL_CASE_CONTROLLER.show_ai_report_window(
+        parent=window
+    )

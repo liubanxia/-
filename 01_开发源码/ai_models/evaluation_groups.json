@@ -1,0 +1,63 @@
+{
+  "ct_3d_embedding": {
+    "task": "CT三维特征编码",
+    "candidates": [
+      "M3D-CLIP::vision_encoder",
+      "Merlin::ct_3d_encoder",
+      "Merlin::clip_ct_encoder"
+    ],
+    "metrics": [
+      "load_success",
+      "forward_success",
+      "latency",
+      "memory",
+      "embedding_stability"
+    ]
+  },
+
+  "ct_prompt_segmentation": {
+    "task": "CT提示式病灶/结构分割",
+    "candidates": [
+      "SegVol::segmentation_model",
+      "sam_med3d::image_encoder"
+    ],
+    "metrics": [
+      "forward_success",
+      "latency",
+      "memory",
+      "mask_validity",
+      "dice_when_ground_truth_available"
+    ]
+  },
+
+  "ct_anatomy_segmentation": {
+    "task": "CT器官/解剖结构分割",
+    "candidates": [
+      "VISTA3D::segmentation_model",
+      "totalsegmentator",
+      "monai::wholeBody_ct_segmentation",
+      "monai::multi_organ_segmentation"
+    ],
+    "metrics": [
+      "forward_success",
+      "latency",
+      "memory",
+      "class_coverage",
+      "dice_when_ground_truth_available"
+    ]
+  },
+
+  "medical_2d_encoder": {
+    "task": "二维医学影像编码",
+    "candidates": [
+      "13_MedSigLIP_448_ModelScope::vision_encoder",
+      "RAD-DINO-MAIRA2::vision_encoder"
+    ],
+    "metrics": [
+      "forward_success",
+      "latency",
+      "memory",
+      "feature_stability"
+    ]
+  }
+}

@@ -1,0 +1,305 @@
+[
+  {
+    "model_id": "suprem::supervised_suprem_segresnet_2100",
+    "task": "ct_3d_pretrained_candidate",
+    "root": "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_预训练竞赛\\SuPreM_family",
+    "weights": [
+      "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_预训练竞赛\\SuPreM_family\\supervised_suprem_segresnet_2100.pth"
+    ],
+    "weight_files": 1,
+    "weight_gb": 0.053,
+    "status": "REGISTERED_UNTESTED",
+    "lazy_load": true,
+    "doctor_trigger_only": true,
+    "integration_status": "INTEGRATED_UNTESTED",
+    "auto_inference": false
+  },
+  {
+    "model_id": "suprem::supervised_dodnet_unet_920",
+    "task": "ct_3d_pretrained_candidate",
+    "root": "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_预训练竞赛\\SuPreM_family",
+    "weights": [
+      "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_预训练竞赛\\SuPreM_family\\supervised_dodnet_unet_920.pth"
+    ],
+    "weight_files": 1,
+    "weight_gb": 0.065,
+    "status": "REGISTERED_UNTESTED",
+    "lazy_load": true,
+    "doctor_trigger_only": true,
+    "integration_status": "INTEGRATED_UNTESTED",
+    "auto_inference": false
+  },
+  {
+    "model_id": "suprem::supervised_suprem_unet_2100",
+    "task": "ct_3d_pretrained_candidate",
+    "root": "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_预训练竞赛\\SuPreM_family",
+    "weights": [
+      "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_预训练竞赛\\SuPreM_family\\supervised_suprem_unet_2100.pth"
+    ],
+    "weight_files": 1,
+    "weight_gb": 0.217,
+    "status": "REGISTERED_UNTESTED",
+    "lazy_load": true,
+    "doctor_trigger_only": true,
+    "integration_status": "INTEGRATED_UNTESTED",
+    "auto_inference": false
+  },
+  {
+    "model_id": "suprem::supervised_clip_driven_universal_unet_2100",
+    "task": "ct_3d_pretrained_candidate",
+    "root": "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_预训练竞赛\\SuPreM_family",
+    "weights": [
+      "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_预训练竞赛\\SuPreM_family\\supervised_clip_driven_universal_unet_2100.pth"
+    ],
+    "weight_files": 1,
+    "weight_gb": 0.072,
+    "status": "REGISTERED_UNTESTED",
+    "lazy_load": true,
+    "doctor_trigger_only": true,
+    "integration_status": "INTEGRATED_UNTESTED",
+    "auto_inference": false
+  },
+  {
+    "model_id": "suprem::supervised_suprem_swinunetr_2100",
+    "task": "ct_3d_pretrained_candidate",
+    "root": "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_预训练竞赛\\SuPreM_family",
+    "weights": [
+      "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_预训练竞赛\\SuPreM_family\\supervised_suprem_swinunetr_2100.pth"
+    ],
+    "weight_files": 1,
+    "weight_gb": 0.707,
+    "status": "REGISTERED_UNTESTED",
+    "lazy_load": true,
+    "doctor_trigger_only": true,
+    "integration_status": "INTEGRATED_UNTESTED",
+    "auto_inference": false
+  },
+  {
+    "model_id": "suprem::supervised_clip_driven_universal_swin_unetr_2100",
+    "task": "ct_3d_pretrained_candidate",
+    "root": "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_预训练竞赛\\SuPreM_family",
+    "weights": [
+      "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_预训练竞赛\\SuPreM_family\\supervised_clip_driven_universal_swin_unetr_2100.pth"
+    ],
+    "weight_files": 1,
+    "weight_gb": 0.707,
+    "status": "REGISTERED_UNTESTED",
+    "lazy_load": true,
+    "doctor_trigger_only": true,
+    "integration_status": "INTEGRATED_UNTESTED",
+    "auto_inference": false
+  },
+  {
+    "model_id": "suprem::supervised_med3D_residual_unet_1623",
+    "task": "ct_3d_pretrained_candidate",
+    "root": "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_预训练竞赛\\SuPreM_family",
+    "weights": [
+      "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_预训练竞赛\\SuPreM_family\\supervised_med3D_residual_unet_1623.pth"
+    ],
+    "weight_files": 1,
+    "weight_gb": 0.318,
+    "status": "REGISTERED_UNTESTED",
+    "lazy_load": true,
+    "doctor_trigger_only": true,
+    "integration_status": "INTEGRATED_UNTESTED",
+    "auto_inference": false
+  },
+  {
+    "model_id": "suprem::self_supervised_models_genesis_unet_620",
+    "task": "ct_3d_pretrained_candidate",
+    "root": "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_预训练竞赛\\SuPreM_family",
+    "weights": [
+      "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_预训练竞赛\\SuPreM_family\\self_supervised_models_genesis_unet_620.pt"
+    ],
+    "weight_files": 1,
+    "weight_gb": 0.142,
+    "status": "REGISTERED_UNTESTED",
+    "lazy_load": true,
+    "doctor_trigger_only": true,
+    "integration_status": "INTEGRATED_UNTESTED",
+    "auto_inference": false
+  },
+  {
+    "model_id": "monai::lung_nodule_ct_detection",
+    "task": "ct_specialist",
+    "root": "D:\\project_phoenix\\04_AI模型\\批量专家池\\MONAI_CT专科\\lung_nodule_ct_detection",
+    "weights": [
+      "D:\\project_phoenix\\04_AI模型\\批量专家池\\MONAI_CT专科\\lung_nodule_ct_detection\\models\\model.pt"
+    ],
+    "weight_files": 1,
+    "weight_gb": 0.078,
+    "status": "REGISTERED_UNTESTED",
+    "lazy_load": true,
+    "doctor_trigger_only": true,
+    "integration_status": "INTEGRATED_UNTESTED",
+    "auto_inference": false
+  },
+  {
+    "model_id": "monai::wholeBody_ct_segmentation",
+    "task": "ct_specialist",
+    "root": "D:\\project_phoenix\\04_AI模型\\批量专家池\\MONAI_CT专科\\wholeBody_ct_segmentation",
+    "weights": [
+      "D:\\project_phoenix\\04_AI模型\\批量专家池\\MONAI_CT专科\\wholeBody_ct_segmentation\\models\\model.pt",
+      "D:\\project_phoenix\\04_AI模型\\批量专家池\\MONAI_CT专科\\wholeBody_ct_segmentation\\models\\model_lowres.pt"
+    ],
+    "weight_files": 2,
+    "weight_gb": 0.14,
+    "status": "REGISTERED_UNTESTED",
+    "lazy_load": true,
+    "doctor_trigger_only": true,
+    "integration_status": "INTEGRATED_UNTESTED",
+    "auto_inference": false
+  },
+  {
+    "model_id": "monai::multi_organ_segmentation",
+    "task": "ct_specialist",
+    "root": "D:\\project_phoenix\\04_AI模型\\批量专家池\\MONAI_CT专科\\multi_organ_segmentation",
+    "weights": [
+      "D:\\project_phoenix\\04_AI模型\\批量专家池\\MONAI_CT专科\\multi_organ_segmentation\\models\\model.pt",
+      "D:\\project_phoenix\\04_AI模型\\批量专家池\\MONAI_CT专科\\multi_organ_segmentation\\models\\search_code_18590.pt"
+    ],
+    "weight_files": 2,
+    "weight_gb": 0.574,
+    "status": "REGISTERED_UNTESTED",
+    "lazy_load": true,
+    "doctor_trigger_only": true,
+    "integration_status": "INTEGRATED_UNTESTED",
+    "auto_inference": false
+  },
+  {
+    "model_id": "monai::pancreas_ct_dints_segmentation",
+    "task": "ct_specialist",
+    "root": "D:\\project_phoenix\\04_AI模型\\批量专家池\\MONAI_CT专科\\pancreas_ct_dints_segmentation",
+    "weights": [
+      "D:\\project_phoenix\\04_AI模型\\批量专家池\\MONAI_CT专科\\pancreas_ct_dints_segmentation\\models\\model.pt",
+      "D:\\project_phoenix\\04_AI模型\\批量专家池\\MONAI_CT专科\\pancreas_ct_dints_segmentation\\models\\search_code_18590.pt"
+    ],
+    "weight_files": 2,
+    "weight_gb": 0.516,
+    "status": "REGISTERED_UNTESTED",
+    "lazy_load": true,
+    "doctor_trigger_only": true,
+    "integration_status": "INTEGRATED_UNTESTED",
+    "auto_inference": false
+  },
+  {
+    "model_id": "monai::renalStructures_CECT_segmentation",
+    "task": "ct_specialist",
+    "root": "D:\\project_phoenix\\04_AI模型\\批量专家池\\MONAI_CT专科\\renalStructures_CECT_segmentation",
+    "weights": [
+      "D:\\project_phoenix\\04_AI模型\\批量专家池\\MONAI_CT专科\\renalStructures_CECT_segmentation\\models\\model.pt"
+    ],
+    "weight_files": 1,
+    "weight_gb": 0.071,
+    "status": "REGISTERED_UNTESTED",
+    "lazy_load": true,
+    "doctor_trigger_only": true,
+    "integration_status": "INTEGRATED_UNTESTED",
+    "auto_inference": false
+  },
+  {
+    "model_id": "monai::renalStructures_UNEST_segmentation",
+    "task": "ct_specialist",
+    "root": "D:\\project_phoenix\\04_AI模型\\批量专家池\\MONAI_CT专科\\renalStructures_UNEST_segmentation",
+    "weights": [
+      "D:\\project_phoenix\\04_AI模型\\批量专家池\\MONAI_CT专科\\renalStructures_UNEST_segmentation\\models\\model.pt"
+    ],
+    "weight_files": 1,
+    "weight_gb": 0.325,
+    "status": "REGISTERED_UNTESTED",
+    "lazy_load": true,
+    "doctor_trigger_only": true,
+    "integration_status": "INTEGRATED_UNTESTED",
+    "auto_inference": false
+  },
+  {
+    "model_id": "monai::spleen_ct_segmentation",
+    "task": "ct_specialist",
+    "root": "D:\\project_phoenix\\04_AI模型\\批量专家池\\MONAI_CT专科\\spleen_ct_segmentation",
+    "weights": [
+      "D:\\project_phoenix\\04_AI模型\\批量专家池\\MONAI_CT专科\\spleen_ct_segmentation\\models\\model.pt"
+    ],
+    "weight_files": 1,
+    "weight_gb": 0.018,
+    "status": "REGISTERED_UNTESTED",
+    "lazy_load": true,
+    "doctor_trigger_only": true,
+    "integration_status": "INTEGRATED_UNTESTED",
+    "auto_inference": false
+  },
+  {
+    "model_id": "monai::wholeBrainSeg_Large_UNEST_segmentation",
+    "task": "ct_specialist",
+    "root": "D:\\project_phoenix\\04_AI模型\\批量专家池\\MONAI_CT专科\\wholeBrainSeg_Large_UNEST_segmentation",
+    "weights": [
+      "D:\\project_phoenix\\04_AI模型\\批量专家池\\MONAI_CT专科\\wholeBrainSeg_Large_UNEST_segmentation\\models\\model.pt"
+    ],
+    "weight_files": 1,
+    "weight_gb": 0.325,
+    "status": "REGISTERED_UNTESTED",
+    "lazy_load": true,
+    "doctor_trigger_only": true,
+    "integration_status": "INTEGRATED_UNTESTED",
+    "auto_inference": false
+  },
+  {
+    "model_id": "monai::pediatric_abdominal_ct_segmentation",
+    "task": "ct_specialist",
+    "root": "D:\\project_phoenix\\04_AI模型\\批量专家池\\MONAI_CT专科\\pediatric_abdominal_ct_segmentation",
+    "weights": [
+      "D:\\project_phoenix\\04_AI模型\\批量专家池\\MONAI_CT专科\\pediatric_abdominal_ct_segmentation\\models\\dynunet_FT.pt"
+    ],
+    "weight_files": 1,
+    "weight_gb": 0.116,
+    "status": "REGISTERED_UNTESTED",
+    "lazy_load": true,
+    "doctor_trigger_only": true,
+    "integration_status": "INTEGRATED_UNTESTED",
+    "auto_inference": false
+  },
+  {
+    "model_id": "medsam2",
+    "task": "medical_segmentation",
+    "root": "D:\\project_phoenix\\04_AI模型\\待接入模型\\MedSAM2",
+    "weights": [
+      "D:\\project_phoenix\\04_AI模型\\待接入模型\\MedSAM2\\checkpoints\\MedSAM2_CTLesion.pt",
+      "D:\\project_phoenix\\04_AI模型\\待接入模型\\MedSAM2\\checkpoints\\MedSAM2_latest.pt",
+      "D:\\project_phoenix\\04_AI模型\\待接入模型\\MedSAM2\\checkpoints\\sam2.1_hiera_tiny.pt"
+    ],
+    "weight_files": 3,
+    "weight_gb": 0.436,
+    "status": "REGISTERED_UNTESTED",
+    "lazy_load": true,
+    "doctor_trigger_only": true,
+    "integration_status": "INTEGRATED_UNTESTED",
+    "auto_inference": false
+  },
+  {
+    "model_id": "sam_med3d",
+    "task": "ct_3d_segmentation",
+    "root": "D:\\project_phoenix\\04_AI模型\\待接入模型\\SAM-Med3D",
+    "weights": [
+      "D:\\project_phoenix\\04_AI模型\\待接入模型\\SAM-Med3D\\checkpoint\\sam_med3d_turbo.pth"
+    ],
+    "weight_files": 1,
+    "weight_gb": 1.122,
+    "status": "REGISTERED_UNTESTED",
+    "lazy_load": true,
+    "doctor_trigger_only": true,
+    "integration_status": "INTEGRATED_UNTESTED",
+    "auto_inference": false
+  },
+  {
+    "model_id": "totalsegmentator",
+    "task": "ct_multi_organ_segmentation",
+    "root": "D:\\project_phoenix\\04_AI模型\\待接入模型\\TotalSegmentator-weights",
+    "weights": [],
+    "weight_files": 0,
+    "weight_gb": 0.0,
+    "status": "ASSETS_INCOMPLETE",
+    "lazy_load": true,
+    "doctor_trigger_only": true,
+    "integration_status": "INTEGRATED_UNTESTED",
+    "auto_inference": false
+  }
+]

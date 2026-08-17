@@ -1,0 +1,70 @@
+{
+  "integrate_now": [
+    {
+      "id": "vista3d",
+      "task": "ct_3d_segmentation",
+      "preferred": "D:/project_phoenix/04_AI模型/批量专家池/CT_分割/VISTA3D-HF/vista3d_pretrained_model",
+      "alternatives": [
+        "D:/project_phoenix/04_AI模型/批量专家池/CT_分割/NV-Segment-CT/vista3d_pretrained_model",
+        "D:/project_phoenix/04_AI模型/批量专家池/CT_分割/NV-Segment-CTMR/vista3d_pretrained_model"
+      ]
+    },
+    {
+      "id": "segvol",
+      "task": "ct_3d_segmentation",
+      "preferred": "D:/project_phoenix/04_AI模型/批量专家池/CT_分割/SegVol",
+      "alternatives": [
+        "D:/project_phoenix/04_AI模型/批量专家池/CT_分割/SegVol-ModelScope",
+        "D:/project_phoenix/04_AI模型/教师模型/04_SegVol_ModelScope"
+      ]
+    },
+    {
+      "id": "m3d_clip",
+      "task": "ct_3d_encoder",
+      "preferred": "D:/project_phoenix/04_AI模型/批量专家池/CT_通用/M3D-CLIP"
+    },
+    {
+      "id": "biovil_t",
+      "task": "cxr_encoder",
+      "preferred": "D:/project_phoenix/04_AI模型/批量专家池/DR_胸片/BioViL-T"
+    },
+    {
+      "id": "medsiglip",
+      "task": "medical_vision_encoder",
+      "preferred": "D:/project_phoenix/04_AI模型/教师模型/13_MedSigLIP_448_ModelScope"
+    }
+  ],
+
+  "decompose_now": [
+    "Lingshu-32B",
+    "M3D-LaMed-Phi-3-4B",
+    "MAIRA-2",
+    "HealthGPT-Pro-8B",
+    "Lingshu-7B",
+    "Fleming-VL-8B",
+    "Lingshu-I-8B",
+    "LLaVA-Med-7B",
+    "Hulu-Med-4B",
+    "HealthGPT-Pro-4B",
+    "MedGemma-1.5-4B",
+    "MedGemma-4B",
+    "MedGemma-27B",
+    "M3D-CLIP",
+    "BioViL-T",
+    "MedSigLIP",
+    "RAD-DINO-MAIRA2"
+  ],
+
+  "freeze_for_now": [
+    "Merlin"
+  ],
+
+  "rules": {
+    "no_inference_test_now": true,
+    "no_distillation_now": true,
+    "no_weight_copy": true,
+    "lazy_load_only": true,
+    "doctor_trigger_only": true,
+    "final_debug_after_all_integration": true
+  }
+}

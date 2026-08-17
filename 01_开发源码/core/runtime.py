@@ -63,6 +63,18 @@ class PhoenixRuntime:
         return result
 
     def close_case(self):
+        try:
+            from core.doctor_ai_hook import DOCTOR_AI_HOOK
+            DOCTOR_AI_HOOK.close_case()
+        except Exception:
+            pass
+
+        try:
+            from core.clinical_case_controller import CLINICAL_CASE_CONTROLLER
+            CLINICAL_CASE_CONTROLLER.close_case()
+        except Exception:
+            pass
+
         self.memory.clear()
 
         if self.adapter:

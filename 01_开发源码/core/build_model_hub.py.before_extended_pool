@@ -106,6 +106,13 @@ def add_teacher_models(hub):
     )
 
     return hub
+
+
+def build_full_model_hub():
+    hub = build_model_hub()
+    return add_teacher_models(hub)
+
+
 def add_segmentation_models(hub):
     from model_adapters.sam_med3d import SAMMed3DAdapter
     from model_adapters.totalsegmentator import TotalSegmentatorAdapter
@@ -139,112 +146,32 @@ def add_ct_lesion_models(hub):
     return hub
 
 
-def add_extension_pools(hub):
-    """
-    Phoenix 扩展专家层。
+def add_ct_lesion_models(hub):
+    from model_adapters.blast_ct import BlastCTAdapter
 
-    这里只挂登记对象，不加载权重、不运行前向。
-    因此不会改变既有 CT/DR 主链的运行行为。
-    """
-
-    from model_adapters.phoenix_extended_pool import EXTENDED_POOL
-    from model_adapters.specialist_pool import SPECIALIST_POOL
-    from ai_models.component_registry import PhoenixComponentRegistry
-
-    hub.extended_pool = EXTENDED_POOL
-    hub.specialist_pool = SPECIALIST_POOL
-    hub.component_registry = PhoenixComponentRegistry()
+    hub.register(
+        BlastCTAdapter(
+            ROOT
+            / "CT病灶模型"
+            / "BLAST_CT_头颅出血"
+            / "cache"
+        )
+    )
 
     return hub
 
 
+# Phoenix 最小系统最终模型装配入口
+# 放在文件末尾，覆盖前面旧定义
 def build_full_model_hub():
-    """
-    Phoenix 完整模型 Hub。
-
-    已验证主链继续使用 ModelHub.register()。
-    新增实验专家通过 extension pools 挂载，
-    默认不加载、默认不自动推理。
-    """
-
     hub = build_model_hub()
 
     hub = add_teacher_models(hub)
-    hub = add_segmentation_models(hub)
-    hub = add_ct_lesion_models(hub)
 
-    hub = add_extension_pools(hub)
+    if "add_segmentation_models" in globals():
+        hub = add_segmentation_models(hub)
 
-    hub = attach_all_expert_services(hub)
-
-    hub = attach_phoenix_expert_stack(hub)
-    hub = attach_clinical_output_pipeline(hub)
-    hub = attach_clinical_case_controller(hub)
-    hub = attach_expert_scheduler(hub)
-    return hub
-
-
-def attach_all_expert_services(hub):
-    """
-    Phoenix 全专家统一入口。
-    此函数只挂接，不主动加载、不启动推理。
-    """
-    from core.expert_router import EXPERT_ROUTER
-    from ai_models.expert_catalog import EXPERT_CATALOG
-    from model_adapters.native_specialist_runtime import NATIVE_SPECIALISTS
-
-    hub.expert_catalog = EXPERT_CATALOG
-    hub.expert_router = EXPERT_ROUTER
-    hub.native_specialists = NATIVE_SPECIALISTS
-
-    return hub
-
-
-def attach_phoenix_expert_stack(hub):
-    from core.phoenix_expert_stack import (
-        PHOENIX_EXPERT_STACK,
-    )
-
-    hub.expert_stack = PHOENIX_EXPERT_STACK
-    return hub
-
-
-def attach_clinical_output_pipeline(hub):
-    from core.clinical_output_pipeline import (
-        CLINICAL_OUTPUT_PIPELINE,
-    )
-    from core.report_teacher_pool import (
-        REPORT_TEACHER_POOL,
-    )
-
-    hub.clinical_output_pipeline = CLINICAL_OUTPUT_PIPELINE
-    hub.report_teacher_pool = REPORT_TEACHER_POOL
-    return hub
-
-
-def attach_clinical_case_controller(hub):
-    from core.clinical_case_controller import (
-        CLINICAL_CASE_CONTROLLER,
-    )
-    from output.clinical_delivery_bridge import (
-        CLINICAL_DELIVERY_BRIDGE,
-    )
-
-    hub.clinical_case_controller = CLINICAL_CASE_CONTROLLER
-    hub.clinical_delivery_bridge = CLINICAL_DELIVERY_BRIDGE
-
-    return hub
-
-
-def attach_expert_scheduler(hub):
-    from core.expert_inference_scheduler import (
-        EXPERT_INFERENCE_SCHEDULER,
-    )
-    from core.expert_feature_memory import (
-        EXPERT_FEATURE_MEMORY,
-    )
-
-    hub.expert_scheduler = EXPERT_INFERENCE_SCHEDULER
-    hub.expert_feature_memory = EXPERT_FEATURE_MEMORY
+    if "add_ct_lesion_models" in globals():
+        hub = add_ct_lesion_models(hub)
 
     return hub
