@@ -1,3 +1,4 @@
+from .ct_chest_gate import is_chest_ct
 import pydicom
 
 from .ct_head_gate import is_head_ct
@@ -81,6 +82,11 @@ def select_models(case):
 
         if is_head_ct(case):
             models.append("blast_ct_head")
+
+        elif is_chest_ct(case):
+            models.append(
+                "monai_lung_nodule_ct"
+            )
 
         return models
 

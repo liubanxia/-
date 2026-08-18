@@ -1,88 +1,175 @@
 from __future__ import annotations
 
-from core.runtime import PhoenixRuntime
+from datetime import datetime
+from pathlib import Path
+
 from pacs_io.yunpacs_cache_adapter import (
     YUNPACSLocalCacheAdapter,
 )
 
 
 class YUNPACSLiveController:
-    """
-    YUNPACS live entry.
-
-    New PACS case:
-        detect -> load into Phoenix
-
-    AI inference:
-        NEVER automatic
-        only analyze_current() when doctor requests it
-    """
 
     def __init__(
         self,
         root="D:/YUNPACS/放射诊断/ImageDir_r",
         runtime=None,
     ):
-        self.root = root
-
-        self.runtime = (
-            runtime
-            or PhoenixRuntime()
-        )
+        self.root = str(root)
+        self.runtime = runtime
 
         self.cache = YUNPACSLocalCacheAdapter(
-            root=root
+            root=self.root
         )
 
         self.current_fingerprint = None
         self.current_case = None
+        self.current_case_ref = None
 
-    def poll_once(self):
+    def _ensure_runtime(self):
+        if self.runtime is None:
+            from core.runtime import PhoenixRuntime
+            self.runtime = PhoenixRuntime()
 
-        case = self.cache.latest_case(
-            wait=True
+        return self.runtime
+
+    def _today_case_dirs(self):
+        root = Path(self.root)
+
+        today = datetime.now().strftime(
+            "%Y-%m-%d"
         )
 
-        if case is None:
-            return None
+        day_dir = root / today
 
-        if (
-            case.fingerprint
-            == self.current_fingerprint
-        ):
-            return None
+        if not day_dir.exists():
+            return []
 
-        # open_case() already closes previous case
-        # and clears lesion RAM.
-        loaded = self.runtime.open_case(
+        dirs = [
+            p for p in day_dir.iterdir()
+            if p.is_dir()
+        ]
+
+        dirs.sort(
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+
+        return dirs
+
+    def _select_current_candidate(self):
+        candidates = self._today_case_dirs()
+
+        if not candidates:
+            raise RuntimeError(
+                "今天YUNPACS缓存没有发现病例。"
+                "为防止分析错误患者，Phoenix拒绝使用历史病例。"
+            )
+
+        return candidates[0]
+
+    def poll_once(self):
+        directory = self._select_current_candidate()
+
+        runtime = self._ensure_runtime()
+
+        loaded = runtime.open_case(
             "yunpacs",
-            str(case.directory),
+            str(directory),
             root=self.root,
         )
 
-        self.current_fingerprint = (
-            case.fingerprint
-        )
         self.current_case = loaded
+        self.current_case_ref = str(directory)
+
+        self.current_fingerprint = (
+            f"{directory}:"
+            f"{directory.stat().st_mtime_ns}"
+        )
 
         return loaded
 
-    def analyze_current(self):
-        """
-        Explicit doctor-triggered inference only.
-        """
+    def case_identity(self):
         if self.current_case is None:
-            raise RuntimeError(
-                "当前没有YUNPACS病例"
+            return None
+
+        study_uids = []
+        modalities = []
+        total_files = 0
+
+        for series in getattr(
+            self.current_case,
+            "series",
+            [],
+        ):
+            uid = getattr(
+                series,
+                "study_uid",
+                None,
             )
 
-        return self.runtime.analyze()
+            if uid and uid not in study_uids:
+                study_uids.append(uid)
+
+            modality = getattr(
+                series,
+                "modality",
+                None,
+            )
+
+            if (
+                modality
+                and modality not in modalities
+            ):
+                modalities.append(modality)
+
+            total_files += len(
+                getattr(series, "files", []) or []
+            )
+
+        return {
+            "case_id": getattr(
+                self.current_case,
+                "case_id",
+                None,
+            ),
+            "path": self.current_case_ref,
+            "study_uid": (
+                study_uids[0]
+                if study_uids
+                else None
+            ),
+            "modalities": modalities,
+            "series_count": len(
+                getattr(
+                    self.current_case,
+                    "series",
+                    [],
+                )
+            ),
+            "file_count": total_files,
+        }
+
+    def analyze_current(self):
+        if self.current_case is None:
+            raise RuntimeError(
+                "当前没有已确认的YUNPACS病例"
+            )
+
+        return self._ensure_runtime().analyze()
 
     def close(self):
-        self.runtime.close_case()
+        if self.runtime is not None:
+            self.runtime.close_case()
 
         self.current_case = None
+        self.current_case_ref = None
         self.current_fingerprint = None
 
     def shutdown(self):
-        self.runtime.shutdown()
+        if self.runtime is not None:
+            self.runtime.shutdown()
+
+        self.current_case = None
+        self.current_case_ref = None
+        self.current_fingerprint = None

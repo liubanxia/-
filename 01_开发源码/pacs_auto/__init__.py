@@ -1,7 +1,9 @@
-from .pacs_auto_agent import PacsAutoAgent
-from .pacs_ai_bridge import PacsAIBridge
-from .pacs_runtime import PacsRuntime
-from .pacs_fracture_ai import PacsFractureAI
-from .pacs_ct_collector import PacsCTCollector
-from .pacs_tool_controller import PacsToolController
-from .pacs_ai_agent import PacsAIAgent
+"""
+Phoenix legacy PACS automation compatibility package.
+
+旧的鼠标/键盘 PACS 自动操作代理已经停用。
+保留目录仅用于兼容旧代码，但模块导入时不再自动加载
+PacsAutoAgent / pywinauto。
+"""
+
+__all__ = []

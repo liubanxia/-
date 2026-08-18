@@ -1,3 +1,4 @@
+from model_adapters.monai_lung_nodule_ct import MonaiLungNoduleCTAdapter
 from pathlib import Path
 
 from core.model_hub import ModelHub
@@ -125,6 +126,11 @@ def add_segmentation_models(hub):
 
 
 def add_ct_lesion_models(hub):
+    if "monai_lung_nodule_ct" not in hub.models:
+        hub.register(
+            MonaiLungNoduleCTAdapter()
+        )
+
     from model_adapters.blast_ct import BlastCTAdapter
 
     hub.register(
