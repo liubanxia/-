@@ -1,6 +1,8 @@
 import tkinter as tk
 
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageTk
+
+from output.marker_style import draw_precision_arrow
 
 
 class LesionViewer:
@@ -8,9 +10,9 @@ class LesionViewer:
     def show(self, memory):
         items = sorted(
             memory.images.values(),
-            key=lambda x: x.get(
-                "voxel_count",
-                0,
+            key=lambda x: (
+                float(x.get("confidence", 0) or 0),
+                int(x.get("voxel_count", 0) or 0),
             ),
             reverse=True,
         )
@@ -19,13 +21,12 @@ class LesionViewer:
             return
 
         root = tk.Toplevel()
-        root.title("病灶")
+        root.title("病灶定位")
         root.attributes(
             "-topmost",
             True,
         )
-
-        root.geometry("760x820")
+        root.geometry("780x850")
 
         state = {
             "index": 0,
@@ -41,10 +42,16 @@ class LesionViewer:
             root,
             font=(
                 "Microsoft YaHei",
-                11,
+                10,
             ),
+            justify="left",
+            anchor="w",
         )
-        info.pack(pady=6)
+        info.pack(
+            fill="x",
+            padx=16,
+            pady=6,
+        )
 
         def render():
             i = state["index"]
@@ -59,7 +66,7 @@ class LesionViewer:
             )
 
             image.thumbnail(
-                (720, 680)
+                (740, 690)
             )
 
             point = item.get(
@@ -80,13 +87,27 @@ class LesionViewer:
             image_label.configure(
                 image=photo
             )
-
             image_label.image = photo
+
+            confidence = item.get(
+                "confidence"
+            )
+
+            try:
+                confidence_text = (
+                    f"{float(confidence):.3f}"
+                )
+            except Exception:
+                confidence_text = "N/A"
 
             info.configure(
                 text=(
-                    f"病灶 "
-                    f"{i + 1}/{len(items)}"
+                    f"病灶 {i + 1}/{len(items)}\n"
+                    f"候选：{item.get('label', '异常候选灶')}\n"
+                    f"模型：{item.get('source_model', '')}\n"
+                    f"SeriesUID：{item.get('series_uid', '')}\n"
+                    f"层号：{item.get('image_index', '')}\n"
+                    f"置信度：{confidence_text}"
                 )
             )
 
@@ -94,14 +115,12 @@ class LesionViewer:
             state["index"] = (
                 state["index"] - 1
             ) % len(items)
-
             render()
 
         def next_item():
             state["index"] = (
                 state["index"] + 1
             ) % len(items)
-
             render()
 
         buttons = tk.Frame(root)
@@ -135,46 +154,9 @@ class LesionViewer:
         point,
         original_shape,
     ):
-        draw = ImageDraw.Draw(image)
-
-        h, w = original_shape[:2]
-
-        sx = image.width / w
-        sy = image.height / h
-
-        x = int(
-            point[0] * sx
-        )
-
-        y = int(
-            point[1] * sy
-        )
-
-        start_x = max(
-            0,
-            x - 42,
-        )
-
-        start_y = max(
-            0,
-            y - 42,
-        )
-
-        draw.line(
-            [
-                (start_x, start_y),
-                (x, y),
-            ],
-            fill="red",
-            width=2,
-        )
-
-        # 很小的尖端，不画框、不覆盖病灶。
-        draw.polygon(
-            [
-                (x, y),
-                (x - 7, y - 2),
-                (x - 2, y - 7),
-            ],
+        return draw_precision_arrow(
+            image=image,
+            point=point,
+            original_shape=original_shape,
             fill="red",
         )
