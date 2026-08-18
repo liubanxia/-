@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import json
+import math
 import shutil
-import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -41,40 +39,251 @@ class MonaiLungNoduleCTAdapter(ModelAdapter):
         )
 
         self.loaded = False
+        self.device = None
+        self.network = None
+        self.detector = None
+        self.preprocessing = None
+        self.postprocessing = None
+
+        self.roi_size = (
+            512,
+            512,
+            192,
+        )
+
+    def _select_device(self):
+        import torch
+
+        if not torch.cuda.is_available():
+            return torch.device("cpu")
+
+        try:
+            major, _minor = (
+                torch.cuda.get_device_capability(0)
+            )
+
+            # 当前 PyTorch CUDA 链对很老的 GPU 不强制启用。
+            if major < 5:
+                return torch.device("cpu")
+
+        except Exception:
+            return torch.device("cpu")
+
+        return torch.device("cuda:0")
+
+    def _load_checkpoint(self):
+        import torch
+
+        try:
+            checkpoint = torch.load(
+                str(self.weights),
+                map_location="cpu",
+                weights_only=False,
+            )
+        except TypeError:
+            checkpoint = torch.load(
+                str(self.weights),
+                map_location="cpu",
+            )
+
+        if not isinstance(checkpoint, dict):
+            raise RuntimeError(
+                "MONAI肺结节checkpoint格式无法识别"
+            )
+
+        if (
+            "model" in checkpoint
+            and isinstance(checkpoint["model"], dict)
+        ):
+            state_dict = checkpoint["model"]
+        elif (
+            "state_dict" in checkpoint
+            and isinstance(checkpoint["state_dict"], dict)
+        ):
+            state_dict = checkpoint["state_dict"]
+        elif (
+            "network" in checkpoint
+            and isinstance(checkpoint["network"], dict)
+        ):
+            state_dict = checkpoint["network"]
+        else:
+            state_dict = checkpoint
+
+        try:
+            self.network.load_state_dict(
+                state_dict,
+                strict=True,
+            )
+            return
+        except RuntimeError:
+            pass
+
+        cleaned = {}
+
+        for key, value in state_dict.items():
+            new_key = str(key)
+
+            for prefix in (
+                "module.",
+                "model.",
+                "network.",
+            ):
+                if new_key.startswith(prefix):
+                    new_key = new_key[len(prefix):]
+
+            cleaned[new_key] = value
+
+        self.network.load_state_dict(
+            cleaned,
+            strict=True,
+        )
 
     def load(self):
         if not self.config.exists():
             raise RuntimeError(
-                f"MONAI inference.json不存在: {self.config}"
+                "MONAI inference.json不存在: "
+                f"{self.config}"
             )
 
         if not self.weights.exists():
             raise RuntimeError(
-                f"MONAI肺结节权重不存在: {self.weights}"
+                "MONAI肺结节权重不存在: "
+                f"{self.weights}"
             )
 
-        import monai
+        from monai.bundle import ConfigParser
+
+        self.device = self._select_device()
+
+        parser = ConfigParser()
+        parser.read_config(str(self.config))
+
+        transforms = parser[
+            "preprocessing"
+        ][
+            "transforms"
+        ]
+
+        # 使用 MONAI 默认 LoadImaged 读取 Phoenix 生成的 NIfTI，
+        # 避免 bundle 中 ITKReader 的额外依赖。
+        transforms[0]["_disabled_"] = False
+        transforms[1]["_disabled_"] = True
+        transforms[4]["_disabled_"] = False
+
+        post_transforms = parser[
+            "postprocessing"
+        ][
+            "transforms"
+        ]
+
+        post_transforms[1][
+            "affine_lps_to_ras"
+        ] = False
+
+        parser["bundle_root"] = str(
+            self.bundle_root
+        )
+        parser["device"] = str(self.device)
+        parser["amp"] = False
+        parser["load_pretrain"] = False
+
+        parser.parse(reset=True)
+
+        self.network = parser.get_parsed_content(
+            "network"
+        )
+        self.detector = parser.get_parsed_content(
+            "detector"
+        )
+        self.preprocessing = parser.get_parsed_content(
+            "preprocessing"
+        )
+        self.postprocessing = parser.get_parsed_content(
+            "postprocessing"
+        )
+
+        self.detector.set_target_keys(
+            box_key="box",
+            label_key="label",
+        )
+
+        self.detector.set_box_selector_parameters(
+            score_thresh=0.02,
+            topk_candidates_per_level=1000,
+            nms_thresh=0.22,
+            detections_per_img=300,
+        )
+
+        self.detector.set_sliding_window_inferer(
+            roi_size=self.roi_size,
+            overlap=0.25,
+            sw_batch_size=1,
+            mode="constant",
+            device="cpu",
+        )
+
+        self._load_checkpoint()
+
+        self.network.to(self.device)
+        self.network.eval()
+
+        # RetinaNetDetector 自身也是 nn.Module。
+        # 只把 network 设为 eval 不够，detector.training=True 时
+        # forward 会要求 ground-truth targets。
+        self.detector.to(self.device)
+        self.detector.eval()
 
         self.loaded = True
 
+        print(
+            "MONAI_LUNG_DIRECT_READY "
+            f"device={self.device}"
+        )
+
     def unload(self):
+        self.network = None
+        self.detector = None
+        self.preprocessing = None
+        self.postprocessing = None
         self.loaded = False
+
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
 
     def _select_ct_series(self, case):
         candidates = []
 
-        for series in getattr(case, "series", []):
+        for series in getattr(
+            case,
+            "series",
+            [],
+        ):
             modality = str(
-                getattr(series, "modality", "")
+                getattr(
+                    series,
+                    "modality",
+                    "",
+                )
             ).upper()
 
-            files = getattr(
-                series,
-                "files",
-                [],
-            ) or []
+            files = (
+                getattr(
+                    series,
+                    "files",
+                    [],
+                )
+                or []
+            )
 
-            if modality == "CT" and len(files) >= 16:
+            if (
+                modality == "CT"
+                and len(files) >= 16
+            ):
                 candidates.append(series)
 
         if not candidates:
@@ -85,11 +294,57 @@ class MonaiLungNoduleCTAdapter(ModelAdapter):
         return max(
             candidates,
             key=lambda s: len(
-                getattr(s, "files", []) or []
+                getattr(
+                    s,
+                    "files",
+                    [],
+                )
+                or []
             ),
         )
 
-    def _run_bundle(self, series, work_dir):
+    @staticmethod
+    def _cpu_value(value):
+        try:
+            import torch
+
+            if torch.is_tensor(value):
+                return value.detach().cpu()
+        except Exception:
+            pass
+
+        return value
+
+    @staticmethod
+    def _python_value(value):
+        try:
+            import torch
+
+            if torch.is_tensor(value):
+                return (
+                    value
+                    .detach()
+                    .cpu()
+                    .tolist()
+                )
+        except Exception:
+            pass
+
+        try:
+            if hasattr(value, "tolist"):
+                return value.tolist()
+        except Exception:
+            pass
+
+        return value
+
+    def _run_direct(
+        self,
+        series,
+        work_dir,
+    ):
+        import torch
+
         input_nii = work_dir / "ct.nii.gz"
 
         series_to_nifti(
@@ -97,93 +352,87 @@ class MonaiLungNoduleCTAdapter(ModelAdapter):
             input_nii,
         )
 
-        datalist = work_dir / "dataset.json"
+        sample = self.preprocessing(
+            {
+                "image": str(input_nii)
+            }
+        )
 
-        datalist.write_text(
-            json.dumps(
-                {
-                    "validation": [
-                        {
-                            "image": input_nii.name
-                        }
-                    ]
-                },
-                ensure_ascii=False,
+        image = sample.get("image")
+
+        if image is None:
+            raise RuntimeError(
+                "MONAI预处理没有生成image"
+            )
+
+        image_for_inference = image.to(
+            self.device
+        )
+
+        sliding_window_size = math.prod(
+            self.roi_size
+        )
+
+        image_size = image_for_inference[
+            0,
+            ...,
+        ].numel()
+
+        use_inferer = (
+            image_size
+            >= sliding_window_size
+        )
+
+        # 防止任何中间流程重新切回 training mode。
+        self.network.eval()
+        self.detector.eval()
+
+        with torch.inference_mode():
+            prediction = self.detector(
+                [image_for_inference],
+                use_inferer=use_inferer,
+            )
+
+        if not prediction:
+            return {
+                "box": [],
+                "label": [],
+                "label_scores": [],
+            }
+
+        pred = prediction[0]
+
+        if not isinstance(pred, dict):
+            raise RuntimeError(
+                "MONAI检测器输出格式异常: "
+                f"{type(pred).__name__}"
+            )
+
+        post_input = {
+            key: self._cpu_value(value)
+            for key, value in pred.items()
+        }
+
+        post_input["image"] = image.cpu()
+
+        processed = self.postprocessing(
+            post_input
+        )
+
+        return {
+            "box": self._python_value(
+                processed.get("box", [])
             ),
-            encoding="utf-8",
-        )
-
-        output_dir = work_dir / "output"
-        output_dir.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        output_name = "phoenix_lung_result.json"
-
-        cmd = [
-            sys.executable,
-            "-m",
-            "monai.bundle",
-            "run",
-
-            "--config_file",
-            str(self.config),
-
-            "--bundle_root",
-            str(self.bundle_root),
-
-            "--dataset_dir",
-            str(work_dir),
-
-            "--data_list_file_path",
-            str(datalist),
-
-            "--output_dir",
-            str(output_dir),
-
-            "--output_filename",
-            output_name,
-
-            "--whether_raw_luna16",
-            "true",
-
-            "--amp",
-            "false",
-
-            "--dataloader#num_workers",
-            "0",
-        ]
-
-        proc = subprocess.run(
-            cmd,
-            cwd=str(self.bundle_root),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-
-        if proc.returncode != 0:
-            raise RuntimeError(
-                "MONAI肺结节模型运行失败:\n"
-                + proc.stderr[-4000:]
-            )
-
-        result_file = (
-            output_dir / output_name
-        )
-
-        if not result_file.exists():
-            raise RuntimeError(
-                "MONAI肺结节模型没有生成结果文件"
-            )
-
-        return json.loads(
-            result_file.read_text(
-                encoding="utf-8"
-            )
-        )
+            "label": self._python_value(
+                processed.get("label", [])
+            ),
+            "label_scores": self._python_value(
+                processed.get(
+                    "label_scores",
+                    [],
+                )
+            ),
+        }
 
     def _prediction_items(self, data):
         if isinstance(data, list):
@@ -231,16 +480,12 @@ class MonaiLungNoduleCTAdapter(ModelAdapter):
 
             for index, box in enumerate(boxes):
                 try:
-                    score = float(
-                        scores[index]
-                    )
+                    score = float(scores[index])
                 except Exception:
                     score = None
 
                 try:
-                    label = int(
-                        labels[index]
-                    )
+                    label = int(labels[index])
                 except Exception:
                     label = 0
 
@@ -268,9 +513,6 @@ class MonaiLungNoduleCTAdapter(ModelAdapter):
 
         series = self._select_ct_series(case)
 
-        # SimpleITK/NIfTI 在部分 Windows 环境下对中文输出路径兼容不稳定。
-        # 临时推理目录固定使用项目 SSD 内的纯 ASCII 路径，
-        # 因此网吧 D: 与医院 G: 均可自动适配。
         temp_root = (
             self.project_root
             / "08_temp_cache"
@@ -289,7 +531,7 @@ class MonaiLungNoduleCTAdapter(ModelAdapter):
         )
 
         try:
-            raw = self._run_bundle(
+            raw = self._run_direct(
                 series,
                 work_dir,
             )
@@ -298,10 +540,17 @@ class MonaiLungNoduleCTAdapter(ModelAdapter):
 
             return {
                 "processed_images": len(
-                    getattr(series, "files", []) or []
+                    getattr(
+                        series,
+                        "files",
+                        [],
+                    )
+                    or []
                 ),
                 "lesions": lesions,
                 "raw_prediction_count": len(lesions),
+                "inference_backend": "direct_monai_retinanet",
+                "device": str(self.device),
             }
 
         finally:
