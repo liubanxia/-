@@ -251,13 +251,9 @@ class MonaiLungNoduleCTAdapter(ModelAdapter):
                         "location": "肺",
                         "score": score,
                         "label": label,
-
-                        # MONAI输出为3D检测框；
-                        # 先保留原始坐标，后续再映射到切片指针。
                         "geometry": {
                             "box_3d": box,
                         },
-
                         "source": self.name,
                     }
                 )
@@ -272,9 +268,12 @@ class MonaiLungNoduleCTAdapter(ModelAdapter):
 
         series = self._select_ct_series(case)
 
+        # SimpleITK/NIfTI 在部分 Windows 环境下对中文输出路径兼容不稳定。
+        # 临时推理目录固定使用项目 SSD 内的纯 ASCII 路径，
+        # 因此网吧 D: 与医院 G: 均可自动适配。
         temp_root = (
             self.project_root
-            / "08_临时缓存"
+            / "08_temp_cache"
         )
 
         temp_root.mkdir(
