@@ -57,16 +57,46 @@ def generate_report(result, incomplete_models=None):
     if incomplete_models:
         return _incomplete_report(
             result,
-            "本次AI分析未完整完成，部分分析模块未成功执行。",
+            "本次AI分析未完整完成，关键分析模块未成功执行。",
         )
+
+    screening_models_executed = result.execution_summary.get(
+        "screening_models_executed",
+        [],
+    )
+
+    # DR胸片当前属于筛查模型，不冒充完整疾病诊断模型。
+    if "torchxrayvision_chest" in screening_models_executed:
+        chest = _chest_screening_labels(result)
+
+        if chest:
+            report = StructuredReport(
+                findings=[
+                    "胸片AI筛查检测到异常影像信号，当前分类模型不能可靠提供病灶部位、形态及范围。"
+                ],
+                impression=[
+                    "需结合原始胸片及定位/通用视觉模型完成影像学诊断。"
+                ],
+            )
+        else:
+            report = StructuredReport(
+                findings=[
+                    "胸片筛查模型本次未输出明确异常候选信号。"
+                ],
+                impression=[
+                    "该结果不等同于影像学阴性诊断，请结合原始胸片完成最终诊断。"
+                ],
+            )
+
+        result.diagnosis = []
+        result.report_draft = report.render()
+        return result
 
     diagnostic_models_selected = result.execution_summary.get(
         "diagnostic_models_selected",
         [],
     )
 
-    # Critical safety rule: a router/segmentation model executing successfully
-    # is not equivalent to a disease-diagnostic model having run.
     if not diagnostic_models_selected:
         return _incomplete_report(
             result,
@@ -107,22 +137,6 @@ def generate_report(result, incomplete_models=None):
         )
 
         result.diagnosis = list(counts)
-        result.report_draft = report.render()
-        return result
-
-    chest = _chest_screening_labels(result)
-
-    if chest:
-        report = StructuredReport(
-            findings=[
-                "胸片AI筛查检测到异常影像信号，当前分类模型不能可靠提供病灶部位、形态及范围。"
-            ],
-            impression=[
-                "需结合原始胸片及后续通用视觉/定位模型完成影像学诊断。"
-            ],
-        )
-
-        result.diagnosis = []
         result.report_draft = report.render()
         return result
 
