@@ -10,6 +10,7 @@ class PhoenixRuntime:
 
     def __init__(self):
         self.session = CaseSession()
+        self.session.purge_stale()
         self.memory = LesionMemory()
 
         self.adapter = None
@@ -31,18 +32,31 @@ class PhoenixRuntime:
     ):
         self.close_case()
 
-        self.session.open(
+        temp_dir = self.session.open(
             str(case_ref)
         )
 
-        self.adapter = create_pacs_adapter(
+        adapter = create_pacs_adapter(
             source,
             **kwargs,
         )
 
-        self.case = self.adapter.load_case(
-            case_ref
-        )
+        try:
+            case = adapter.load_case(
+                case_ref
+            )
+        except Exception:
+            try:
+                adapter.close_case()
+            except Exception:
+                pass
+            self.session.close()
+            raise
+
+        case.temp_dir = temp_dir
+
+        self.adapter = adapter
+        self.case = case
 
         return self.case
 
@@ -58,6 +72,16 @@ class PhoenixRuntime:
             self.case,
             result["analysis"].lesions,
             self.memory,
+        )
+
+        result["case_warnings"] = list(
+            getattr(self.case, "warnings", []) or []
+        )
+        result["study_uid"] = str(
+            getattr(self.case, "study_uid", "") or ""
+        )
+        result["source_path"] = str(
+            getattr(self.case, "source_path", "") or ""
         )
 
         return result
