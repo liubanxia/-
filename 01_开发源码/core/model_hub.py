@@ -3,6 +3,7 @@ class ModelHub:
     def __init__(self):
         self.models = {}
         self.status = {}
+        self.errors = {}
 
     def register(self, model):
         self.models[model.name] = model
@@ -13,26 +14,58 @@ class ModelHub:
                 continue
 
             model = self.models.get(name)
+
             if model is None:
+                self.status[name] = "missing"
+                self.errors[name] = (
+                    f"模型未注册: {name}"
+                )
                 continue
 
             try:
                 model.load()
                 self.status[name] = "loaded"
+                self.errors.pop(name, None)
+
             except Exception as exc:
-                self.status[name] = f"failed: {exc}"
+                self.status[name] = "failed"
+                self.errors[name] = (
+                    f"{type(exc).__name__}: {exc}"
+                )
 
     def predict_selected(self, case, names):
         results = {}
 
         for name in names:
-            if self.status.get(name) != "loaded":
+            status = self.status.get(
+                name,
+                "not_loaded",
+            )
+
+            if status != "loaded":
+                results[name] = {
+                    "error": self.errors.get(
+                        name,
+                        f"模型未加载，status={status}",
+                    ),
+                    "stage": "load",
+                    "status": status,
+                }
                 continue
 
             try:
-                results[name] = self.models[name].predict(case)
+                results[name] = (
+                    self.models[name].predict(case)
+                )
+
             except Exception as exc:
-                results[name] = {"error": str(exc)}
+                results[name] = {
+                    "error": (
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                    "stage": "predict",
+                    "status": "failed",
+                }
 
         return results
 
@@ -43,8 +76,17 @@ class ModelHub:
             except Exception:
                 pass
 
+        self.status.clear()
+        self.errors.clear()
+
     def summary(self):
         return {
-            name: self.status.get(name, "not_loaded")
+            name: self.status.get(
+                name,
+                "not_loaded",
+            )
             for name in self.models
         }
+
+    def error_summary(self):
+        return dict(self.errors)
