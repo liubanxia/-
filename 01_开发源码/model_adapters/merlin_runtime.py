@@ -5,9 +5,15 @@ import re
 import torch
 import torch.nn as nn
 
+from core.environment_paths import resolve_project_root
 
-MERLIN_ROOT = Path(
-    r"D:\project_phoenix\04_AI模型\批量专家池\CT_通用\Merlin"
+
+MERLIN_ROOT = (
+    resolve_project_root()
+    / "04_AI模型"
+    / "批量专家池"
+    / "CT_通用"
+    / "Merlin"
 )
 
 
@@ -68,7 +74,6 @@ def _extract_component(state, prefix):
             if torch.is_tensor(v)
         }
 
-    # 只保留 3D ResNet 主干。
     keep = {}
 
     for k, v in out.items():
@@ -81,8 +86,7 @@ def _extract_component(state, prefix):
 
     if "conv1.weight" not in keep:
         raise RuntimeError(
-            f"Merlin i3_resnet not found. "
-            f"prefix={prefix!r}"
+            f"Merlin i3_resnet not found. prefix={prefix!r}"
         )
 
     return keep
@@ -125,47 +129,34 @@ class MerlinBottleneck3D(nn.Module):
             stride=1,
             bias=(prefix + "conv1.bias") in state,
         )
-
-        self.bn1 = nn.BatchNorm3d(
-            w1.shape[0]
-        )
+        self.bn1 = nn.BatchNorm3d(w1.shape[0])
 
         self.conv2 = _conv_from_weight(
             w2,
             stride=stride,
             bias=(prefix + "conv2.bias") in state,
         )
-
-        self.bn2 = nn.BatchNorm3d(
-            w2.shape[0]
-        )
+        self.bn2 = nn.BatchNorm3d(w2.shape[0])
 
         self.conv3 = _conv_from_weight(
             w3,
             stride=1,
             bias=(prefix + "conv3.bias") in state,
         )
-
-        self.bn3 = nn.BatchNorm3d(
-            w3.shape[0]
-        )
-
+        self.bn3 = nn.BatchNorm3d(w3.shape[0])
         self.relu = nn.ReLU(inplace=True)
 
         down = prefix + "downsample.0.weight"
 
         if down in state:
             wd = state[down]
-
             self.downsample = nn.Sequential(
                 _conv_from_weight(
                     wd,
                     stride=stride,
                     bias=False,
                 ),
-                nn.BatchNorm3d(
-                    wd.shape[0]
-                ),
+                nn.BatchNorm3d(wd.shape[0]),
             )
         else:
             self.downsample = None
@@ -205,38 +196,19 @@ class MerlinI3ResNetEncoder(nn.Module):
             stride=(2, 2, 2),
             bias="conv1.bias" in state,
         )
-
-        self.bn1 = nn.BatchNorm3d(
-            stem.shape[0]
-        )
-
+        self.bn1 = nn.BatchNorm3d(stem.shape[0])
         self.relu = nn.ReLU(inplace=True)
-
         self.maxpool = nn.MaxPool3d(
             kernel_size=3,
             stride=2,
             padding=1,
         )
 
-        self.layer1 = self._make_stage(
-            state, 1, stride=1
-        )
-
-        self.layer2 = self._make_stage(
-            state, 2, stride=2
-        )
-
-        self.layer3 = self._make_stage(
-            state, 3, stride=2
-        )
-
-        self.layer4 = self._make_stage(
-            state, 4, stride=2
-        )
-
-        self.avgpool = nn.AdaptiveAvgPool3d(
-            (1, 1, 1)
-        )
+        self.layer1 = self._make_stage(state, 1, stride=1)
+        self.layer2 = self._make_stage(state, 2, stride=2)
+        self.layer3 = self._make_stage(state, 3, stride=2)
+        self.layer4 = self._make_stage(state, 4, stride=2)
+        self.avgpool = nn.AdaptiveAvgPool3d((1, 1, 1))
 
     @staticmethod
     def _block_ids(state, stage):
@@ -247,10 +219,9 @@ class MerlinI3ResNetEncoder(nn.Module):
         ids = []
 
         for key in state:
-            m = rx.match(key)
-
-            if m:
-                ids.append(int(m.group(1)))
+            match = rx.match(key)
+            if match:
+                ids.append(int(match.group(1)))
 
         return sorted(set(ids))
 
@@ -261,11 +232,7 @@ class MerlinI3ResNetEncoder(nn.Module):
         stride,
     ):
         blocks = []
-
-        ids = self._block_ids(
-            state,
-            stage,
-        )
+        ids = self._block_ids(state, stage)
 
         if not ids:
             raise RuntimeError(
@@ -273,17 +240,8 @@ class MerlinI3ResNetEncoder(nn.Module):
             )
 
         for block_id in ids:
-            block_stride = (
-                stride
-                if block_id == ids[0]
-                else 1
-            )
-
-            prefix = (
-                f"layer{stage}."
-                f"{block_id}."
-            )
-
+            block_stride = stride if block_id == ids[0] else 1
+            prefix = f"layer{stage}.{block_id}."
             blocks.append(
                 MerlinBottleneck3D(
                     state,
@@ -306,12 +264,8 @@ class MerlinI3ResNetEncoder(nn.Module):
         x = self.layer4(x)
 
         feature_map = x
-
         embedding = self.avgpool(x)
-        embedding = torch.flatten(
-            embedding,
-            1,
-        )
+        embedding = torch.flatten(embedding, 1)
 
         return {
             "embedding": embedding,
@@ -330,118 +284,77 @@ class MerlinEncoderAdapter:
         self.model_id = model_id
         self.checkpoint = Path(checkpoint)
         self.prefix = prefix
-
         self.task = "ct_3d_encoder"
-
         self.model = None
-
-        self.status = (
-            "ADAPTER_READY_UNTESTED"
-        )
-
+        self.status = "ADAPTER_READY_UNTESTED"
         self.load_report = None
 
     def validate_assets(self):
         if not self.checkpoint.exists():
-            raise FileNotFoundError(
-                self.checkpoint
-            )
-
+            raise FileNotFoundError(self.checkpoint)
         return True
 
     def load(self, device="cpu"):
         self.validate_assets()
 
-        raw = _torch_load(
-            self.checkpoint
-        )
-
+        raw = _torch_load(self.checkpoint)
         state = _unwrap_state(raw)
-
-        component = _extract_component(
-            state,
-            self.prefix,
-        )
-
-        model = MerlinI3ResNetEncoder(
-            component
-        )
+        component = _extract_component(state, self.prefix)
+        model = MerlinI3ResNetEncoder(component)
 
         result = model.load_state_dict(
             component,
             strict=False,
         )
 
-        missing = list(
-            result.missing_keys
-        )
-
-        unexpected = list(
-            result.unexpected_keys
-        )
+        missing = list(result.missing_keys)
+        unexpected = list(result.unexpected_keys)
 
         self.load_report = {
-            "component_tensors":
-                len(component),
-
-            "missing":
-                missing,
-
-            "unexpected":
-                unexpected,
+            "component_tensors": len(component),
+            "missing": missing,
+            "unexpected": unexpected,
         }
 
         critical_missing = [
-            k for k in missing
+            key
+            for key in missing
             if (
-                k.startswith("conv1.")
-                or k.startswith("bn1.")
-                or k.startswith("layer")
+                key.startswith("conv1.")
+                or key.startswith("bn1.")
+                or key.startswith("layer")
             )
         ]
 
         if critical_missing:
             raise RuntimeError(
-                "Merlin critical checkpoint "
-                "mismatch: "
-                + str(
-                    critical_missing[:20]
-                )
+                "Merlin critical checkpoint mismatch: "
+                + str(critical_missing[:20])
             )
 
         model.eval()
         model.to(device)
 
         self.model = model
-
-        self.status = (
-            "LOADED_UNTESTED"
-        )
+        self.status = "LOADED_UNTESTED"
 
         del raw
         del state
         del component
-
         gc.collect()
 
         return self
 
     def run(self, volume):
         if self.model is None:
-            raise RuntimeError(
-                "Merlin is not loaded"
-            )
+            raise RuntimeError("Merlin is not loaded")
 
         with torch.inference_mode():
             return self.model(volume)
 
     def unload(self):
         self.model = None
-
-        self.status = (
-            "ADAPTER_READY_UNTESTED"
-        )
-
+        self.status = "ADAPTER_READY_UNTESTED"
         gc.collect()
 
         if torch.cuda.is_available():
@@ -457,7 +370,6 @@ MERLIN_CLIP_ENCODER = MerlinEncoderAdapter(
     prefix="encode_image.i3_resnet.",
 )
 
-
 MERLIN_NNUNET_ENCODER = MerlinEncoderAdapter(
     model_id="merlin_nnunet_encoder",
     checkpoint=(
@@ -469,11 +381,7 @@ MERLIN_NNUNET_ENCODER = MerlinEncoderAdapter(
     prefix="0.i3_resnet.",
 )
 
-
 MERLIN_RUNTIME_POOL = {
-    "merlin_clip_encoder":
-        MERLIN_CLIP_ENCODER,
-
-    "merlin_nnunet_encoder":
-        MERLIN_NNUNET_ENCODER,
+    "merlin_clip_encoder": MERLIN_CLIP_ENCODER,
+    "merlin_nnunet_encoder": MERLIN_NNUNET_ENCODER,
 }

@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - refactor/minimal-phoenix
-      - refine/clinical-safety-final
+      - refine/portable-runtime-audit
   pull_request:
     branches:
       - refactor/minimal-phoenix
@@ -35,6 +35,10 @@ jobs:
         run: |
           python -m py_compile "01_开发源码/model_adapters/monai_lung_nodule_ct.py"
           python -m py_compile "01_开发源码/model_adapters/blast_ct.py"
+          python -m py_compile "01_开发源码/model_adapters/native_specialist_runtime.py"
+          python -m py_compile "01_开发源码/model_adapters/ct_segmentation_runtime.py"
+          python -m py_compile "01_开发源码/model_adapters/merlin_runtime.py"
+          python -m py_compile "01_开发源码/ai_models/dicom_inference_service.py"
           python -m py_compile "01_开发源码/core/ct_series_selector.py"
           python -m py_compile "01_开发源码/core/ct_nifti.py"
           python -m py_compile "01_开发源码/core/case_router.py"
@@ -44,8 +48,10 @@ jobs:
           python -m py_compile "01_开发源码/core/lesion_geometry.py"
           python -m py_compile "01_开发源码/core/report_generator.py"
           python -m py_compile "01_开发源码/core/environment_paths.py"
+          python -m py_compile "01_开发源码/core/yunpacs_live_controller.py"
           python -m py_compile "01_开发源码/output/marker_style.py"
           python -m py_compile "01_开发源码/output/lesion_viewer.py"
+          python -m py_compile "01_开发源码/ui/phoenix_minimal_window.py"
           python -m py_compile "01_开发源码/pacs_io/folder_adapter.py"
           python -m py_compile "01_开发源码/pacs_io/yunpacs_adapter.py"
           python -m py_compile "01_开发源码/pacs_io/yunpacs_cache_adapter.py"
@@ -62,3 +68,7 @@ jobs:
       - name: Run marker precision tests
         shell: pwsh
         run: python "07_测试/test_marker_precision.py"
+
+      - name: Run portable runtime path audit
+        shell: pwsh
+        run: python "07_测试/test_portable_runtime_paths.py"

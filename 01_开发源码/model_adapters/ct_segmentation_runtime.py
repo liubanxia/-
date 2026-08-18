@@ -1,13 +1,16 @@
 from pathlib import Path
 import gc
 
+from core.environment_paths import resolve_project_root
+
+
+MODEL_ROOT = resolve_project_root() / "04_AI模型" / "批量专家池" / "CT_分割"
+
 
 class VISTA3DAdapter:
     def __init__(self):
         self.model_id = "vista3d"
-        self.root = Path(
-            r"D:\project_phoenix\04_AI模型\批量专家池\CT_分割\VISTA3D-HF"
-        )
+        self.root = MODEL_ROOT / "VISTA3D-HF"
         self.pretrained = self.root / "vista3d_pretrained_model"
         self.weight = self.pretrained / "model.safetensors"
 
@@ -106,9 +109,7 @@ class VISTA3DAdapter:
 class SegVolAdapter:
     def __init__(self):
         self.model_id = "segvol"
-        self.root = Path(
-            r"D:\project_phoenix\04_AI模型\批量专家池\CT_分割\SegVol"
-        )
+        self.root = MODEL_ROOT / "SegVol"
 
         self.task = "prompted_ct_3d_segmentation"
         self.model = None

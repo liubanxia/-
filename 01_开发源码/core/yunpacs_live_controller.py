@@ -1,26 +1,22 @@
 from __future__ import annotations
 
-from datetime import datetime
-from pathlib import Path
-
-from pacs_io.yunpacs_cache_adapter import (
-    YUNPACSLocalCacheAdapter,
-)
+from core.environment_paths import resolve_image_root
 
 
 class YUNPACSLiveController:
 
     def __init__(
         self,
-        root="D:/YUNPACS/放射诊断/ImageDir_r",
+        root=None,
         runtime=None,
     ):
-        self.root = str(root)
-        self.runtime = runtime
-
-        self.cache = YUNPACSLocalCacheAdapter(
-            root=self.root
+        resolved = resolve_image_root(root)
+        self.root = str(
+            resolved
+            if resolved is not None
+            else (root or "D:/YUNPACS/放射诊断/ImageDir_r")
         )
+        self.runtime = runtime
 
         self.current_fingerprint = None
         self.current_case = None
@@ -33,58 +29,27 @@ class YUNPACSLiveController:
 
         return self.runtime
 
-    def _today_case_dirs(self):
-        root = Path(self.root)
-
-        today = datetime.now().strftime(
-            "%Y-%m-%d"
-        )
-
-        day_dir = root / today
-
-        if not day_dir.exists():
-            return []
-
-        dirs = [
-            p for p in day_dir.iterdir()
-            if p.is_dir()
-        ]
-
-        dirs.sort(
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-
-        return dirs
-
-    def _select_current_candidate(self):
-        candidates = self._today_case_dirs()
-
-        if not candidates:
-            raise RuntimeError(
-                "今天YUNPACS缓存没有发现病例。"
-                "为防止分析错误患者，Phoenix拒绝使用历史病例。"
-            )
-
-        return candidates[0]
-
     def poll_once(self):
-        directory = self._select_current_candidate()
-
         runtime = self._ensure_runtime()
 
+        # Important: do not pick a directory by folder mtime here. The
+        # YUNPACSPacsAdapter owns stable-cache selection and then verifies that
+        # the StudyInstanceUID actually loaded into Phoenix matches the cache
+        # candidate before inference is allowed.
         loaded = runtime.open_case(
             "yunpacs",
-            str(directory),
+            "current",
             root=self.root,
         )
 
         self.current_case = loaded
-        self.current_case_ref = str(directory)
+        self.current_case_ref = str(
+            getattr(loaded, "source_path", "") or ""
+        )
 
         self.current_fingerprint = (
-            f"{directory}:"
-            f"{directory.stat().st_mtime_ns}"
+            f"{getattr(loaded, 'study_uid', '')}|"
+            f"{self.current_case_ref}"
         )
 
         return loaded
@@ -93,7 +58,6 @@ class YUNPACSLiveController:
         if self.current_case is None:
             return None
 
-        study_uids = []
         modalities = []
         total_files = 0
 
@@ -102,25 +66,11 @@ class YUNPACSLiveController:
             "series",
             [],
         ):
-            uid = getattr(
-                series,
-                "study_uid",
-                None,
-            )
+            modality = str(
+                getattr(series, "modality", "") or ""
+            ).upper()
 
-            if uid and uid not in study_uids:
-                study_uids.append(uid)
-
-            modality = getattr(
-                series,
-                "modality",
-                None,
-            )
-
-            if (
-                modality
-                and modality not in modalities
-            ):
+            if modality and modality not in modalities:
                 modalities.append(modality)
 
             total_files += len(
@@ -134,20 +84,19 @@ class YUNPACSLiveController:
                 None,
             ),
             "path": self.current_case_ref,
-            "study_uid": (
-                study_uids[0]
-                if study_uids
-                else None
+            "study_uid": getattr(
+                self.current_case,
+                "study_uid",
+                None,
             ),
             "modalities": modalities,
             "series_count": len(
-                getattr(
-                    self.current_case,
-                    "series",
-                    [],
-                )
+                getattr(self.current_case, "series", []) or []
             ),
             "file_count": total_files,
+            "warnings": list(
+                getattr(self.current_case, "warnings", []) or []
+            ),
         }
 
     def analyze_current(self):

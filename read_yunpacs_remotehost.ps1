@@ -1,6 +1,25 @@
 $ErrorActionPreference = "Stop"
 
-$db = "G:\project_phoenix\pacs_structure_copy.mdb"
+function Get-PhoenixProjectRoot {
+    if ($env:PHOENIX_PROJECT_ROOT -and (Test-Path -LiteralPath $env:PHOENIX_PROJECT_ROOT)) {
+        return (Resolve-Path -LiteralPath $env:PHOENIX_PROJECT_ROOT).Path
+    }
+
+    foreach ($candidate in @("G:\project_phoenix", "D:\project_phoenix")) {
+        if (Test-Path -LiteralPath $candidate) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    throw "Phoenix project root not found."
+}
+
+$projectRoot = Get-PhoenixProjectRoot
+$db = Join-Path $projectRoot "pacs_structure_copy.mdb"
+
+if (-not (Test-Path -LiteralPath $db)) {
+    throw "Inspection MDB copy not found: $db"
+}
 
 $conn = New-Object System.Data.OleDb.OleDbConnection
 $conn.ConnectionString = "Provider=Microsoft.Jet.OLEDB.4.0;Data Source=$db;Mode=Read;"
@@ -12,7 +31,6 @@ $tables = @(
 )
 
 foreach ($table in $tables) {
-
     Write-Host ""
     Write-Host "========================================"
     Write-Host "TABLE: $table"
@@ -23,17 +41,14 @@ foreach ($table in $tables) {
         $cmd.CommandText = "SELECT * FROM [$table]"
 
         $reader = $cmd.ExecuteReader()
-
         $rowNo = 0
 
         while ($reader.Read()) {
-
             $rowNo++
             Write-Host ""
             Write-Host "ROW:" $rowNo
 
             for ($i = 0; $i -lt $reader.FieldCount; $i++) {
-
                 $name = $reader.GetName($i)
 
                 if ($name -match "password|passwd|pwd|secret|token|credential|connectionstring") {

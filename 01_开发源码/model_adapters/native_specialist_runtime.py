@@ -1,9 +1,9 @@
 from pathlib import Path
 
+from core.environment_paths import resolve_project_root
 
-ROOT = Path(
-    r"D:\project_phoenix\04_AI模型"
-)
+
+ROOT = resolve_project_root() / "04_AI模型"
 
 
 class LazyNativeExpert:
@@ -64,19 +64,16 @@ NATIVE_SPECIALISTS = {
         "ct_prompt_segmentation",
         factory=_sam_med3d,
     ),
-
     "totalsegmentator": LazyNativeExpert(
         "totalsegmentator",
         "ct_anatomy_segmentation",
         factory=_totalsegmentator,
     ),
-
     "merlin": LazyNativeExpert(
         "merlin",
         "ct_3d_encoder",
         asset_path=ROOT / "批量专家池/CT_通用/Merlin",
     ),
-
     "medsam2": LazyNativeExpert(
         "medsam2",
         "medical_segmentation",

@@ -1,5 +1,19 @@
 $ErrorActionPreference = "Stop"
 
+function Get-PhoenixProjectRoot {
+    if ($env:PHOENIX_PROJECT_ROOT -and (Test-Path -LiteralPath $env:PHOENIX_PROJECT_ROOT)) {
+        return (Resolve-Path -LiteralPath $env:PHOENIX_PROJECT_ROOT).Path
+    }
+
+    foreach ($candidate in @("G:\project_phoenix", "D:\project_phoenix")) {
+        if (Test-Path -LiteralPath $candidate) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    throw "Phoenix project root not found."
+}
+
 Write-Host "========== YUNPACS MDB STRUCTURE CHECK =========="
 
 $db = Get-ChildItem "D:\YUNPACS" -Recurse -File -Filter "pacs.mdb" -ErrorAction SilentlyContinue |
@@ -16,7 +30,8 @@ Write-Host $db.FullName
 Write-Host "SIZE:" $db.Length
 Write-Host "MODIFIED:" $db.LastWriteTime
 
-$copy = "G:\project_phoenix\pacs_structure_copy.mdb"
+$projectRoot = Get-PhoenixProjectRoot
+$copy = Join-Path $projectRoot "pacs_structure_copy.mdb"
 
 Write-Host ""
 Write-Host "Creating inspection copy:"
@@ -34,14 +49,12 @@ $conn = $null
 $used = $null
 
 foreach ($provider in $providers) {
-
     try {
         Write-Host ""
         Write-Host "Trying provider:" $provider
 
         $c = New-Object System.Data.OleDb.OleDbConnection
         $c.ConnectionString = "Provider=$provider;Data Source=$copy;Mode=Read;"
-
         $c.Open()
 
         $conn = $c
@@ -76,12 +89,10 @@ $tables |
 Select-Object TABLE_NAME |
 Format-Table -AutoSize
 
-
 Write-Host ""
 Write-Host "========== COLUMNS =========="
 
 foreach ($t in $tables) {
-
     $name = [string]$t.TABLE_NAME
 
     Write-Host ""
@@ -105,7 +116,6 @@ foreach ($t in $tables) {
         Write-Host "COLUMN READ ERROR:" $_.Exception.Message
     }
 }
-
 
 Write-Host ""
 Write-Host "========== INTERESTING TABLES =========="
