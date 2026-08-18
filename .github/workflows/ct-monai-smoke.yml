@@ -1,0 +1,38 @@
+name: CT MONAI smoke
+
+on:
+  push:
+    branches:
+      - refactor/minimal-phoenix
+      - ci/ct-monai-smoke-work
+  pull_request:
+    branches:
+      - refactor/minimal-phoenix
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile adapter
+        shell: pwsh
+        run: >-
+          python -m py_compile
+          "01_开发源码/model_adapters/monai_lung_nodule_ct.py"
+
+      - name: Run mocked direct inference smoke test
+        shell: pwsh
+        run: >-
+          python "07_测试/test_monai_lung_adapter_smoke.py"
