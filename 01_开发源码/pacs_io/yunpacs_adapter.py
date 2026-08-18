@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pathlib import Path
 
 from .base import PacsAdapter
@@ -19,8 +21,11 @@ class YUNPACSPacsAdapter(PacsAdapter):
             root=root
         )
         self.folder = FolderPacsAdapter()
+        self.bound_study_uid = ""
+        self.bound_directory = None
 
     def load_case(self, case_ref: str) -> CaseInput:
+        expected_study_uid = ""
 
         if str(case_ref).lower() in {
             "latest",
@@ -36,6 +41,9 @@ class YUNPACSPacsAdapter(PacsAdapter):
                 )
 
             directory = case.directory
+            expected_study_uid = str(
+                case.study_uid or ""
+            ).strip()
 
         else:
             directory = Path(case_ref)
@@ -49,11 +57,41 @@ class YUNPACSPacsAdapter(PacsAdapter):
             str(directory)
         )
 
+        actual_study_uid = str(
+            loaded.study_uid or ""
+        ).strip()
+
+        if (
+            expected_study_uid
+            and actual_study_uid
+            and expected_study_uid != actual_study_uid
+        ):
+            raise RuntimeError(
+                "YUNPACS病例绑定失败: "
+                f"cache StudyUID={expected_study_uid}, "
+                f"loaded StudyUID={actual_study_uid}"
+            )
+
+        self.bound_study_uid = actual_study_uid
+        self.bound_directory = Path(directory)
+
+        warnings = list(loaded.warnings)
+
+        if str(case_ref).lower() in {"latest", "current"}:
+            warnings.append(
+                "当前病例由YUNPACS缓存最近稳定写入目录绑定；"
+                "Phoenix同时以StudyInstanceUID校验实际进入AI的DICOM。"
+            )
+
         return CaseInput(
             case_id=loaded.case_id,
             series=loaded.series,
             source="yunpacs",
+            study_uid=actual_study_uid,
+            source_path=Path(directory),
+            warnings=warnings,
         )
 
     def close_case(self):
-        pass
+        self.bound_study_uid = ""
+        self.bound_directory = None
