@@ -3,7 +3,7 @@
     "repo_id": "Qwen/Qwen3.5-4B",
     "folder": "Qwen3.5-4B",
     "required": false,
-    "purpose": "grounded PDF-only answer generation and long-form organization"
+    "purpose": "grounded PDF-only answering, long-form organization, and final medical translation fallback/review"
   },
   "embedding": {
     "repo_id": "Qwen/Qwen3-Embedding-0.6B",
@@ -16,5 +16,20 @@
     "folder": "Qwen3-Reranker-0.6B",
     "required": false,
     "purpose": "reserved for second-stage evidence reranking"
+  },
+  "translation_fast": {
+    "repo_id": "Helsinki-NLP/opus-mt-en-zh",
+    "folder": "opus-mt-en-zh",
+    "required": false,
+    "purpose": "fast dedicated English-to-Chinese whole-book translation; first translation backend",
+    "license": "Apache-2.0"
+  },
+  "translation_backup": {
+    "repo_id": "facebook/nllb-200-distilled-600M",
+    "folder": "NLLB-200-distilled-600M",
+    "required": false,
+    "purpose": "multilingual emergency translation fallback when the primary translation fails validation",
+    "license": "CC-BY-NC-4.0",
+    "note": "research/non-commercial fallback only; not the primary medical-domain translator"
   }
 }

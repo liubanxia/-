@@ -7,8 +7,10 @@ from .config import WorkbenchPaths, get_paths
 from .db import KnowledgeDB
 from .ingest import LibraryIngestor
 from .llm import LocalLLM
+from .notes import TXTNotesOrganizer
 from .organizer import DeepOrganizer
 from .retrieval import Retriever
+from .translator import PDFTranslator
 
 
 class MedicalKnowledgeWorkbench:
@@ -28,6 +30,14 @@ class MedicalKnowledgeWorkbench:
             self.llm,
             self.paths.evidence_root,
         )
+        self.translator = PDFTranslator(
+            self.paths,
+            self.llm,
+        )
+        self.notes = TXTNotesOrganizer(
+            self.paths,
+            self.llm,
+        )
 
     def close(self):
         self.db.close()
@@ -45,6 +55,7 @@ class MedicalKnowledgeWorkbench:
             "chunks": self.db.count_chunks(),
             "llm_backend": self.llm.backend(),
             "embedding_available": self.retriever.embeddings.available(),
+            "translation_backends": self.translator.engine.available_backends(),
             "recent_tasks": [dict(row) for row in tasks],
         }
 
@@ -74,5 +85,23 @@ class MedicalKnowledgeWorkbench:
     def resume_task(self, task_id: int, **kwargs):
         return self.organizer.resume(
             int(task_id),
+            **kwargs,
+        )
+
+    def translate_book(self, path: Path, **kwargs):
+        return self.translator.translate_book(
+            Path(path),
+            **kwargs,
+        )
+
+    def organize_txt(self, source_text: str, **kwargs):
+        return self.notes.organize(
+            source_text,
+            **kwargs,
+        )
+
+    def organize_txt_file(self, path: Path, **kwargs):
+        return self.notes.organize_file(
+            Path(path),
             **kwargs,
         )
