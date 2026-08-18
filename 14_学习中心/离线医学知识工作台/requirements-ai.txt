@@ -1,0 +1,8 @@
+# 可选增强。基础PDF检索不依赖这些包。
+docling>=2.70
+sentence-transformers>=2.7
+transformers>=4.57
+accelerate>=1.0
+torch
+huggingface_hub>=0.30
+modelscope>=1.26
