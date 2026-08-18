@@ -1,7 +1,7 @@
 from .case_router import select_models
 from .execution_status import execution_from_raw
 from .lesion_geometry import resolve_lesions_for_case
-from .model_roles import is_diagnostic_model
+from .model_roles import is_diagnostic_model, is_screening_model, model_role
 from .result_fusion import fuse_results
 from .report_generator import generate_report
 
@@ -26,6 +26,7 @@ class PhoenixPipeline:
         )
 
         incomplete = []
+        helper_failures = []
         executions = []
 
         for name in selected:
@@ -47,16 +48,24 @@ class PhoenixPipeline:
             executions.append(execution)
 
             if execution.status != "success":
-                incomplete.append(name)
+                role = model_role(name)
+                if role in {"diagnostic", "router", "screening"}:
+                    incomplete.append(name)
+                else:
+                    helper_failures.append(name)
 
         result = fuse_results(raw)
 
-        # World-space detections (for example MONAI 3D boxes) are mapped
-        # to the exact DICOM slice/pixel before overlays or captures are made.
         resolved_count = resolve_lesions_for_case(
             case,
             result.lesions,
         )
+
+        if helper_failures:
+            result.warnings.append(
+                "辅助定位/分割模块未完整执行: "
+                + ", ".join(helper_failures)
+            )
 
         diagnostic_executions = [
             item
@@ -64,10 +73,18 @@ class PhoenixPipeline:
             if is_diagnostic_model(item.model_name)
         ]
 
+        screening_executions = [
+            item
+            for item in executions
+            if is_screening_model(item.model_name)
+        ]
+
         result.execution_summary = {
             "selected_models": list(selected),
             "models": [item.to_dict() for item in executions],
             "resolved_lesion_geometry": resolved_count,
+            "critical_incomplete_models": list(incomplete),
+            "helper_failed_models": list(helper_failures),
             "diagnostic_models_selected": [
                 item.model_name
                 for item in diagnostic_executions
@@ -75,6 +92,15 @@ class PhoenixPipeline:
             "diagnostic_models_executed": [
                 item.model_name
                 for item in diagnostic_executions
+                if item.executed and item.status == "success"
+            ],
+            "screening_models_selected": [
+                item.model_name
+                for item in screening_executions
+            ],
+            "screening_models_executed": [
+                item.model_name
+                for item in screening_executions
                 if item.executed and item.status == "success"
             ],
         }
@@ -101,6 +127,7 @@ class PhoenixPipeline:
             "case_id": case.case_id,
             "selected_models": selected,
             "incomplete_models": incomplete,
+            "helper_failed_models": helper_failures,
             "execution_summary": result.execution_summary,
             "diagnostic_executed": result.diagnostic_executed,
             "diagnostic_valid": result.diagnostic_valid,
