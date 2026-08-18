@@ -28,8 +28,6 @@ def _chest_screening_labels(result):
 
     items = raw.get("ranked_candidates", [])
 
-    # 分数只留后台。
-    # 当前未做临床阈值校准，因此不能据此直接生成疾病确诊。
     return [
         CHEST_NAMES.get(
             item.get("label", ""),
@@ -40,22 +38,46 @@ def _chest_screening_labels(result):
     ]
 
 
+def _incomplete_report(result, message):
+    report = StructuredReport(
+        findings=[message],
+        impression=[
+            "当前AI结果不足以形成完整影像学诊断意见，请由影像科医师结合原始影像完成阅片。"
+        ],
+    )
+
+    result.diagnosis = []
+    result.report_draft = report.render()
+    return result
+
+
 def generate_report(result, incomplete_models=None):
     incomplete_models = incomplete_models or []
 
     if incomplete_models:
-        report = StructuredReport(
-            findings=[
-                "本次AI分析未完整完成，部分分析模块未成功执行。"
-            ],
-            impression=[
-                "当前结果不足以形成完整影像学诊断意见，请由影像科医师结合原始影像完成阅片。"
-            ],
+        return _incomplete_report(
+            result,
+            "本次AI分析未完整完成，部分分析模块未成功执行。",
         )
 
-        result.diagnosis = []
-        result.report_draft = report.render()
-        return result
+    diagnostic_models_selected = result.execution_summary.get(
+        "diagnostic_models_selected",
+        [],
+    )
+
+    # Critical safety rule: a router/segmentation model executing successfully
+    # is not equivalent to a disease-diagnostic model having run.
+    if not diagnostic_models_selected:
+        return _incomplete_report(
+            result,
+            "当前仅完成解剖路由或辅助处理，尚无适用的疾病诊断模型完成分析。",
+        )
+
+    if not result.diagnostic_executed:
+        return _incomplete_report(
+            result,
+            "疾病诊断模型尚未实际执行完成，当前结果不能用于判断有无病灶。",
+        )
 
     if result.lesions:
         counts = {}
@@ -75,7 +97,7 @@ def generate_report(result, incomplete_models=None):
         ]
 
         impression = [
-            f"影像学考虑{label}相关改变。"
+            f"影像学考虑{label}相关改变，需医师复核。"
             for label in counts
         ]
 
@@ -93,30 +115,26 @@ def generate_report(result, incomplete_models=None):
     if chest:
         report = StructuredReport(
             findings=[
-                "胸片AI筛查检测到异常影像信号，"
-                "当前分类模型不能可靠提供病灶部位、形态及范围。"
+                "胸片AI筛查检测到异常影像信号，当前分类模型不能可靠提供病灶部位、形态及范围。"
             ],
             impression=[
                 "需结合原始胸片及后续通用视觉/定位模型完成影像学诊断。"
             ],
         )
 
-        # 分类评分仍保留在 raw_model_results，
-        # 但不进入医生报告。
         result.diagnosis = []
         result.report_draft = report.render()
         return result
 
     report = StructuredReport(
         findings=[
-            "当前已运行的AI分析模块未形成明确可报告影像异常。"
+            "已选择的疾病诊断模型本次未输出候选病灶。"
         ],
         impression=[
-            "请结合原始影像完成影像科诊断。"
+            "该结果仅表示本次AI模型未输出候选异常，不等同于影像学阴性诊断；请结合原始影像完成最终诊断。"
         ],
     )
 
     result.diagnosis = []
     result.report_draft = report.render()
-
     return result
