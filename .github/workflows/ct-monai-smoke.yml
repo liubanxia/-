@@ -1,4 +1,4 @@
-name: CT MONAI smoke
+name: Phoenix core smoke
 
 on:
   push:
@@ -26,13 +26,22 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Compile adapter
+      - name: Compile critical modules
         shell: pwsh
-        run: >-
-          python -m py_compile
-          "01_开发源码/model_adapters/monai_lung_nodule_ct.py"
+        run: |
+          python -m py_compile "01_开发源码/model_adapters/monai_lung_nodule_ct.py"
+          python -m py_compile "01_开发源码/core/pipeline.py"
+          python -m py_compile "01_开发源码/core/result_fusion.py"
+          python -m py_compile "01_开发源码/core/dicom_geometry.py"
+          python -m py_compile "01_开发源码/core/lesion_geometry.py"
+          python -m py_compile "01_开发源码/core/report_generator.py"
+          python -m py_compile "01_开发源码/pacs_io/folder_adapter.py"
+          python -m py_compile "01_开发源码/pacs_io/yunpacs_adapter.py"
 
-      - name: Run mocked direct inference smoke test
+      - name: Run mocked MONAI direct inference test
         shell: pwsh
-        run: >-
-          python "07_测试/test_monai_lung_adapter_smoke.py"
+        run: python "07_测试/test_monai_lung_adapter_smoke.py"
+
+      - name: Run Phoenix core safety tests
+        shell: pwsh
+        run: python "07_测试/test_phoenix_core_safety.py"
