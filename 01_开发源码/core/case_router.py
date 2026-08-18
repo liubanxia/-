@@ -80,13 +80,15 @@ def select_models(case):
     if "CT" in modalities:
         models = ["body_part_regression"]
 
+        # Head and chest specialists are independent. Each adapter performs
+        # its own anatomy-aware series binding before inference, so a
+        # multi-region Study can safely invoke both without choosing the
+        # longest CT series globally.
         if is_head_ct(case):
             models.append("blast_ct_head")
 
-        elif is_chest_ct(case):
-            models.append(
-                "monai_lung_nodule_ct"
-            )
+        if is_chest_ct(case):
+            models.append("monai_lung_nodule_ct")
 
         return models
 
@@ -105,7 +107,6 @@ def select_models(case):
                 "fractureatlas_segmentation",
             ]
 
-        # 其他DR等待Hulu通用主模型。
         return []
 
     return []

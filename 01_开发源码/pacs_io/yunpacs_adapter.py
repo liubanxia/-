@@ -26,6 +26,7 @@ class YUNPACSPacsAdapter(PacsAdapter):
 
     def load_case(self, case_ref: str) -> CaseInput:
         expected_study_uid = ""
+        cache_warnings = []
 
         if str(case_ref).lower() in {
             "latest",
@@ -44,6 +45,9 @@ class YUNPACSPacsAdapter(PacsAdapter):
             expected_study_uid = str(
                 case.study_uid or ""
             ).strip()
+            cache_warnings = list(
+                getattr(case, "warnings", []) or []
+            )
 
         else:
             directory = Path(case_ref)
@@ -75,7 +79,7 @@ class YUNPACSPacsAdapter(PacsAdapter):
         self.bound_study_uid = actual_study_uid
         self.bound_directory = Path(directory)
 
-        warnings = list(loaded.warnings)
+        warnings = cache_warnings + list(loaded.warnings)
 
         if str(case_ref).lower() in {"latest", "current"}:
             warnings.append(

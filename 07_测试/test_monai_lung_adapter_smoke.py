@@ -55,6 +55,7 @@ class FakeDetector:
     def __init__(self):
         self.training = True
         self.eval_calls = 0
+        self.network = None
 
     def eval(self):
         self.training = False
@@ -107,9 +108,15 @@ class MonaiLungAdapterSmokeTest(unittest.TestCase):
             output
         ).write_bytes(b"fake")
 
+        selector_mod = types.ModuleType("core.ct_series_selector")
+        selector_mod.select_ct_series = (
+            lambda case, anatomy, minimum_images=16: case
+        )
+
         sys.modules["core"] = core_pkg
         sys.modules["core.model_adapter"] = model_adapter_mod
         sys.modules["core.ct_nifti"] = ct_nifti_mod
+        sys.modules["core.ct_series_selector"] = selector_mod
         sys.modules["torch"] = FakeTorch()
 
         spec = importlib.util.spec_from_file_location(
@@ -130,6 +137,7 @@ class MonaiLungAdapterSmokeTest(unittest.TestCase):
         self.assertNotIn("subprocess.run", source)
         self.assertNotIn('"monai.bundle",\n            "run"', source)
         self.assertIn("self.detector.eval()", source)
+        self.assertIn("self.detector.training = False", source)
 
     def test_direct_inference_forces_detector_eval(self):
         adapter = self.Adapter()
@@ -154,11 +162,36 @@ class MonaiLungAdapterSmokeTest(unittest.TestCase):
 
         self.assertFalse(adapter.detector.training)
         self.assertGreaterEqual(adapter.detector.eval_calls, 1)
+        self.assertIs(adapter.detector.network, adapter.network)
         self.assertEqual(result["label"], [0])
         self.assertEqual(result["label_scores"], [0.91])
         self.assertEqual(
             result["box"],
             [[1, 2, 3, 4, 5, 6]],
+        )
+
+    def test_lesion_output_carries_lps_world_center_and_series_uid(self):
+        adapter = self.Adapter()
+        series = types.SimpleNamespace(series_uid="SERIES-1")
+
+        lesions = adapter._to_lesions(
+            {
+                "box": [[10, 20, 30, 6, 8, 4]],
+                "label": [0],
+                "label_scores": [0.88],
+            },
+            series,
+        )
+
+        self.assertEqual(len(lesions), 1)
+        self.assertEqual(lesions[0]["series_uid"], "SERIES-1")
+        self.assertEqual(
+            lesions[0]["world_point_lps"],
+            [10.0, 20.0, 30.0],
+        )
+        self.assertEqual(
+            lesions[0]["geometry_mode"],
+            "cccwhd_lps",
         )
 
 

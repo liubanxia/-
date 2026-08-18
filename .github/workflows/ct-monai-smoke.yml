@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - refactor/minimal-phoenix
-      - ci/ct-monai-smoke-work
+      - refine/clinical-safety-final
   pull_request:
     branches:
       - refactor/minimal-phoenix
@@ -26,17 +26,30 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install lightweight test dependency
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check pillow
+
       - name: Compile critical modules
         shell: pwsh
         run: |
           python -m py_compile "01_开发源码/model_adapters/monai_lung_nodule_ct.py"
+          python -m py_compile "01_开发源码/model_adapters/blast_ct.py"
+          python -m py_compile "01_开发源码/core/ct_series_selector.py"
+          python -m py_compile "01_开发源码/core/ct_nifti.py"
+          python -m py_compile "01_开发源码/core/case_router.py"
           python -m py_compile "01_开发源码/core/pipeline.py"
           python -m py_compile "01_开发源码/core/result_fusion.py"
           python -m py_compile "01_开发源码/core/dicom_geometry.py"
           python -m py_compile "01_开发源码/core/lesion_geometry.py"
           python -m py_compile "01_开发源码/core/report_generator.py"
+          python -m py_compile "01_开发源码/core/environment_paths.py"
+          python -m py_compile "01_开发源码/output/marker_style.py"
+          python -m py_compile "01_开发源码/output/lesion_viewer.py"
           python -m py_compile "01_开发源码/pacs_io/folder_adapter.py"
           python -m py_compile "01_开发源码/pacs_io/yunpacs_adapter.py"
+          python -m py_compile "01_开发源码/pacs_io/yunpacs_cache_adapter.py"
+          python -m py_compile "01_开发源码/phoenix_minimal.py"
 
       - name: Run mocked MONAI direct inference test
         shell: pwsh
@@ -45,3 +58,7 @@ jobs:
       - name: Run Phoenix core safety tests
         shell: pwsh
         run: python "07_测试/test_phoenix_core_safety.py"
+
+      - name: Run marker precision tests
+        shell: pwsh
+        run: python "07_测试/test_marker_precision.py"

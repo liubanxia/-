@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import shutil
 import subprocess
@@ -9,8 +11,10 @@ import numpy as np
 import SimpleITK as sitk
 from scipy import ndimage
 
-from core.model_adapter import ModelAdapter
 from core.ct_nifti import series_to_nifti
+from core.ct_series_selector import select_ct_series
+from core.environment_paths import resolve_project_root
+from core.model_adapter import ModelAdapter
 
 
 LABELS = {
@@ -28,6 +32,7 @@ class BlastCTAdapter(ModelAdapter):
     def __init__(self, cache_dir):
         self.cache_dir = Path(cache_dir)
         self.cli = None
+        self.project_root = resolve_project_root()
 
     def load(self):
         cli = Path(sys.executable).parent / "blast-ct.exe"
@@ -39,31 +44,32 @@ class BlastCTAdapter(ModelAdapter):
             cli = Path(found)
 
         if not self.cache_dir.exists():
-            raise FileNotFoundError(
-                str(self.cache_dir)
-            )
+            raise FileNotFoundError(str(self.cache_dir))
 
         self.cli = cli
 
+    def _select_series(self, case):
+        return select_ct_series(
+            case,
+            anatomy="head",
+            minimum_images=16,
+        )
+
     def predict(self, case):
-        ct_series = [
-            x for x in case.series
-            if str(x.modality).upper() == "CT"
-        ]
+        if self.cli is None:
+            raise RuntimeError("blast_ct_head 尚未load")
 
-        if not ct_series:
-            return {
-                "model": self.name,
-                "error": "没有CT序列",
-            }
+        series = self._select_series(case)
 
-        series = max(
-            ct_series,
-            key=lambda x: len(x.files),
+        temp_root = self.project_root / "08_temp_cache"
+        temp_root.mkdir(
+            parents=True,
+            exist_ok=True,
         )
 
         with tempfile.TemporaryDirectory(
-            prefix="phoenix_blast_"
+            prefix="phoenix_blast_",
+            dir=str(temp_root),
         ) as td:
             td = Path(td)
 
@@ -92,100 +98,109 @@ class BlastCTAdapter(ModelAdapter):
                 env=env,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
 
-            cleanup_warning = ""
-
-            if run.returncode != 0:
-                if output_nii.exists():
-                    cleanup_warning = (
-                        "BLAST-CT预测已完成；Windows清理临时日志失败"
+            if run.returncode != 0 and not output_nii.exists():
+                raise RuntimeError(
+                    "BLAST-CT运行失败: "
+                    + (
+                        run.stderr[-2000:]
+                        or run.stdout[-2000:]
+                        or f"returncode={run.returncode}"
                     )
-                else:
-                    return {
-                        "model": self.name,
-                        "error": (
-                            run.stderr[-1500:]
-                            or run.stdout[-1500:]
-                        ),
-                    }
+                )
+
+            if not output_nii.exists():
+                raise RuntimeError("BLAST-CT没有生成分割结果")
 
             seg = sitk.GetArrayFromImage(
                 sitk.ReadImage(str(output_nii))
             )
 
             lesions = []
+            original_index = {
+                str(Path(path).resolve()): index
+                for index, path in enumerate(
+                    getattr(series, "files", []) or []
+                )
+            }
 
             for class_id, label in LABELS.items():
                 cc, count = ndimage.label(
                     seg == class_id
                 )
 
-                for n in range(1, count + 1):
-                    coords = np.argwhere(cc == n)
+                for component_id in range(1, count + 1):
+                    coords = np.argwhere(
+                        cc == component_id
+                    )
 
                     if len(coords) == 0:
                         continue
 
-                    # 每个3D连通区只生成一个候选。
-                    # 选择病灶截面积最大的层作为代表层，
-                    # 比直接使用3D几何中心更适合阅片显示。
                     z_values, z_counts = np.unique(
                         coords[:, 0],
                         return_counts=True,
                     )
-
                     z = int(
                         z_values[
                             np.argmax(z_counts)
                         ]
                     )
 
+                    if z < 0 or z >= len(ordered):
+                        continue
+
                     slice_coords = coords[
                         coords[:, 0] == z
                     ]
-
                     y, x = np.round(
-                        slice_coords[:, 1:3].mean(
-                            axis=0
-                        )
+                        slice_coords[:, 1:3].mean(axis=0)
                     ).astype(int)
 
-                    if z >= len(ordered):
-                        continue
+                    file_path = Path(ordered[z])
+                    image_index = original_index.get(
+                        str(file_path.resolve()),
+                        z,
+                    )
 
-                    file_path = ordered[z]
-
-                    try:
-                        image_index = series.files.index(
-                            file_path
-                        )
-                    except ValueError:
-                        image_index = int(z)
-
-                    voxel_count = int(len(coords))
-
-                    lesions.append({
-                        "label": label,
-                        "confidence": 0.0,
-                        "series_uid": series.series_uid,
-                        "image_index": image_index,
-                        "point": (int(x), int(y)),
-                        "voxel_count": voxel_count,
-                    })
+                    lesions.append(
+                        {
+                            "label": label,
+                            "finding": label,
+                            "confidence": 0.0,
+                            "series_uid": str(
+                                getattr(series, "series_uid", "")
+                            ),
+                            "image_index": int(image_index),
+                            "point": (int(x), int(y)),
+                            "geometry_mode": "native_segmentation_pixel",
+                            "voxel_count": int(len(coords)),
+                            "source": self.name,
+                        }
+                    )
 
             lesions.sort(
-                key=lambda item: item.get(
-                    "voxel_count",
-                    0,
-                ),
+                key=lambda item: item.get("voxel_count", 0),
                 reverse=True,
             )
 
             return {
                 "model": self.name,
                 "processed_images": len(ordered),
+                "series_uid": str(
+                    getattr(series, "series_uid", "")
+                ),
                 "lesions": lesions,
+                "inference_backend": "blast_ct_cli",
+                "device": "cpu",
+                "warning": (
+                    "BLAST-CT已生成结果，但外部CLI返回非零状态；结果需复核。"
+                    if run.returncode != 0
+                    else ""
+                ),
             }
 
     def unload(self):

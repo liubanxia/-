@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import types
 import unittest
 from pathlib import Path
 
@@ -12,6 +13,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from core.contracts import AnalysisResult
+from core.ct_series_selector import select_ct_series
 from core.dicom_geometry import DicomPlaneGeometry, world_lps_to_pixel
 from core.execution_status import execution_from_raw
 from core.report_generator import generate_report
@@ -68,6 +70,73 @@ class PhoenixCoreSafetyTest(unittest.TestCase):
         self.assertAlmostEqual(x, 10.0)
         self.assertAlmostEqual(y, 3.0)
         self.assertAlmostEqual(offset, 0.0)
+
+    def test_chest_specialist_does_not_pick_longer_abdominal_series(self):
+        abdomen = types.SimpleNamespace(
+            modality="CT",
+            series_description="ABDOMEN PELVIS",
+            protocol_name="ABDOMEN",
+            files=[Path(f"a_{i}.dcm") for i in range(500)],
+        )
+        chest = types.SimpleNamespace(
+            modality="CT",
+            series_description="CHEST LUNG",
+            protocol_name="THORAX",
+            files=[Path(f"c_{i}.dcm") for i in range(120)],
+        )
+        case = types.SimpleNamespace(series=[abdomen, chest])
+
+        selected = select_ct_series(case, "chest")
+        self.assertIs(selected, chest)
+
+    def test_head_specialist_does_not_pick_longer_chest_series(self):
+        chest = types.SimpleNamespace(
+            modality="CT",
+            series_description="CHEST THORAX",
+            protocol_name="LUNG",
+            files=[Path(f"c_{i}.dcm") for i in range(500)],
+        )
+        head = types.SimpleNamespace(
+            modality="CT",
+            series_description="HEAD BRAIN",
+            protocol_name="HEAD",
+            files=[Path(f"h_{i}.dcm") for i in range(80)],
+        )
+        case = types.SimpleNamespace(series=[chest, head])
+
+        selected = select_ct_series(case, "head")
+        self.assertIs(selected, head)
+
+    def test_specialist_refuses_unmatched_body_part(self):
+        abdomen = types.SimpleNamespace(
+            modality="CT",
+            series_description="ABDOMEN PELVIS",
+            protocol_name="ABDOMEN",
+            files=[Path(f"a_{i}.dcm") for i in range(200)],
+        )
+        case = types.SimpleNamespace(series=[abdomen])
+
+        with self.assertRaises(RuntimeError):
+            select_ct_series(case, "chest")
+        with self.assertRaises(RuntimeError):
+            select_ct_series(case, "head")
+
+    def test_localizer_is_never_selected_as_specialist_series(self):
+        scout = types.SimpleNamespace(
+            modality="CT",
+            series_description="CHEST SCOUT LOCALIZER",
+            protocol_name="CHEST",
+            files=[Path(f"s_{i}.dcm") for i in range(40)],
+        )
+        diagnostic = types.SimpleNamespace(
+            modality="CT",
+            series_description="CHEST AXIAL LUNG",
+            protocol_name="THORAX",
+            files=[Path(f"d_{i}.dcm") for i in range(100)],
+        )
+        case = types.SimpleNamespace(series=[scout, diagnostic])
+
+        self.assertIs(select_ct_series(case, "chest"), diagnostic)
 
     def test_failed_model_is_never_treated_as_executed_negative(self):
         execution = execution_from_raw(

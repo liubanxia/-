@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -14,7 +15,7 @@ SRC_ROOT = PROJECT_ROOT / "01_开发源码"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from output.lesion_viewer import LesionViewer
+from output.marker_style import draw_precision_arrow, scaled_point
 
 
 def _first_ct_dicom(root: Path) -> Path:
@@ -52,10 +53,8 @@ def _first_number(value, default):
     try:
         if isinstance(value, (list, tuple)):
             return float(value[0])
-
         if hasattr(value, "__iter__") and not isinstance(value, (str, bytes)):
             return float(list(value)[0])
-
         return float(value)
     except Exception:
         return float(default)
@@ -66,7 +65,6 @@ def _to_uint8(ds) -> np.ndarray:
 
     slope = float(getattr(ds, "RescaleSlope", 1.0) or 1.0)
     intercept = float(getattr(ds, "RescaleIntercept", 0.0) or 0.0)
-
     pixels = pixels * slope + intercept
 
     wc = getattr(ds, "WindowCenter", None)
@@ -80,15 +78,12 @@ def _to_uint8(ds) -> np.ndarray:
     else:
         low = float(np.percentile(pixels, 1.0))
         high = float(np.percentile(pixels, 99.0))
-
         if high <= low:
             high = low + 1.0
 
     pixels = np.clip(pixels, low, high)
     pixels = (pixels - low) / (high - low)
-    pixels = (pixels * 255.0).astype(np.uint8)
-
-    return pixels
+    return (pixels * 255.0).astype(np.uint8)
 
 
 def build_demo(dicom_root: Path) -> Path:
@@ -108,30 +103,46 @@ def build_demo(dicom_root: Path) -> Path:
     h, w = original_shape[:2]
 
     targets = [
+        (int(w * 0.08), int(h * 0.08), "EDGE-1"),
         (int(w * 0.25), int(h * 0.25), "A"),
         (int(w * 0.50), int(h * 0.50), "B"),
         (int(w * 0.75), int(h * 0.75), "C"),
+        (int(w * 0.92), int(h * 0.92), "EDGE-2"),
     ]
 
-    viewer = LesionViewer()
+    measured = []
 
-    for x, y, _label in targets:
-        viewer._draw_arrow(
-            image,
+    for x, y, label in targets:
+        tip = draw_precision_arrow(
+            image=image,
+            point=(x, y),
+            original_shape=original_shape,
+            fill="red",
+        )
+        expected = scaled_point(
             (x, y),
             original_shape,
+            (image.width, image.height),
+        )
+        measured.append(
+            (
+                label,
+                math.hypot(
+                    tip[0] - expected[0],
+                    tip[1] - expected[1],
+                ),
+            )
         )
 
     draw = ImageDraw.Draw(image)
 
-    sx = image.width / w
-    sy = image.height / h
-
     for x, y, label in targets:
-        px = int(x * sx)
-        py = int(y * sy)
+        px, py = scaled_point(
+            (x, y),
+            original_shape,
+            (image.width, image.height),
+        )
 
-        # 绿色参考点只用于校准，正式Phoenix不会显示。
         draw.ellipse(
             (px - 2, py - 2, px + 2, py + 2),
             fill="lime",
@@ -142,6 +153,11 @@ def build_demo(dicom_root: Path) -> Path:
             fill="lime",
         )
 
+    max_error = max(
+        (error for _label, error in measured),
+        default=0.0,
+    )
+
     output_dir = PROJECT_ROOT / "08_temp_cache"
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -150,7 +166,13 @@ def build_demo(dicom_root: Path) -> Path:
 
     print(f"CALIBRATION_DICOM={dicom_path}")
     print(f"CALIBRATION_OUTPUT={output_path}")
-    print("CHECK=红色箭头尖端应精确落在绿色参考点上")
+    print(f"MAX_TIP_ERROR_PX={max_error:.6f}")
+    print("CHECK=每个红色箭头尖端应精确落在对应绿色参考点上")
+
+    if max_error > 0.01:
+        raise RuntimeError(
+            f"箭头尖端坐标校准失败: max_error={max_error:.6f}px"
+        )
 
     return output_path
 
