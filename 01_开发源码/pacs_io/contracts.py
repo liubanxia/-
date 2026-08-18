@@ -9,6 +9,8 @@ class DicomSeries:
     series_uid: str = ""
     modality: str = ""
     files: List[Path] = field(default_factory=list)
+    series_description: str = ""
+    protocol_name: str = ""
 
 
 @dataclass
@@ -17,3 +19,6 @@ class CaseInput:
     series: List[DicomSeries] = field(default_factory=list)
     source: str = "local"
     temp_dir: Optional[Path] = None
+    study_uid: str = ""
+    source_path: Optional[Path] = None
+    warnings: List[str] = field(default_factory=list)
