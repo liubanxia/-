@@ -1,6 +1,8 @@
 from .case_router import (
+    XRAY_MODALITIES,
     ct_route_decision,
     get_modalities,
+    get_xray_region,
     select_ct_specialists,
     select_initial_models,
     select_models,
@@ -19,8 +21,16 @@ class PhoenixPipeline:
     def __init__(self, model_hub):
         self.model_hub = model_hub
 
+    def _registered(self, names):
+        registered = set(getattr(self.model_hub, "models", {}).keys())
+        return [
+            name
+            for name in list(dict.fromkeys(names or []))
+            if name in registered
+        ]
+
     def _execute_models(self, case, names):
-        names = list(dict.fromkeys(names or []))
+        names = self._registered(names)
         if not names:
             return {}
 
@@ -68,52 +78,90 @@ class PhoenixPipeline:
                 "regions_without_diagnostic_model": [],
             }
 
-        regions_without_model = []
         if "CT" in modalities:
             decision = routing_summary.get("ct_decision", {}) or {}
-            routed_regions = decision.get("router_regions", []) or []
-            # Current formal CT disease coverage is head + chest. A routed
-            # abdomen/pelvis/other region with no specialist must be surfaced as
-            # a coverage gap rather than looking like an AI-negative case.
-            covered = {"head", "chest"}
-            regions_without_model = [
+            routed_regions = set(
                 str(region)
-                for region in routed_regions
-                if str(region) not in covered
-            ]
+                for region in decision.get("router_regions", []) or []
+            )
+            if decision.get("head"):
+                routed_regions.add("head")
+            if decision.get("chest"):
+                routed_regions.add("chest")
+
+            selected_specialists = set(
+                routing_summary.get("second_stage_models", []) or []
+            )
+            covered_regions = set()
+            if "blast_ct_head" in selected_specialists:
+                covered_regions.add("head")
+            if "monai_lung_nodule_ct" in selected_specialists:
+                covered_regions.add("chest")
+
+            gaps = sorted(routed_regions - covered_regions)
+            if not gaps and not routed_regions:
+                gaps = ["undetermined_ct_region"]
+
             return {
                 "status": "router_only",
-                "reason": "ct_anatomy_routed_but_no_diagnostic_model_selected",
-                "regions_without_diagnostic_model": regions_without_model,
+                "reason": "ct_anatomy_routed_but_no_active_diagnostic_model_selected",
+                "regions_without_diagnostic_model": gaps,
+            }
+
+        if modalities & XRAY_MODALITIES:
+            region = str(routing_summary.get("xray_region", "other") or "other")
+            return {
+                "status": "no_diagnostic_coverage",
+                "reason": "xray_region_has_no_active_diagnostic_model",
+                "regions_without_diagnostic_model": [region],
             }
 
         return {
             "status": "no_diagnostic_coverage",
-            "reason": "no_diagnostic_or_screening_model_selected",
+            "reason": "no_diagnostic_model_selected",
             "regions_without_diagnostic_model": [],
         }
 
     def analyze(self, case):
         modalities = get_modalities(case)
+        registered_models = list(
+            getattr(self.model_hub, "models", {}).keys()
+        )
         raw = {}
         routing_summary = {
             "mode": "single_stage",
             "initial_models": [],
+            "unavailable_initial_models": [],
+            "second_stage_candidates": [],
             "second_stage_models": [],
+            "unavailable_second_stage_models": [],
         }
 
         if "CT" in modalities:
-            # Stage 1 must finish before specialist selection. This turns
-            # BodyPartRegression from a passive audit model into the actual CT
-            # anatomy router.
-            initial_models = select_initial_models(case)
+            initial_candidates = select_initial_models(case)
+            initial_models = self._registered(initial_candidates)
             routing_summary["mode"] = "ct_two_stage"
             routing_summary["initial_models"] = list(initial_models)
+            routing_summary["unavailable_initial_models"] = [
+                name for name in initial_candidates if name not in initial_models
+            ]
             raw.update(self._execute_models(case, initial_models))
 
             router_result = raw.get("body_part_regression")
-            second_stage = select_ct_specialists(case, router_result)
+            second_stage_candidates = select_ct_specialists(
+                case,
+                router_result,
+            )
+            second_stage = self._registered(second_stage_candidates)
+            routing_summary["second_stage_candidates"] = list(
+                second_stage_candidates
+            )
             routing_summary["second_stage_models"] = list(second_stage)
+            routing_summary["unavailable_second_stage_models"] = [
+                name
+                for name in second_stage_candidates
+                if name not in second_stage
+            ]
             routing_summary["ct_decision"] = ct_route_decision(
                 case,
                 router_result,
@@ -125,8 +173,15 @@ class PhoenixPipeline:
                 *second_stage,
             ]))
         else:
-            selected = select_models(case)
+            if modalities & XRAY_MODALITIES:
+                routing_summary["xray_region"] = get_xray_region(case)
+
+            initial_candidates = select_models(case)
+            selected = self._registered(initial_candidates)
             routing_summary["initial_models"] = list(selected)
+            routing_summary["unavailable_initial_models"] = [
+                name for name in initial_candidates if name not in selected
+            ]
             raw.update(self._execute_models(case, selected))
 
         incomplete = []
@@ -183,9 +238,6 @@ class PhoenixPipeline:
             if is_screening_model(item.model_name)
         ]
 
-        registered_models = list(
-            getattr(self.model_hub, "models", {}).keys()
-        )
         registered_not_selected = [
             name
             for name in registered_models
@@ -232,6 +284,11 @@ class PhoenixPipeline:
             "diagnostic_coverage": diagnostic_coverage,
             "routing": routing_summary,
             "hardware_profile": hardware_summary,
+            "model_pool_policy": getattr(
+                self.model_hub,
+                "model_pool_policy",
+                {},
+            ),
             "registered_models": registered_models,
             "registered_models_not_selected": registered_not_selected,
         }

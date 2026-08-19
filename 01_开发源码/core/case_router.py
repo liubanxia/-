@@ -53,8 +53,6 @@ def get_xray_region(case):
         if str(getattr(series, "modality", "")).upper() not in XRAY_MODALITIES:
             continue
 
-        # Prefer already parsed series metadata when the PACS adapter provides
-        # it. Fall back to DICOM header reads for old adapters.
         for attr in (
             "description",
             "series_description",
@@ -101,14 +99,6 @@ def get_xray_region(case):
 
 
 def _normalize_router_regions(router_result) -> set[str]:
-    """Extract canonical anatomy from BodyPartRegression output.
-
-    BodyPartRegression returns both ``active_body_regions`` and a normalized
-    ``body_part_examined_tag``. The previous Phoenix pipeline ran this router
-    but decided specialists before the router result existed. This helper makes
-    the model output an actual routing signal while keeping DICOM metadata as a
-    fallback.
-    """
     if not isinstance(router_result, dict):
         return set()
 
@@ -155,9 +145,6 @@ def select_ct_specialists(case, router_result=None):
     decision = ct_route_decision(case, router_result)
     models = []
 
-    # Head and chest specialists are independent. Each adapter performs its own
-    # anatomy-aware series binding before inference, so a multi-region Study can
-    # safely invoke both.
     if decision["head"]:
         models.append("blast_ct_head")
 
@@ -171,15 +158,17 @@ def select_initial_models(case):
     modalities = get_modalities(case)
 
     if "CT" in modalities:
-        # True stage 1: run the anatomy router first. Specialist selection is
-        # intentionally deferred until its result is available.
         return ["body_part_regression"]
 
     if modalities & XRAY_MODALITIES:
         region = get_xray_region(case)
 
         if region == "chest":
-            return ["torchxrayvision_chest"]
+            # The previous TorchXRayVision path was screening-only. Do not call
+            # it in the clinical runtime and do not present its scores as a
+            # diagnostic result. Chest DR remains an explicit coverage gap until
+            # a disease detector/localizer passes hospital deployment testing.
+            return []
 
         if region == "bone":
             return [
@@ -192,7 +181,6 @@ def select_initial_models(case):
 
 
 def select_models(case, router_result=None):
-    """Compatibility selector plus complete CT plan when router output exists."""
     modalities = get_modalities(case)
 
     if "CT" in modalities:

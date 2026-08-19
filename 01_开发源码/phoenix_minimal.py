@@ -92,6 +92,17 @@ def main():
         analysis = result["analysis"]
         summary = result.get("execution_summary", {})
 
+        pool = summary.get("model_pool_policy", {}) or {}
+        if pool:
+            print(
+                "MODEL_POOL_ACTIVE="
+                f"{pool.get('active_registered_models', [])}"
+            )
+            archived = list(
+                (pool.get("archived_from_frontline", {}) or {}).keys()
+            )
+            print(f"MODEL_POOL_ARCHIVED={archived}")
+
         print("调用模型：", result["selected_models"])
         print("病灶数量：", len(analysis.lesions))
         print(
@@ -118,7 +129,24 @@ def main():
         if routing:
             print(f"ROUTING_MODE={routing.get('mode', '')}")
             print(f"ROUTING_INITIAL={routing.get('initial_models', [])}")
-            print(f"ROUTING_SECOND_STAGE={routing.get('second_stage_models', [])}")
+            if routing.get("unavailable_initial_models"):
+                print(
+                    "ROUTING_INITIAL_UNAVAILABLE="
+                    f"{routing.get('unavailable_initial_models', [])}"
+                )
+            print(
+                "ROUTING_SECOND_STAGE_CANDIDATES="
+                f"{routing.get('second_stage_candidates', [])}"
+            )
+            print(
+                "ROUTING_SECOND_STAGE="
+                f"{routing.get('second_stage_models', [])}"
+            )
+            if routing.get("unavailable_second_stage_models"):
+                print(
+                    "ROUTING_SECOND_STAGE_UNAVAILABLE="
+                    f"{routing.get('unavailable_second_stage_models', [])}"
+                )
             if routing.get("ct_decision"):
                 print(f"ROUTING_CT_DECISION={routing.get('ct_decision')}")
 

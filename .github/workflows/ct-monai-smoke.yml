@@ -50,6 +50,8 @@ jobs:
           python -m py_compile "01_开发源码/core/environment_paths.py"
           python -m py_compile "01_开发源码/core/hardware_profile.py"
           python -m py_compile "01_开发源码/core/model_hub.py"
+          python -m py_compile "01_开发源码/core/model_pool_policy.py"
+          python -m py_compile "01_开发源码/core/build_model_hub.py"
           python -m py_compile "01_开发源码/core/yunpacs_live_controller.py"
           python -m py_compile "01_开发源码/output/marker_style.py"
           python -m py_compile "01_开发源码/output/lesion_viewer.py"
