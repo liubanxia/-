@@ -4,7 +4,12 @@ from dataclasses import replace
 from pathlib import Path
 
 from .pdf_parser import pdf_page_count, sha256_file
-from .translator import PDFTranslator, TranslationResult
+from .translator import (
+    EXPORT_RICH,
+    PDFTranslator,
+    TranslationResult,
+)
+from .translation_pdf import LAYOUT_ORIGINAL_BILINGUAL
 
 
 _INSTALLED = False
@@ -33,7 +38,13 @@ def _rebuild_result(
         return None
 
     digest = sha256_file(pdf_path)
-    book_root, pages_root, _audit_root, checkpoint_path, _final_output = translator._book_paths(
+    (
+        book_root,
+        pages_root,
+        _audit_root,
+        checkpoint_path,
+        _final_output,
+    ) = translator._book_paths(
         pdf_path,
         digest,
         target_language,
@@ -59,13 +70,26 @@ def _rebuild_result(
         # failure. Let the normal resume path translate the missing pages.
         return None
 
-    output_paths, image_count = translator._assemble_outputs(
+    # Old checkpoints predate selectable output formats. Rebuild those in the
+    # original rich-text form; new checkpoints preserve the user's selected
+    # PDF/text format and bilingual layout.
+    output_layout = str(
+        state.get("output_layout", LAYOUT_ORIGINAL_BILINGUAL)
+    )
+    export_format = str(state.get("export_format", EXPORT_RICH))
+    part_pages = max(1, int(state.get("part_pages", 50) or 50))
+
+    output_paths, image_count = translator._build_deliverables(
         pdf_path,
         book_root,
         pages_root,
         start_page,
         total_pages,
         target_language,
+        output_layout=output_layout,
+        export_format=export_format,
+        part_pages=part_pages,
+        progress=None,
     )
     if not output_paths or not output_paths[0].is_file():
         return None
@@ -73,7 +97,9 @@ def _rebuild_result(
     warning_pages = int(state.get("warning_pages", 0) or 0)
     state.update(
         {
-            "status": "completed_with_warnings" if warning_pages else "completed",
+            "status": (
+                "completed_with_warnings" if warning_pages else "completed"
+            ),
             "last_completed_page": total_pages,
             "output_path": str(output_paths[0]),
             "output_paths": [str(path) for path in output_paths],
@@ -88,6 +114,7 @@ def _rebuild_result(
             output_path=output_paths[0],
             output_paths=tuple(output_paths),
             image_count=int(image_count),
+            paused=False,
         )
 
     selected_total = total_pages - start_page + 1
@@ -103,16 +130,16 @@ def _rebuild_result(
         available_backends=tuple(translator.engine.available_backends()),
         output_paths=tuple(output_paths),
         image_count=int(image_count),
+        paused=False,
+        smart_level=str(state.get("smart_level", "smart1")),
+        output_layout=output_layout,
+        export_format=export_format,
+        part_pages=part_pages,
     )
 
 
 def install() -> None:
-    """Guarantee that a completed translation always has a readable final file.
-
-    Older Phoenix builds could leave valid per-page checkpoints while the final
-    assembled TXT/Markdown/HTML file was missing. This wrapper repairs that
-    state without retranslating completed pages.
-    """
+    """Guarantee completed translations have readable final deliverables."""
 
     global _INSTALLED
     if _INSTALLED:
@@ -129,7 +156,11 @@ def install() -> None:
         try:
             result = original(self, source, **kwargs)
         except FileNotFoundError as exc:
-            missing = Path(exc.filename) if getattr(exc, "filename", None) else None
+            missing = (
+                Path(exc.filename)
+                if getattr(exc, "filename", None)
+                else None
+            )
             if not _is_translation_output(missing, self.output_root):
                 raise
             recovered = _rebuild_result(
@@ -141,6 +172,11 @@ def install() -> None:
             if recovered is None:
                 raise
             return recovered
+
+        # Paused tasks intentionally do not have final assembled deliverables.
+        # The page checkpoints are the valid product state until resume.
+        if bool(getattr(result, "paused", False)):
+            return result
 
         output_path = Path(result.output_path)
         if output_path.is_file():
