@@ -63,6 +63,30 @@ class PDFTranslator:
         except Exception:
             return {}
 
+    @staticmethod
+    def _resolve_resume_start_page(
+        state: dict,
+        requested_start_page: int,
+        *,
+        force_restart: bool = False,
+    ) -> int:
+        """Use the checkpoint's original start page when resuming an existing job.
+
+        A user reopening the GUI should not have to remember the exact start page
+        used by an earlier translation run. Explicit restart mode still honors a
+        newly requested start page because the old checkpoint is about to be
+        discarded.
+        """
+
+        requested = max(1, int(requested_start_page))
+        if force_restart or not state:
+            return requested
+        try:
+            existing = int(state.get('start_page', requested))
+        except (TypeError, ValueError):
+            return requested
+        return max(1, existing)
+
     def _book_paths(
         self,
         pdf_path: Path,
@@ -254,11 +278,16 @@ class PDFTranslator:
                 raise RuntimeError('检测到PDF内容已变化，请使用重新翻译模式。')
             if state.get('target_language') != target_language:
                 raise RuntimeError('检测到目标语言已变化，请使用重新翻译模式。')
-            if int(state.get('start_page', start_page)) != start_page:
-                raise RuntimeError(
-                    '该书已有不同开始页的翻译任务，请使用原开始页继续，'
-                    '或选择重新翻译。'
-                )
+
+        start_page = self._resolve_resume_start_page(
+            state,
+            start_page,
+            force_restart=force_restart,
+        )
+        if start_page > total_pages:
+            raise RuntimeError(
+                f'翻译checkpoint中的开始页 {start_page} 超出PDF总页数 {total_pages}'
+            )
 
         state = {
             'source_path': str(pdf_path),
