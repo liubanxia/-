@@ -83,13 +83,14 @@ def _body_part(case):
     }
 
 
-def _simple_output(name, processed=1, *, backend=None):
+def _simple_output(name, processed=1, *, status="success"):
     return lambda _case: {
-        "status": "success",
-        "processed_images": processed,
+        "status": status,
+        "processed_images": processed if status == "success" else 0,
         "lesions": [],
         "device": "cpu",
-        "inference_backend": backend or f"simulated_{name}",
+        "inference_backend": f"simulated_{name}",
+        **({"error": "simulated failure"} if status != "success" else {}),
     }
 
 
@@ -111,106 +112,76 @@ def _case(case_id, series):
 
 
 class HospitalExecutionMatrixTests(unittest.TestCase):
-    def _hub(self):
+    def _hub(self, *, fail_fracture_segmentation=False):
         with patch(
             "core.model_hub.detect_hardware_profile",
             return_value=HOSPITAL_PROFILE,
         ):
             hub = ModelHub()
 
-        # This mirrors the hospital frontline pool: useful router, real disease
-        # diagnostics and fracture localization helpers only.
         hub.register(_Model("body_part_regression", _body_part))
         hub.register(_Model(
-            "blast_ct_head",
-            _simple_output("blast_ct_head", processed=48, backend="simulated_blast_cpu"),
-        ))
-        hub.register(_Model(
             "fracture_rescbam",
-            _simple_output("fracture_rescbam", backend="simulated_onnx_cpu"),
+            _simple_output("fracture_rescbam"),
         ))
         hub.register(_Model(
             "fractureatlas_localization",
-            _simple_output("fractureatlas_localization", backend="simulated_yolo_cpu"),
+            _simple_output("fractureatlas_localization"),
         ))
         hub.register(_Model(
             "fractureatlas_segmentation",
-            _simple_output("fractureatlas_segmentation", backend="simulated_yolo_cpu"),
+            _simple_output(
+                "fractureatlas_segmentation",
+                status="error" if fail_fracture_segmentation else "success",
+            ),
         ))
         return attach_model_pool_policy(hub)
 
-    @staticmethod
-    def _print_matrix(label, result):
-        summary = result["execution_summary"]
-        print(f"HOSPITAL_SIM_CASE={label}")
-        print(f"HOSPITAL_SIM_SELECTED={result['selected_models']}")
-        print(f"HOSPITAL_SIM_DIAGNOSTIC_EXECUTED={result['diagnostic_executed']}")
-        print(f"HOSPITAL_SIM_DIAGNOSTIC_VALID={result['diagnostic_valid']}")
-        print(f"HOSPITAL_SIM_COVERAGE={summary.get('diagnostic_coverage')}")
-        print(f"HOSPITAL_SIM_ROUTING={summary.get('routing')}")
-        for item in summary.get("models", []):
-            print(
-                "HOSPITAL_SIM_MODEL "
-                f"name={item.get('model_name')} "
-                f"status={item.get('status')} "
-                f"executed={item.get('executed')} "
-                f"device={item.get('device')} "
-                f"backend={item.get('backend')}"
-            )
+    def test_hospital_head_ct_exposes_student_gap_and_never_falls_back_to_blast(self):
+        hub = self._hub()
+        result = PhoenixPipeline(hub).analyze(
+            _case("HOSPITAL_HEAD_CT", [_series("CT")])
+        )
 
-    def test_hospital_chest_ct_does_not_register_or_fake_run_monai(self):
+        self.assertEqual(result["selected_models"], ["body_part_regression"])
+        route = result["execution_summary"]["routing"]
+        self.assertIn("ich_2p5d_student", route["unavailable_second_stage_models"])
+        self.assertNotIn("blast_ct_head", hub.models)
+        self.assertFalse(result["diagnostic_valid"])
+        self.assertEqual(
+            result["execution_summary"]["diagnostic_coverage"]["regions_without_diagnostic_model"],
+            ["head"],
+        )
+
+    def test_hospital_chest_ct_keeps_teacher_out_of_frontline(self):
         hub = self._hub()
         result = PhoenixPipeline(hub).analyze(
             _case("HOSPITAL_CHEST_CT", [_series("CT")])
         )
-        self._print_matrix("CHEST_CT", result)
 
         self.assertEqual(result["selected_models"], ["body_part_regression"])
-        route = result["execution_summary"]["routing"]
-        self.assertEqual(route["second_stage_candidates"], ["monai_lung_nodule_ct"])
-        self.assertEqual(route["second_stage_models"], [])
-        self.assertEqual(
-            route["unavailable_second_stage_models"],
-            ["monai_lung_nodule_ct"],
-        )
         self.assertNotIn("monai_lung_nodule_ct", hub.models)
-        self.assertFalse(result["diagnostic_executed"])
         self.assertFalse(result["diagnostic_valid"])
         self.assertEqual(
             result["execution_summary"]["diagnostic_coverage"]["regions_without_diagnostic_model"],
             ["chest"],
         )
 
-    def test_hospital_head_ct_runs_router_and_blast_cpu(self):
-        hub = self._hub()
-        result = PhoenixPipeline(hub).analyze(
-            _case("HOSPITAL_HEAD_CT", [_series("CT")])
-        )
-        self._print_matrix("HEAD_CT", result)
-
-        self.assertEqual(
-            result["selected_models"],
-            ["body_part_regression", "blast_ct_head"],
-        )
-        self.assertTrue(result["diagnostic_executed"])
-        self.assertTrue(result["diagnostic_valid"])
-
-    def test_hospital_abdomen_ct_exposes_real_diagnostic_gap(self):
+    def test_hospital_abdomen_ct_exposes_planned_students_as_unavailable(self):
         hub = self._hub()
         result = PhoenixPipeline(hub).analyze(
             _case("HOSPITAL_ABDOMEN_CT", [_series("CT")])
         )
-        self._print_matrix("ABDOMEN_CT", result)
 
-        self.assertEqual(result["selected_models"], ["body_part_regression"])
-        self.assertFalse(result["diagnostic_executed"])
-        self.assertFalse(result["diagnostic_valid"])
+        route = result["execution_summary"]["routing"]
         self.assertEqual(
-            result["execution_summary"]["diagnostic_coverage"]["regions_without_diagnostic_model"],
-            ["abdomen"],
+            route["second_stage_candidates"],
+            ["renal_stone_student", "sbo_2p5d_student", "appendicitis_2p5d_student"],
         )
+        self.assertEqual(result["selected_models"], ["body_part_regression"])
+        self.assertFalse(result["diagnostic_valid"])
 
-    def test_hospital_chest_dr_screening_model_is_removed(self):
+    def test_hospital_chest_dr_points_to_nano_detector_without_screening_fallback(self):
         hub = self._hub()
         result = PhoenixPipeline(hub).analyze(
             _case(
@@ -218,17 +189,14 @@ class HospitalExecutionMatrixTests(unittest.TestCase):
                 [_series("DX", body_part="CHEST")],
             )
         )
-        self._print_matrix("CHEST_DR", result)
 
+        route = result["execution_summary"]["routing"]
+        self.assertEqual(route["unavailable_initial_models"], ["chest_dr_nano_detector"])
         self.assertEqual(result["selected_models"], [])
         self.assertNotIn("torchxrayvision_chest", hub.models)
-        self.assertFalse(result["diagnostic_executed"])
         self.assertFalse(result["diagnostic_valid"])
-        coverage = result["execution_summary"]["diagnostic_coverage"]
-        self.assertEqual(coverage["status"], "no_diagnostic_coverage")
-        self.assertEqual(coverage["regions_without_diagnostic_model"], ["chest"])
 
-    def test_hospital_bone_dr_runs_fracture_diagnostic_and_helpers(self):
+    def test_hospital_bone_dr_requires_detection_localization_and_segmentation(self):
         hub = self._hub()
         result = PhoenixPipeline(hub).analyze(
             _case(
@@ -236,7 +204,6 @@ class HospitalExecutionMatrixTests(unittest.TestCase):
                 [_series("DX", body_part="HAND")],
             )
         )
-        self._print_matrix("BONE_DR", result)
 
         self.assertEqual(
             result["selected_models"],
@@ -249,7 +216,23 @@ class HospitalExecutionMatrixTests(unittest.TestCase):
         self.assertTrue(result["diagnostic_executed"])
         self.assertTrue(result["diagnostic_valid"])
 
-    def test_archived_models_are_absent_from_hospital_frontline_pool(self):
+    def test_failed_fracture_segmentation_invalidates_clinical_chain(self):
+        hub = self._hub(fail_fracture_segmentation=True)
+        result = PhoenixPipeline(hub).analyze(
+            _case(
+                "HOSPITAL_BONE_DR_FAIL_SEG",
+                [_series("DX", body_part="HAND")],
+            )
+        )
+
+        self.assertTrue(result["diagnostic_executed"])
+        self.assertFalse(result["diagnostic_valid"])
+        self.assertEqual(
+            result["execution_summary"]["diagnostic_coverage"]["status"],
+            "diagnostic_spatial_chain_incomplete",
+        )
+
+    def test_archived_and_teacher_models_are_absent_from_hospital_frontline_pool(self):
         hub = self._hub()
         for name in ARCHIVED_FROM_FRONTLINE:
             self.assertNotIn(name, hub.models)
@@ -258,7 +241,6 @@ class HospitalExecutionMatrixTests(unittest.TestCase):
             set(hub.models),
             {
                 "body_part_regression",
-                "blast_ct_head",
                 "fracture_rescbam",
                 "fractureatlas_localization",
                 "fractureatlas_segmentation",

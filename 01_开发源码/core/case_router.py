@@ -6,9 +6,8 @@ from .ct_chest_gate import is_chest_ct
 from .ct_head_gate import is_head_ct
 
 
-XRAY_MODALITIES = {
-    "DX", "DR", "CR", "XR",
-}
+XRAY_MODALITIES = {"DX", "DR", "CR", "XR"}
+MRI_MODALITIES = {"MR", "MRI"}
 
 CHEST_WORDS = {
     "CHEST", "THORAX", "LUNG",
@@ -38,6 +37,23 @@ _CHEST_ROUTER_WORDS = {
     "胸", "肺",
 }
 
+_ABDOMEN_ROUTER_WORDS = {
+    "ABDOMEN", "ABDOMINAL", "LIVER", "HEPATIC",
+    "PANCREAS", "KIDNEY", "RENAL", "SPLEEN",
+    "BOWEL", "APPENDIX",
+    "腹", "肝", "胰", "肾", "脾", "肠", "阑尾",
+}
+
+_PELVIS_ROUTER_WORDS = {
+    "PELVIS", "PELVIC", "BLADDER", "PROSTATE", "UTERUS",
+    "骨盆", "盆腔", "膀胱", "前列腺", "子宫",
+}
+
+_LUMBAR_WORDS = {
+    "LUMBAR", "L-SPINE", "L SPINE", "LSPINE",
+    "腰椎", "腰骶",
+}
+
 
 def get_modalities(case):
     return {
@@ -46,28 +62,22 @@ def get_modalities(case):
     }
 
 
-def get_xray_region(case):
+def _series_text(series) -> str:
     text = []
 
-    for series in getattr(case, "series", []) or []:
-        if str(getattr(series, "modality", "")).upper() not in XRAY_MODALITIES:
-            continue
+    for attr in (
+        "description",
+        "series_description",
+        "study_description",
+        "protocol_name",
+        "body_part",
+    ):
+        value = getattr(series, attr, None)
+        if value:
+            text.append(str(value).upper())
 
-        for attr in (
-            "description",
-            "series_description",
-            "study_description",
-            "protocol_name",
-            "body_part",
-        ):
-            value = getattr(series, attr, None)
-            if value:
-                text.append(str(value).upper())
-
-        files = getattr(series, "files", []) or []
-        if not files:
-            continue
-
+    files = getattr(series, "files", []) or []
+    if files:
         try:
             ds = pydicom.dcmread(
                 str(files[0]),
@@ -75,25 +85,47 @@ def get_xray_region(case):
                 force=True,
             )
         except Exception:
-            continue
+            ds = None
 
-        for key in (
-            "BodyPartExamined",
-            "StudyDescription",
-            "SeriesDescription",
-            "ProtocolName",
-        ):
-            value = str(getattr(ds, key, "")).upper()
-            if value:
-                text.append(value)
+        if ds is not None:
+            for key in (
+                "BodyPartExamined",
+                "StudyDescription",
+                "SeriesDescription",
+                "ProtocolName",
+            ):
+                value = str(getattr(ds, key, "")).upper()
+                if value:
+                    text.append(value)
 
-    joined = " ".join(text)
+    return " ".join(text)
+
+
+def get_xray_region(case):
+    joined = " ".join(
+        _series_text(series)
+        for series in getattr(case, "series", []) or []
+        if str(getattr(series, "modality", "")).upper() in XRAY_MODALITIES
+    )
 
     if any(word in joined for word in CHEST_WORDS):
         return "chest"
 
     if any(word in joined for word in BONE_WORDS):
         return "bone"
+
+    return "other"
+
+
+def get_mri_region(case):
+    joined = " ".join(
+        _series_text(series)
+        for series in getattr(case, "series", []) or []
+        if str(getattr(series, "modality", "")).upper() in MRI_MODALITIES
+    )
+
+    if any(word in joined for word in _LUMBAR_WORDS):
+        return "lumbar_spine"
 
     return "other"
 
@@ -123,6 +155,10 @@ def _normalize_router_regions(router_result) -> set[str]:
         regions.add("head")
     if any(word.upper() in text for word in _CHEST_ROUTER_WORDS):
         regions.add("chest")
+    if any(word.upper() in text for word in _ABDOMEN_ROUTER_WORDS):
+        regions.add("abdomen")
+    if any(word.upper() in text for word in _PELVIS_ROUTER_WORDS):
+        regions.add("pelvis")
 
     return regions
 
@@ -138,20 +174,39 @@ def ct_route_decision(case, router_result=None) -> dict:
         "router_regions": sorted(router_regions),
         "head": metadata_head or "head" in router_regions,
         "chest": metadata_chest or "chest" in router_regions,
+        "abdomen": "abdomen" in router_regions,
+        "pelvis": "pelvis" in router_regions,
     }
 
 
 def select_ct_specialists(case, router_result=None):
+    """Return the *planned lightweight* second-stage diagnostic chain.
+
+    Teacher models are deliberately not returned here. If a student has not
+    been registered yet, Phoenix records it as unavailable instead of silently
+    falling back to a large teacher model.
+    """
     decision = ct_route_decision(case, router_result)
     models = []
 
     if decision["head"]:
-        models.append("blast_ct_head")
+        models.extend([
+            "ich_2p5d_student",
+            "ich_segmentation_student",
+            "brain_infarct_2p5d_student",
+            "brain_atrophy_quant_student",
+        ])
 
-    if decision["chest"]:
-        models.append("monai_lung_nodule_ct")
+    if decision["abdomen"] or decision["pelvis"]:
+        models.extend([
+            "renal_stone_student",
+            "sbo_2p5d_student",
+            "appendicitis_2p5d_student",
+        ])
 
-    return models
+    # Chest CT remains a declared gap until a lightweight disease chain passes
+    # the hospital executed=True + RAM + latency gate.
+    return list(dict.fromkeys(models))
 
 
 def select_initial_models(case):
@@ -164,11 +219,7 @@ def select_initial_models(case):
         region = get_xray_region(case)
 
         if region == "chest":
-            # The previous TorchXRayVision path was screening-only. Do not call
-            # it in the clinical runtime and do not present its scores as a
-            # diagnostic result. Chest DR remains an explicit coverage gap until
-            # a disease detector/localizer passes hospital deployment testing.
-            return []
+            return ["chest_dr_nano_detector"]
 
         if region == "bone":
             return [
@@ -176,6 +227,10 @@ def select_initial_models(case):
                 "fractureatlas_localization",
                 "fractureatlas_segmentation",
             ]
+
+    if modalities & MRI_MODALITIES:
+        if get_mri_region(case) == "lumbar_spine":
+            return ["lumbar_mri_student"]
 
     return []
 

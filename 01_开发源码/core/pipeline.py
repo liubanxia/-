@@ -1,7 +1,9 @@
 from .case_router import (
     XRAY_MODALITIES,
+    MRI_MODALITIES,
     ct_route_decision,
     get_modalities,
+    get_mri_region,
     get_xray_region,
     select_ct_specialists,
     select_initial_models,
@@ -9,6 +11,7 @@ from .case_router import (
 )
 from .execution_status import execution_from_raw
 from .lesion_geometry import resolve_lesions_for_case
+from .model_pool_policy import MODEL_REGION_COVERAGE
 from .model_roles import is_diagnostic_model, is_screening_model, model_role
 from .result_fusion import fuse_results
 from .report_generator import generate_report
@@ -43,6 +46,7 @@ class PhoenixPipeline:
         diagnostic_executions,
         screening_executions,
         routing_summary,
+        helper_failures,
     ):
         diagnostic_selected = [
             item.model_name for item in diagnostic_executions
@@ -58,25 +62,9 @@ class PhoenixPipeline:
             if item.executed and item.status == "success"
         ]
 
-        if diagnostic_selected:
-            if len(diagnostic_executed) == len(diagnostic_selected):
-                return {
-                    "status": "diagnostic_complete",
-                    "reason": "selected_diagnostic_models_completed",
-                    "regions_without_diagnostic_model": [],
-                }
-            return {
-                "status": "diagnostic_incomplete",
-                "reason": "selected_diagnostic_model_not_completed",
-                "regions_without_diagnostic_model": [],
-            }
-
-        if screening_executed:
-            return {
-                "status": "screening_only",
-                "reason": "screening_completed_but_no_diagnostic_model_selected",
-                "regions_without_diagnostic_model": [],
-            }
+        routed_regions = set()
+        covered_regions = set()
+        ct_gaps = []
 
         if "CT" in modalities:
             decision = routing_summary.get("ct_decision", {}) or {}
@@ -84,42 +72,93 @@ class PhoenixPipeline:
                 str(region)
                 for region in decision.get("router_regions", []) or []
             )
-            if decision.get("head"):
-                routed_regions.add("head")
-            if decision.get("chest"):
-                routed_regions.add("chest")
+            for region in ("head", "chest", "abdomen", "pelvis"):
+                if decision.get(region):
+                    routed_regions.add(region)
 
             selected_specialists = set(
                 routing_summary.get("second_stage_models", []) or []
             )
-            covered_regions = set()
-            if "blast_ct_head" in selected_specialists:
-                covered_regions.add("head")
-            if "monai_lung_nodule_ct" in selected_specialists:
-                covered_regions.add("chest")
+            for model_name in selected_specialists:
+                covered_regions.update(
+                    MODEL_REGION_COVERAGE.get(model_name, set())
+                )
 
-            gaps = sorted(routed_regions - covered_regions)
-            if not gaps and not routed_regions:
-                gaps = ["undetermined_ct_region"]
+            ct_gaps = sorted(routed_regions - covered_regions)
+            if not ct_gaps and not routed_regions and not diagnostic_selected:
+                ct_gaps = ["undetermined_ct_region"]
+
+        if diagnostic_selected:
+            if len(diagnostic_executed) != len(diagnostic_selected):
+                return {
+                    "status": "diagnostic_incomplete",
+                    "reason": "selected_diagnostic_model_not_completed",
+                    "regions_without_diagnostic_model": ct_gaps,
+                    "failed_spatial_helpers": list(helper_failures),
+                }
+
+            if helper_failures:
+                return {
+                    "status": "diagnostic_spatial_chain_incomplete",
+                    "reason": "diagnostic_completed_but_localization_or_segmentation_failed",
+                    "regions_without_diagnostic_model": ct_gaps,
+                    "failed_spatial_helpers": list(helper_failures),
+                }
+
+            if "CT" in modalities and ct_gaps:
+                return {
+                    "status": "diagnostic_partial_coverage",
+                    "reason": "some_routed_ct_regions_have_no_hospital_qualified_diagnostic_chain",
+                    "regions_without_diagnostic_model": ct_gaps,
+                    "failed_spatial_helpers": [],
+                }
 
             return {
+                "status": "diagnostic_complete",
+                "reason": "selected_diagnostic_and_spatial_models_completed",
+                "regions_without_diagnostic_model": [],
+                "failed_spatial_helpers": [],
+            }
+
+        if screening_executed:
+            return {
+                "status": "screening_only",
+                "reason": "screening_completed_but_no_diagnostic_model_selected",
+                "regions_without_diagnostic_model": ct_gaps,
+                "failed_spatial_helpers": list(helper_failures),
+            }
+
+        if "CT" in modalities:
+            return {
                 "status": "router_only",
-                "reason": "ct_anatomy_routed_but_no_active_diagnostic_model_selected",
-                "regions_without_diagnostic_model": gaps,
+                "reason": "ct_anatomy_routed_but_no_hospital_qualified_diagnostic_chain_selected",
+                "regions_without_diagnostic_model": ct_gaps,
+                "failed_spatial_helpers": list(helper_failures),
             }
 
         if modalities & XRAY_MODALITIES:
             region = str(routing_summary.get("xray_region", "other") or "other")
             return {
                 "status": "no_diagnostic_coverage",
-                "reason": "xray_region_has_no_active_diagnostic_model",
+                "reason": "xray_region_has_no_hospital_qualified_diagnostic_chain",
                 "regions_without_diagnostic_model": [region],
+                "failed_spatial_helpers": list(helper_failures),
+            }
+
+        if modalities & MRI_MODALITIES:
+            region = str(routing_summary.get("mri_region", "other") or "other")
+            return {
+                "status": "no_diagnostic_coverage",
+                "reason": "mri_region_has_no_hospital_qualified_diagnostic_chain",
+                "regions_without_diagnostic_model": [region],
+                "failed_spatial_helpers": list(helper_failures),
             }
 
         return {
             "status": "no_diagnostic_coverage",
             "reason": "no_diagnostic_model_selected",
             "regions_without_diagnostic_model": [],
+            "failed_spatial_helpers": list(helper_failures),
         }
 
     def analyze(self, case):
@@ -175,6 +214,8 @@ class PhoenixPipeline:
         else:
             if modalities & XRAY_MODALITIES:
                 routing_summary["xray_region"] = get_xray_region(case)
+            if modalities & MRI_MODALITIES:
+                routing_summary["mri_region"] = get_mri_region(case)
 
             initial_candidates = select_models(case)
             selected = self._registered(initial_candidates)
@@ -222,7 +263,7 @@ class PhoenixPipeline:
 
         if helper_failures:
             result.warnings.append(
-                "辅助定位/分割模块未完整执行: "
+                "定位/分割链未完整执行: "
                 + ", ".join(helper_failures)
             )
 
@@ -255,6 +296,7 @@ class PhoenixPipeline:
             diagnostic_executions,
             screening_executions,
             routing_summary,
+            helper_failures,
         )
 
         result.execution_summary = {
@@ -304,6 +346,9 @@ class PhoenixPipeline:
                 item.executed and item.status == "success"
                 for item in diagnostic_executions
             )
+            and not incomplete
+            and not helper_failures
+            and diagnostic_coverage.get("status") == "diagnostic_complete"
         )
 
         result = generate_report(

@@ -1,4 +1,4 @@
-name: Phoenix core smoke
+name: Phoenix capability-chain smoke
 
 on:
   push:
@@ -35,37 +35,34 @@ jobs:
         run: |
           python -m py_compile "01_开发源码/model_adapters/monai_lung_nodule_ct.py"
           python -m py_compile "01_开发源码/model_adapters/blast_ct.py"
-          python -m py_compile "01_开发源码/model_adapters/native_specialist_runtime.py"
           python -m py_compile "01_开发源码/model_adapters/ct_segmentation_runtime.py"
           python -m py_compile "01_开发源码/model_adapters/merlin_runtime.py"
-          python -m py_compile "01_开发源码/ai_models/dicom_inference_service.py"
-          python -m py_compile "01_开发源码/core/ct_series_selector.py"
-          python -m py_compile "01_开发源码/core/ct_nifti.py"
+          python -m py_compile "01_开发源码/model_adapters/merlin_component_pool.py"
+          python -m py_compile "01_开发源码/model_adapters/specialist_pool.py"
           python -m py_compile "01_开发源码/core/case_router.py"
           python -m py_compile "01_开发源码/core/pipeline.py"
-          python -m py_compile "01_开发源码/core/result_fusion.py"
-          python -m py_compile "01_开发源码/core/dicom_geometry.py"
-          python -m py_compile "01_开发源码/core/lesion_geometry.py"
-          python -m py_compile "01_开发源码/core/report_generator.py"
+          python -m py_compile "01_开发源码/core/model_roles.py"
+          python -m py_compile "01_开发源码/core/model_pool_policy.py"
+          python -m py_compile "01_开发源码/core/build_model_hub.py"
           python -m py_compile "01_开发源码/core/environment_paths.py"
           python -m py_compile "01_开发源码/core/hardware_profile.py"
           python -m py_compile "01_开发源码/core/model_hub.py"
-          python -m py_compile "01_开发源码/core/model_pool_policy.py"
-          python -m py_compile "01_开发源码/core/build_model_hub.py"
-          python -m py_compile "01_开发源码/core/yunpacs_live_controller.py"
-          python -m py_compile "01_开发源码/output/marker_style.py"
-          python -m py_compile "01_开发源码/output/lesion_viewer.py"
+          python -m py_compile "01_开发源码/core/execution_status.py"
+          python -m py_compile "01_开发源码/core/result_fusion.py"
+          python -m py_compile "01_开发源码/core/lesion_geometry.py"
+          python -m py_compile "01_开发源码/core/report_generator.py"
+          python -m py_compile "01_开发源码/tools/prune_model_storage.py"
           python -m py_compile "01_开发源码/ui/phoenix_minimal_window.py"
           python -m py_compile "01_开发源码/pacs_io/folder_adapter.py"
           python -m py_compile "01_开发源码/pacs_io/yunpacs_adapter.py"
-          python -m py_compile "01_开发源码/pacs_io/yunpacs_cache_adapter.py"
           python -m py_compile "01_开发源码/phoenix_minimal.py"
 
-      - name: Run mocked MONAI direct inference test
+      - name: Validate curated model registries
         shell: pwsh
-        run: python "07_测试/test_monai_lung_adapter_smoke.py"
+        run: |
+          python -c "import json,pathlib; [json.loads(pathlib.Path(p).read_text(encoding='utf-8')) for p in ['01_开发源码/ai_models/候选模型注册表.json','01_开发源码/ai_models/specialist_asset_registry.json','01_开发源码/ai_models/phoenix_component_registry.json']]"
 
-      - name: Run CT second-stage routing simulation
+      - name: Run CT capability-chain routing simulation
         shell: pwsh
         run: python "07_测试/test_ct_second_stage_simulation.py"
 

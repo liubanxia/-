@@ -1,74 +1,135 @@
 [
   {
-    "name": "13_MedSigLIP_448_ModelScope",
-    "path": "D:\\project_phoenix\\04_AI模型\\教师模型\\13_MedSigLIP_448_ModelScope",
-    "task": "medical_vision_encoder",
-    "enabled": false,
-    "status": "REGISTERED_UNTESTED",
-    "doctor_trigger_only": true
+    "model_id": "rsna_ich_teacher",
+    "region": "head_ct",
+    "target": "intracranial_hemorrhage",
+    "source": "https://github.com/SeuTao/RSNA2019_Intracranial-Hemorrhage-Detection",
+    "status": "TO_ACQUIRE_AS_TEACHER",
+    "download_policy": "code_and_one_teacher_checkpoint_only",
+    "distill_to": [
+      "ich_2p5d_student",
+      "ich_segmentation_student"
+    ],
+    "capabilities": [
+      "lesion_localization",
+      "characterization",
+      "differential"
+    ]
   },
   {
-    "name": "vista3d_pretrained_model",
-    "path": "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_分割\\NV-Segment-CT\\vista3d_pretrained_model",
-    "task": "segmentation",
-    "enabled": false,
-    "status": "REGISTERED_UNTESTED",
-    "doctor_trigger_only": true
+    "model_id": "ctseg",
+    "region": "head_ct",
+    "target": "brain_atrophy_quantification",
+    "source": "https://github.com/WCHN/CTseg",
+    "status": "TO_ACQUIRE_AS_TEACHER",
+    "download_policy": "keep_model_and_required_runtime_only",
+    "distill_to": [
+      "brain_atrophy_quant_student"
+    ],
+    "capabilities": [
+      "anatomy_segmentation",
+      "quantification"
+    ]
   },
   {
-    "name": "vista3d_pretrained_model",
-    "path": "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_分割\\NV-Segment-CTMR\\vista3d_pretrained_model",
-    "task": "segmentation",
-    "enabled": false,
-    "status": "REGISTERED_UNTESTED",
-    "doctor_trigger_only": true
+    "model_id": "chest_dr_rsna_yolov3_teacher",
+    "region": "chest_dr",
+    "target": "pneumonia_opacity_localization",
+    "source": "https://github.com/erniechiew/kaggle_rsna_pneumonia_dancingbears",
+    "status": "TO_ACQUIRE_AS_TEACHER",
+    "download_policy": "detection_weights_only",
+    "distill_to": [
+      "chest_dr_nano_detector"
+    ],
+    "capabilities": [
+      "lesion_localization",
+      "characterization"
+    ]
   },
   {
-    "name": "M3D-CLIP",
-    "path": "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_通用\\M3D-CLIP",
-    "task": "ct_3d_encoder",
-    "enabled": false,
-    "status": "REGISTERED_UNTESTED",
-    "doctor_trigger_only": true
+    "model_id": "ai_ppendix",
+    "region": "abdomen_pelvis_ct",
+    "target": "appendicitis",
+    "source": "https://zenodo.org/records/19582600",
+    "status": "TO_ACQUIRE_AS_TEACHER",
+    "download_policy": "start_with_fold0_plus_classifier; fetch_remaining_folds_only_if_needed",
+    "distill_to": [
+      "appendicitis_2p5d_student"
+    ],
+    "capabilities": [
+      "anatomy_localization",
+      "lesion_localization",
+      "lesion_segmentation",
+      "characterization",
+      "differential"
+    ]
   },
   {
-    "name": "SegVol",
-    "path": "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_分割\\SegVol",
-    "task": "segmentation",
-    "enabled": false,
-    "status": "REGISTERED_UNTESTED",
-    "doctor_trigger_only": true
+    "model_id": "spinenet_v2",
+    "region": "lumbar_mri",
+    "target": "degeneration_stenosis_disc_herniation",
+    "source": "https://github.com/rwindsor1/SpineNet",
+    "status": "TO_ACQUIRE_RESEARCH_TEACHER",
+    "download_policy": "weights_and_runtime_only",
+    "distill_to": [
+      "lumbar_mri_student"
+    ],
+    "capabilities": [
+      "anatomy_localization",
+      "characterization",
+      "differential"
+    ],
+    "license_note": "research_only_noncommercial"
   },
   {
-    "name": "BioViL-T",
-    "path": "D:\\project_phoenix\\04_AI模型\\批量专家池\\DR_胸片\\BioViL-T",
-    "task": "medical_vision_encoder",
-    "enabled": false,
-    "status": "REGISTERED_UNTESTED",
-    "doctor_trigger_only": true
+    "model_id": "aisd_ncct_infarct_teacher_data",
+    "region": "head_ct",
+    "target": "acute_ischemic_infarct_localization_segmentation",
+    "source": "https://github.com/GriffinLiang/AISD",
+    "status": "ACQUIRE_DATA_ON_DEVELOPMENT_MACHINE_ONLY",
+    "download_policy": "image_and_mask_first; dicom_only_when_needed",
+    "distill_to": [
+      "brain_infarct_2p5d_student"
+    ],
+    "capabilities": [
+      "lesion_localization",
+      "lesion_segmentation",
+      "characterization"
+    ],
+    "storage_note": "training asset, never copied into hospital frontline model pool"
   },
   {
-    "name": "vista3d_pretrained_model",
-    "path": "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_分割\\VISTA3D-HF\\vista3d_pretrained_model",
-    "task": "segmentation",
-    "enabled": false,
-    "status": "REGISTERED_UNTESTED",
-    "doctor_trigger_only": true
+    "model_id": "dba_drp_sbo_teacher",
+    "region": "abdomen_pelvis_ct",
+    "target": "small_bowel_obstruction_risk_classification",
+    "source": "https://github.com/SoongE/DBADRP_Classifier",
+    "status": "TO_ACQUIRE_AS_TEACHER",
+    "download_policy": "one_best_public_checkpoint_first",
+    "distill_to": [
+      "sbo_2p5d_student"
+    ],
+    "capabilities": [
+      "characterization",
+      "differential"
+    ],
+    "storage_note": "3D teacher only; do not register in hospital patient runtime"
   },
   {
-    "name": "SegVol-ModelScope",
-    "path": "D:\\project_phoenix\\04_AI模型\\批量专家池\\CT_分割\\SegVol-ModelScope",
-    "task": "segmentation",
-    "enabled": false,
-    "status": "REGISTERED_UNTESTED",
-    "doctor_trigger_only": true
-  },
-  {
-    "name": "04_SegVol_ModelScope",
-    "path": "D:\\project_phoenix\\04_AI模型\\教师模型\\04_SegVol_ModelScope",
-    "task": "segmentation",
-    "enabled": false,
-    "status": "REGISTERED_UNTESTED",
-    "doctor_trigger_only": true
+    "model_id": "hvm_liver_vessel_tumor_teacher",
+    "region": "abdomen_pelvis_ct",
+    "target": "hepatic_vein_portal_vein_liver_tumor_segmentation",
+    "source": "https://github.com/zhengyidong135/nnunet",
+    "status": "TO_ACQUIRE_AS_TEACHER",
+    "download_policy": "download only the required portal_vein/hepatic_vein/liver_tumor model, never all by default",
+    "distill_to": [
+      "future_liver_anatomy_student",
+      "future_liver_lesion_student"
+    ],
+    "capabilities": [
+      "anatomy_segmentation",
+      "lesion_localization",
+      "lesion_segmentation"
+    ],
+    "storage_note": "teacher only; prioritize lesion and vessel masks for distillation"
   }
 ]
