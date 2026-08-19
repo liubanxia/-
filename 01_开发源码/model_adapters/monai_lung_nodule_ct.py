@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 from core.ct_nifti import series_to_nifti
@@ -38,6 +39,10 @@ class MonaiLungNoduleCTAdapter(ModelAdapter):
         self.score_threshold = 0.02
         self.nms_threshold = 0.22
 
+    @staticmethod
+    def _stage(message: str) -> None:
+        print(f"MONAI_LUNG_STAGE {message}", flush=True)
+
     def _select_device(self):
         import torch
 
@@ -56,6 +61,8 @@ class MonaiLungNoduleCTAdapter(ModelAdapter):
     def _load_checkpoint(self):
         import torch
 
+        started = time.perf_counter()
+        self._stage(f"checkpoint_load_start path={self.weights}")
         try:
             checkpoint = torch.load(
                 str(self.weights),
@@ -81,6 +88,9 @@ class MonaiLungNoduleCTAdapter(ModelAdapter):
 
         try:
             self.network.load_state_dict(state_dict, strict=True)
+            self._stage(
+                f"checkpoint_load_done seconds={time.perf_counter() - started:.2f}"
+            )
             return
         except RuntimeError:
             pass
@@ -94,6 +104,9 @@ class MonaiLungNoduleCTAdapter(ModelAdapter):
             cleaned[new_key] = value
 
         self.network.load_state_dict(cleaned, strict=True)
+        self._stage(
+            f"checkpoint_load_done seconds={time.perf_counter() - started:.2f}"
+        )
 
     def load(self):
         if self.loaded:
@@ -104,9 +117,23 @@ class MonaiLungNoduleCTAdapter(ModelAdapter):
         if not self.weights.exists():
             raise RuntimeError(f"MONAI肺结节权重不存在: {self.weights}")
 
+        import torch
         from monai.bundle import ConfigParser
 
         self.device = self._select_device()
+        cuda_name = ""
+        if self.device.type == "cuda":
+            try:
+                cuda_name = torch.cuda.get_device_name(0)
+            except Exception:
+                cuda_name = "unknown"
+        self._stage(
+            "runtime "
+            f"torch={torch.__version__} "
+            f"cuda_available={torch.cuda.is_available()} "
+            f"selected_device={self.device} "
+            f"gpu={cuda_name or '-'}"
+        )
 
         parser = ConfigParser()
         parser.read_config(str(self.config))
@@ -125,10 +152,12 @@ class MonaiLungNoduleCTAdapter(ModelAdapter):
         parser["load_pretrain"] = False
         parser.parse(reset=True)
 
+        self._stage("bundle_parse_start")
         self.network = parser.get_parsed_content("network")
         self.detector = parser.get_parsed_content("detector")
         self.preprocessing = parser.get_parsed_content("preprocessing")
         self.postprocessing = parser.get_parsed_content("postprocessing")
+        self._stage("bundle_parse_done")
 
         self.detector.set_target_keys(
             box_key="box",
@@ -140,23 +169,30 @@ class MonaiLungNoduleCTAdapter(ModelAdapter):
             nms_thresh=self.nms_threshold,
             detections_per_img=300,
         )
+        # device='cpu' here is intentionally the stitched-output device.
+        # When the input/network are CUDA, MONAI uses the input device as
+        # sw_device, so each inference patch still runs on GPU while the large
+        # stitched result stays in CPU memory.
         self.detector.set_sliding_window_inferer(
             roi_size=self.roi_size,
             overlap=0.25,
             sw_batch_size=1,
             mode="constant",
             device="cpu",
+            progress=True,
         )
 
         self._load_checkpoint()
 
+        self._stage(f"model_move_start device={self.device}")
         self.network.to(self.device)
         self.network.eval()
         self.detector.to(self.device)
         self.detector.eval()
+        self._stage(f"model_move_done device={self.device}")
 
         self.loaded = True
-        print(f"MONAI_LUNG_DIRECT_READY device={self.device}")
+        print(f"MONAI_LUNG_DIRECT_READY device={self.device}", flush=True)
 
     def unload(self):
         self.network = None
@@ -212,32 +248,68 @@ class MonaiLungNoduleCTAdapter(ModelAdapter):
     def _run_direct(self, series, work_dir):
         import torch
 
+        total_started = time.perf_counter()
         input_nii = work_dir / "ct.nii.gz"
-        series_to_nifti(series, input_nii)
 
+        self._stage(
+            f"nifti_start files={len(getattr(series, 'files', []) or [])}"
+        )
+        started = time.perf_counter()
+        series_to_nifti(series, input_nii)
+        self._stage(
+            f"nifti_done seconds={time.perf_counter() - started:.2f} path={input_nii}"
+        )
+
+        self._stage("preprocess_start")
+        started = time.perf_counter()
         sample = self.preprocessing({"image": str(input_nii)})
         image = sample.get("image")
+        self._stage(
+            f"preprocess_done seconds={time.perf_counter() - started:.2f}"
+        )
 
         if image is None:
             raise RuntimeError("MONAI预处理没有生成image")
 
+        shape = getattr(image, "shape", None)
+        shape_text = tuple(shape) if shape is not None else "unknown"
+        self._stage(
+            f"tensor shape={shape_text} dtype={getattr(image, 'dtype', '')}"
+        )
+        started = time.perf_counter()
         image_for_inference = image.to(self.device)
+        self._stage(
+            f"tensor_to_device_done device={self.device} "
+            f"seconds={time.perf_counter() - started:.2f}"
+        )
+
         sliding_window_size = math.prod(self.roi_size)
         image_size = image_for_inference[0, ...].numel()
         use_inferer = image_size >= sliding_window_size
+        self._stage(
+            f"inference_start use_inferer={use_inferer} "
+            f"roi={self.roi_size} voxels={image_size} device={self.device}"
+        )
 
         self.network.eval()
         self.detector.eval()
         self.detector.network = self.network
         self.detector.training = False
 
+        started = time.perf_counter()
         with torch.inference_mode():
             prediction = self.detector(
                 [image_for_inference],
                 use_inferer=use_inferer,
             )
+        self._stage(
+            f"inference_done seconds={time.perf_counter() - started:.2f}"
+        )
 
         if not prediction:
+            self._stage(
+                f"complete seconds={time.perf_counter() - total_started:.2f} predictions=0"
+            )
             return {
                 "box": [],
                 "label": [],
@@ -251,6 +323,8 @@ class MonaiLungNoduleCTAdapter(ModelAdapter):
                 f"{type(pred).__name__}"
             )
 
+        self._stage("postprocess_start")
+        started = time.perf_counter()
         post_input = {
             key: self._cpu_value(value)
             for key, value in pred.items()
@@ -258,6 +332,12 @@ class MonaiLungNoduleCTAdapter(ModelAdapter):
         post_input["image"] = image.cpu()
 
         processed = self.postprocessing(post_input)
+        self._stage(
+            f"postprocess_done seconds={time.perf_counter() - started:.2f}"
+        )
+        self._stage(
+            f"complete seconds={time.perf_counter() - total_started:.2f}"
+        )
 
         return {
             "box": self._python_value(processed.get("box", [])),
@@ -317,6 +397,11 @@ class MonaiLungNoduleCTAdapter(ModelAdapter):
             raise RuntimeError("monai_lung_nodule_ct 尚未load")
 
         series = self._select_ct_series(case)
+        self._stage(
+            "series_selected "
+            f"uid={getattr(series, 'series_uid', '')} "
+            f"files={len(getattr(series, 'files', []) or [])}"
+        )
 
         temp_root = self.project_root / "08_temp_cache"
         temp_root.mkdir(parents=True, exist_ok=True)
