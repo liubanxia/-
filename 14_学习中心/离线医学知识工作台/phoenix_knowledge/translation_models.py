@@ -38,6 +38,13 @@ def _flag(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _normalize_smart_level(level: str | None) -> str:
+    raw = (level or "smart1").strip().lower()
+    if raw in {"smart2", "2", "deep", "quality", "max"}:
+        return "smart2"
+    return "smart1"
+
+
 @dataclass(frozen=True)
 class QualityReport:
     ok: bool
@@ -63,6 +70,14 @@ class TranslationDecision:
 
 
 class TranslationValidator:
+    """Structural guardrail for medical translation.
+
+    This validator is deliberately conservative: it checks for omissions,
+    corrupted numbers/units, lost acronyms and obviously untranslated output.
+    Natural Chinese medical prose is produced by the intelligent translation
+    backend instead of trying to infer semantic quality from heuristics alone.
+    """
+
     def validate(self, source: str, translated: str, target_language: str = "中文") -> QualityReport:
         source = (source or "").strip()
         translated = (translated or "").strip()
@@ -179,7 +194,12 @@ class MarianEnZhBackend(_Seq2SeqBackend):
         inputs = self._tokenizer(prefix + text, return_tensors="pt", truncation=True, max_length=480)
         inputs = {key: value.to(self._device) for key, value in inputs.items()}
         with torch.inference_mode():
-            output = self._model.generate(**inputs, num_beams=4, max_new_tokens=700, renormalize_logits=True)
+            output = self._model.generate(
+                **inputs,
+                num_beams=4,
+                max_new_tokens=700,
+                renormalize_logits=True,
+            )
         return self._tokenizer.decode(output[0], skip_special_tokens=True).strip()
 
 
@@ -208,44 +228,65 @@ class NLLBEnZhBackend(_Seq2SeqBackend):
         forced_bos = self._tokenizer.convert_tokens_to_ids("zho_Hans")
         with torch.inference_mode():
             output = self._model.generate(
-                **inputs, forced_bos_token_id=forced_bos, num_beams=4, max_new_tokens=900
+                **inputs,
+                forced_bos_token_id=forced_bos,
+                num_beams=4,
+                max_new_tokens=900,
             )
         return self._tokenizer.decode(output[0], skip_special_tokens=True).strip()
 
 
 class QwenMedicalTranslationBackend:
-    name = "qwen35_medical_review"
+    name = "qwen35_medical_translation"
 
     def __init__(self, llm: LocalLLM):
         self.llm = llm
 
-    def available(self) -> bool:
-        return self.llm.available()
+    def available(self, smart_level: str = "smart1") -> bool:
+        profile = "deep" if _normalize_smart_level(smart_level) == "smart2" else "fast"
+        return self.llm.available(profile)
 
-    def translate(self, text: str, target_language: str = "中文") -> str:
-        prompt = f"""你是 Phoenix 医学书籍翻译器。把下面英文医学原文完整翻译成{target_language}。
+    def translate(
+        self,
+        text: str,
+        target_language: str = "中文",
+        *,
+        smart_level: str = "smart1",
+    ) -> str:
+        level = _normalize_smart_level(smart_level)
+        profile = "deep" if level == "smart2" else "fast"
+        max_tokens = 2600 if level == "smart2" else 2100
+        prompt = f"""你是 Phoenix 医学教材精译器。把下面英文医学原文完整、准确地翻译成{target_language}。
 
-要求：
-- 不总结、不删减、不补充原文没有的医学知识。
-- 保留所有数字、单位、影像学参数、分级、疾病名、药名、解剖部位、缩写、图表编号和参考文献编号。
-- 医学术语优先使用规范中文；必要时首次出现可保留英文术语在括号中。
-- 原文歧义或损坏时写“[原文不清]”，不得猜测。
-- 只输出译文。
+这是医学教材正文，不是摘要任务。必须做到：
+- 逐段完整翻译，不总结、不删减、不扩写，不加入原文没有的医学知识。
+- 先准确理解句义，再使用自然、规范的中文医学教材语序，禁止生硬逐词直译。
+- 疾病、解剖、影像学征象、检查技术、药物、分级和病理术语使用规范医学中文。
+- 首次出现且中文可能歧义的专业名词，可采用“规范中文（English）”；之后使用规范中文。
+- 所有数字、单位、百分比、HU、分级、剂量、图号、表号、公式、参考文献编号必须保留。
+- CT/MRI/X线/超声/心电等专业缩写按医学惯例保留，不擅自改写。
+- 标题、项目符号、编号、表格式行尽量维持原来的层级和顺序。
+- 句子损坏、OCR错误或语义无法确定时标记“[原文不清]”，不得猜测。
+- 译文应达到医生直接阅读教材的中文可读性，不输出解释、评语、翻译过程或模型信息。
 
 原文：
 {text}
 """
-        return self.llm.generate(prompt, max_new_tokens=1800).strip()
+        return self.llm.generate(
+            prompt,
+            max_new_tokens=max_tokens,
+            profile=profile,
+        ).strip()
 
 
 class MultiModelTranslationEngine:
-    """Responsive offline translation cascade.
+    """Offline medical translation with intelligent-first quality routing.
 
-    Simplified-Chinese translation defaults to Marian -> NLLB. Qwen3.5 is an
-    optional slow medical reviewer because a 4B multimodal model can exceed an
-    8 GB GPU and silently offload to CPU. Set PHOENIX_TRANSLATION_QWEN_REVIEW=1
-    to enable it. Other target languages use Qwen because the dedicated local
-    Marian/NLLB models are English->Simplified-Chinese only.
+    For Simplified Chinese, intelligent translation is now the preferred final
+    output whenever a local generator is available. Marian / NLLB remain as
+    fast fallback engines when the intelligent backend is unavailable or
+    produces a structurally invalid result. This matches the product goal:
+    readable medical Chinese first, raw machine translation only as fallback.
     """
 
     def __init__(self, paths: WorkbenchPaths, llm: LocalLLM):
@@ -257,41 +298,79 @@ class MultiModelTranslationEngine:
 
     def available_backends(self) -> list[str]:
         result = []
-        for backend in (self.marian, self.nllb, self.qwen):
-            if backend.available():
-                result.append(backend.name)
-        return result
-
-    def active_backends(self, target_language: str = "中文") -> list[object]:
-        if target_language not in _SIMPLIFIED_TARGETS:
-            return [self.qwen] if self.qwen.available() else []
-        result: list[object] = []
+        if self.qwen.available("smart1") or self.qwen.available("smart2"):
+            result.append(self.qwen.name)
         if self.marian.available():
-            result.append(self.marian)
+            result.append(self.marian.name)
         if self.nllb.available():
-            result.append(self.nllb)
-        if _flag("PHOENIX_TRANSLATION_QWEN_REVIEW", default=False) and self.qwen.available():
-            result.append(self.qwen)
+            result.append(self.nllb.name)
         return result
 
-    def translate(self, source: str, target_language: str = "中文") -> TranslationDecision:
+    def active_backends(
+        self,
+        target_language: str = "中文",
+        smart_level: str = "smart1",
+    ) -> list[object]:
+        level = _normalize_smart_level(smart_level)
+        result: list[object] = []
+
+        if self.qwen.available(level):
+            result.append(self.qwen)
+
+        if target_language in _SIMPLIFIED_TARGETS:
+            if self.marian.available():
+                result.append(self.marian)
+            if self.nllb.available():
+                result.append(self.nllb)
+
+        return result
+
+    def translate(
+        self,
+        source: str,
+        target_language: str = "中文",
+        *,
+        smart_level: str = "smart1",
+    ) -> TranslationDecision:
         attempts: list[TranslationAttempt] = []
         best: TranslationAttempt | None = None
         backend_errors: list[str] = []
-        backends = self.active_backends(target_language)
+        level = _normalize_smart_level(smart_level)
+        backends = self.active_backends(target_language, level)
 
         for backend in backends:
             try:
                 if isinstance(backend, QwenMedicalTranslationBackend):
-                    text = backend.translate(source, target_language)
+                    text = backend.translate(
+                        source,
+                        target_language,
+                        smart_level=level,
+                    )
                 else:
                     text = backend.translate(source)
                 quality = self.validator.validate(source, text, target_language)
-                attempt = TranslationAttempt(backend=backend.name, text=text, quality=quality)
+                attempt = TranslationAttempt(
+                    backend=backend.name,
+                    text=text,
+                    quality=quality,
+                )
                 attempts.append(attempt)
                 if best is None or attempt.quality.score > best.quality.score:
                     best = attempt
-                if quality.ok:
+
+                # Intelligent translation is preferred even when a minor
+                # structural warning remains. Only a severe validator failure
+                # should fall through to the raw seq2seq fallback engines.
+                if isinstance(backend, QwenMedicalTranslationBackend):
+                    if quality.ok or quality.score >= 0.45:
+                        return TranslationDecision(
+                            text=text,
+                            backend=backend.name,
+                            quality=quality,
+                            needs_review=not quality.ok,
+                            attempts=tuple(attempts),
+                        )
+                elif quality.ok:
                     return TranslationDecision(
                         text=text,
                         backend=backend.name,
@@ -313,11 +392,11 @@ class MultiModelTranslationEngine:
 
         if not backends:
             if target_language in _SIMPLIFIED_TARGETS:
-                raise RuntimeError("没有可用英译中模型，请下载 Marian 或 NLLB。")
+                raise RuntimeError("没有可用的本地智能翻译或英译中后端。")
             raise RuntimeError(
-                f"目标语言“{target_language}”需要Qwen本地模型；当前没有可用Qwen后端。"
+                f"目标语言“{target_language}”当前没有可用的本地智能翻译能力。"
             )
-        raise RuntimeError("所有翻译模型均执行失败: " + " | ".join(backend_errors))
+        raise RuntimeError("所有翻译后端均执行失败: " + " | ".join(backend_errors))
 
     def unload(self) -> None:
         self.marian.unload()
