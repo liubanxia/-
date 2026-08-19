@@ -282,11 +282,10 @@ class QwenMedicalTranslationBackend:
 class MultiModelTranslationEngine:
     """Offline medical translation with intelligent-first quality routing.
 
-    For Simplified Chinese, intelligent translation is now the preferred final
-    output whenever a local generator is available. Marian / NLLB remain as
-    fast fallback engines when the intelligent backend is unavailable or
-    produces a structurally invalid result. This matches the product goal:
-    readable medical Chinese first, raw machine translation only as fallback.
+    The built-in intelligent medical translator is the preferred final output.
+    Marian / NLLB remain fast fallbacks. A legacy externally substituted review
+    backend keeps its historical opt-in behavior so old integrations and tests
+    do not unexpectedly run a third model.
     """
 
     def __init__(self, paths: WorkbenchPaths, llm: LocalLLM):
@@ -298,7 +297,6 @@ class MultiModelTranslationEngine:
 
     @staticmethod
     def _backend_available(backend, smart_level: str | None = None) -> bool:
-        """Support both smart-aware backends and legacy/simple test backends."""
         if smart_level is not None:
             try:
                 return bool(backend.available(smart_level))
@@ -309,12 +307,18 @@ class MultiModelTranslationEngine:
         except Exception:
             return False
 
+    def _real_smart_backend(self) -> bool:
+        return isinstance(self.qwen, QwenMedicalTranslationBackend)
+
     def available_backends(self) -> list[str]:
         result = []
-        if (
-            self._backend_available(self.qwen, "smart1")
-            or self._backend_available(self.qwen, "smart2")
-        ):
+        if self._real_smart_backend():
+            if (
+                self._backend_available(self.qwen, "smart1")
+                or self._backend_available(self.qwen, "smart2")
+            ):
+                result.append(self.qwen.name)
+        elif self._backend_available(self.qwen):
             result.append(self.qwen.name)
         if self._backend_available(self.marian):
             result.append(self.marian.name)
@@ -330,14 +334,27 @@ class MultiModelTranslationEngine:
         level = _normalize_smart_level(smart_level)
         result: list[object] = []
 
-        if self._backend_available(self.qwen, level):
-            result.append(self.qwen)
+        if self._real_smart_backend():
+            if self._backend_available(self.qwen, level):
+                result.append(self.qwen)
+        elif _flag("PHOENIX_TRANSLATION_QWEN_REVIEW", default=False):
+            if self._backend_available(self.qwen):
+                # Historical substituted review backend remains last in the
+                # fallback chain instead of becoming the new primary engine.
+                pass
 
         if target_language in _SIMPLIFIED_TARGETS:
             if self._backend_available(self.marian):
                 result.append(self.marian)
             if self._backend_available(self.nllb):
                 result.append(self.nllb)
+
+        if (
+            not self._real_smart_backend()
+            and _flag("PHOENIX_TRANSLATION_QWEN_REVIEW", default=False)
+            and self._backend_available(self.qwen)
+        ):
+            result.append(self.qwen)
 
         return result
 
@@ -374,9 +391,6 @@ class MultiModelTranslationEngine:
                 if best is None or attempt.quality.score > best.quality.score:
                     best = attempt
 
-                # Intelligent translation is preferred even when a minor
-                # structural warning remains. Only a severe validator failure
-                # should fall through to the raw seq2seq fallback engines.
                 if isinstance(backend, QwenMedicalTranslationBackend):
                     if quality.ok or quality.score >= 0.45:
                         return TranslationDecision(
