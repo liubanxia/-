@@ -20,12 +20,35 @@ def install(gui_module) -> None:
 
     cls = gui_module.WorkbenchWindow
 
+    original_init = cls.__init__
     original_qa_tab = cls._qa_tab
     original_ask_question = cls.ask_question
     original_translation_tab = cls._translation_tab
     original_refresh_translation_models = cls.refresh_translation_models
     original_start_translation = cls.start_translation
     original_translation_done = cls._translation_done
+
+    def _init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        try:
+            from .licensing import LicenseManager
+
+            manager = LicenseManager(self.workbench.paths.project_root)
+            status = manager.status()
+            if status.product_mode and status.valid:
+                edition = status.edition or "Professional"
+                customer = status.customer or "正式授权"
+                self.setWindowTitle(f"Phoenix 医学知识工作台 · {edition}")
+                license_label = QLabel(
+                    f"已激活 · {edition} · {customer} · 授权号 {status.license_id}"
+                )
+                self.statusBar().addPermanentWidget(license_label)
+            else:
+                self.setWindowTitle("Phoenix 医学知识工作台 · Development")
+                license_label = QLabel("开发模式 · 正式发布时启用离线激活")
+                self.statusBar().addPermanentWidget(license_label)
+        except Exception:
+            pass
 
     def _qa_tab(self):
         widget = original_qa_tab(self)
@@ -109,6 +132,7 @@ def install(gui_module) -> None:
             extra.append(f"- 原图：{image_count} 张（images目录）")
             self.translation_result.setPlainText(current + "\n" + "\n".join(extra))
 
+    cls.__init__ = _init
     cls._qa_tab = _qa_tab
     cls.ask_question = ask_question
     cls._translation_tab = _translation_tab

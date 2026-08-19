@@ -21,13 +21,15 @@ def _build_parser():
     parser.add_argument("--note-title", help="TXT整理后的笔记标题")
     parser.add_argument("--build-embeddings", action="store_true", help="为已导入知识块建立本地向量索引")
     parser.add_argument("--status", action="store_true", help="显示知识库状态")
+    parser.add_argument("--machine-code", action="store_true", help="显示正式版离线授权机器码")
+    parser.add_argument("--activate", metavar="CODE", help="写入并验证离线激活码")
+    parser.add_argument("--license-status", action="store_true", help="显示产品授权状态")
     parser.add_argument("--no-gui", action="store_true", help="完成命令行任务后不启动窗口")
     return parser
 
 
-def main() -> int:
-    args = _build_parser().parse_args()
-    has_cli_action = bool(
+def _non_license_cli_action(args) -> bool:
+    return bool(
         args.ingest
         or args.ask
         or args.organize
@@ -38,10 +40,50 @@ def main() -> int:
         or args.status
     )
 
-    if has_cli_action:
+
+def _license_cli_action(args) -> bool:
+    return bool(args.machine_code or args.activate or args.license_status)
+
+
+def main() -> int:
+    args = _build_parser().parse_args()
+    non_license_action = _non_license_cli_action(args)
+    license_action = _license_cli_action(args)
+    has_cli_action = non_license_action or license_action
+
+    from phoenix_knowledge.config import get_paths
+    from phoenix_knowledge.licensing import LicenseManager
+
+    paths = get_paths()
+    license_manager = LicenseManager(paths.project_root)
+
+    if args.machine_code:
+        print(f"MACHINE_CODE={license_manager.machine_code}")
+
+    if args.activate:
+        try:
+            activated = license_manager.activate(args.activate)
+        except Exception as exc:
+            print(f"ACTIVATION_FAILED={type(exc).__name__}: {exc}")
+            return 21
+        print("ACTIVATION=SUCCESS")
+        print(json.dumps(activated.as_dict(), ensure_ascii=False, indent=2))
+
+    if args.license_status:
+        print(json.dumps(license_manager.status().as_dict(), ensure_ascii=False, indent=2))
+
+    if non_license_action and license_manager.product_mode:
+        current = license_manager.status()
+        if not current.valid:
+            print("PRODUCT_NOT_ACTIVATED=1")
+            print(f"MACHINE_CODE={current.machine_code}")
+            print(f"LICENSE_MESSAGE={current.message}")
+            return 23
+
+    if non_license_action:
         from phoenix_knowledge import MedicalKnowledgeWorkbench
 
-        workbench = MedicalKnowledgeWorkbench()
+        workbench = MedicalKnowledgeWorkbench(paths)
         try:
             if args.ingest:
                 for filename in args.ingest:
@@ -126,8 +168,14 @@ def main() -> int:
         finally:
             workbench.close()
 
-        if args.no_gui:
-            return 0
+    if args.no_gui:
+        return 0
+
+    if license_manager.product_mode:
+        from phoenix_knowledge.activation_ui import ensure_gui_activation
+
+        if not ensure_gui_activation(paths.project_root):
+            return 23
 
     from phoenix_knowledge import gui as gui_module
     try:

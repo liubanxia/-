@@ -29,15 +29,16 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install lightweight PDF test dependency
+      - name: Install lightweight workbench test dependencies
         shell: pwsh
-        run: python -m pip install --disable-pip-version-check PyMuPDF
+        run: python -m pip install --disable-pip-version-check PyMuPDF cryptography
 
       - name: Compile workbench
         shell: pwsh
         run: |
           python -m py_compile app.py
           python -m py_compile model_download.py
+          python -m py_compile release_license_tool.py
           Get-ChildItem phoenix_knowledge -Filter *.py | ForEach-Object { python -m py_compile $_.FullName }
 
       - name: Run core and real-PDF smoke tests

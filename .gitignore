@@ -20,6 +20,12 @@
 15_证据中心/
 08_temp_cache/
 
+# 正式产品本地授权文件与私钥绝不进入Git
+16_产品发布/授权/activation.lic
+16_产品发布/授权/*private*.pem
+16_产品发布/授权/*private*.key
+16_产品发布/授权/issued_codes/
+
 # Python 临时文件
 __pycache__/
 *.pyc
