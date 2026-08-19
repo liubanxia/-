@@ -90,6 +90,7 @@ def main():
 
         result = phoenix.analyze()
         analysis = result["analysis"]
+        summary = result.get("execution_summary", {})
 
         print("调用模型：", result["selected_models"])
         print("病灶数量：", len(analysis.lesions))
@@ -99,17 +100,31 @@ def main():
         print(
             f"DIAGNOSTIC_VALID={result.get('diagnostic_valid', False)}"
         )
+        coverage = summary.get("diagnostic_coverage", {})
+        if coverage:
+            print(f"DIAGNOSTIC_COVERAGE={coverage.get('status', '')}")
+            print(f"DIAGNOSTIC_COVERAGE_REASON={coverage.get('reason', '')}")
+            if coverage.get("regions_without_diagnostic_model"):
+                print(
+                    "DIAGNOSTIC_COVERAGE_GAPS="
+                    f"{coverage.get('regions_without_diagnostic_model')}"
+                )
         print(
             "RESOLVED_LESION_GEOMETRY="
-            f"{result.get('execution_summary', {}).get('resolved_lesion_geometry', 0)}"
+            f"{summary.get('resolved_lesion_geometry', 0)}"
         )
+
+        routing = summary.get("routing", {})
+        if routing:
+            print(f"ROUTING_MODE={routing.get('mode', '')}")
+            print(f"ROUTING_INITIAL={routing.get('initial_models', [])}")
+            print(f"ROUTING_SECOND_STAGE={routing.get('second_stage_models', [])}")
+            if routing.get("ct_decision"):
+                print(f"ROUTING_CT_DECISION={routing.get('ct_decision')}")
 
         print("\n模型真实执行结果：")
 
-        executions = result.get(
-            "execution_summary",
-            {},
-        ).get("models", [])
+        executions = summary.get("models", [])
 
         execution_map = {
             item.get("model_name"): item
@@ -143,6 +158,18 @@ def main():
                 print(f"{name}: ERROR - {data['error']}")
             else:
                 print(f"{name}: 状态未知")
+
+        not_selected = summary.get("registered_models_not_selected", [])
+        if not_selected:
+            print("\n已注册但本病例未调用的模型：")
+            for name in not_selected:
+                print(f"{name}: NOT_SELECTED")
+
+        if summary.get("critical_incomplete_models"):
+            print(
+                "\n关键未完成模型：",
+                summary.get("critical_incomplete_models"),
+            )
 
         dispatcher = ResultDispatcher(args.mode)
 

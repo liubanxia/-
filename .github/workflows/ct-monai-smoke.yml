@@ -67,6 +67,10 @@ jobs:
         shell: pwsh
         run: python "07_测试/test_ct_second_stage_simulation.py"
 
+      - name: Run hospital execution matrix
+        shell: pwsh
+        run: python "07_测试/test_hospital_execution_matrix.py"
+
       - name: Run Phoenix core safety tests
         shell: pwsh
         run: python "07_测试/test_phoenix_core_safety.py"
