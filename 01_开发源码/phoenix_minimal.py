@@ -1,6 +1,7 @@
 import argparse
 
 from core.environment_paths import get_environment_paths
+from core.hardware_profile import detect_hardware_profile
 from core.runtime import PhoenixRuntime
 from output.result_dispatcher import ResultDispatcher
 
@@ -41,11 +42,22 @@ def main():
 
     args = parser.parse_args()
     env_paths = get_environment_paths()
+    hardware = detect_hardware_profile()
 
     print(
         f"PHOENIX_ENV={env_paths.environment_name} "
         f"PROJECT_ROOT={env_paths.project_root}"
     )
+    print(
+        "PHOENIX_HARDWARE "
+        f"mode={hardware.mode} "
+        f"ram_gb={hardware.ram_gb} "
+        f"gpu={hardware.gpu_name or '-'} "
+        f"cuda={hardware.cuda_available} "
+        f"device={hardware.inference_device} "
+        f"heavy_3d_allowed={hardware.heavy_3d_allowed}"
+    )
+    print(f"PHOENIX_HARDWARE_REASON={hardware.reason}")
 
     phoenix = PhoenixRuntime()
 

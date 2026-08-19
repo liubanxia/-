@@ -48,6 +48,8 @@ jobs:
           python -m py_compile "01_开发源码/core/lesion_geometry.py"
           python -m py_compile "01_开发源码/core/report_generator.py"
           python -m py_compile "01_开发源码/core/environment_paths.py"
+          python -m py_compile "01_开发源码/core/hardware_profile.py"
+          python -m py_compile "01_开发源码/core/model_hub.py"
           python -m py_compile "01_开发源码/core/yunpacs_live_controller.py"
           python -m py_compile "01_开发源码/output/marker_style.py"
           python -m py_compile "01_开发源码/output/lesion_viewer.py"
@@ -64,6 +66,10 @@ jobs:
       - name: Run Phoenix core safety tests
         shell: pwsh
         run: python "07_测试/test_phoenix_core_safety.py"
+
+      - name: Run hospital hardware guard tests
+        shell: pwsh
+        run: python "07_测试/test_hospital_hardware_profile.py"
 
       - name: Run marker precision tests
         shell: pwsh
