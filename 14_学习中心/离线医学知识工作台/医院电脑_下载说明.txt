@@ -1,0 +1,36 @@
+Phoenix 医院电脑模型下载说明
+==============================
+
+医院电脑不需要登录 ChatGPT，也不要求 VPN。
+
+首次操作：
+1. 先让 project_phoenix 更新到最新代码。
+2. 打开：14_学习中心\离线医学知识工作台
+3. 双击：医院电脑_一键下载模型.bat
+4. 优先选择 [1] 医院推荐。
+
+自动下载线路：
+1. ModelScope
+2. hf-mirror.com 社区 Hugging Face 镜像
+3. Hugging Face 官方直连
+
+每条线路默认重试 2 次，失败后自动切下一条。已经下载的文件不会主动删除，下次运行可以继续利用本地缓存/未完成目录。
+
+Python 下载器依赖如果缺失，也会自动依次尝试：
+1. 清华 PyPI 镜像
+2. 阿里云 PyPI 镜像
+3. PyPI 官方源
+
+模型保存位置：
+<project_phoenix>\04_AI模型\知识工作台\
+
+每个模型目录会产生：
+PHOENIX_DOWNLOAD_STATUS.json
+用于记录每条线路成功/失败信息。
+
+如果医院网络把 ModelScope、hf-mirror、Hugging Face 三条线路全部阻断：
+不要删除当前目录和部分下载文件。改在网吧/手机网络下载到同一块 SSD，回医院后程序直接读取本地模型，不需要再次联网。
+
+可选：如果以后有新的 Hugging Face 镜像，可在运行 bat 之前设置：
+set PHOENIX_HF_MIRRORS=https://镜像1;https://镜像2
+程序会按顺序逐个尝试，然后最后再尝试 Hugging Face 官方源。
