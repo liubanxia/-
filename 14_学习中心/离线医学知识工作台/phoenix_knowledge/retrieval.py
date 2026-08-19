@@ -79,18 +79,57 @@ class EmbeddingEngine:
             self.model_name,
         )
         self._model = None
+        self._device = None
 
     def available(self) -> bool:
         return self.model_path.exists() and any(self.model_path.iterdir())
+
+    @staticmethod
+    def _select_device() -> str:
+        """Use modern CUDA GPUs but keep legacy hospital GPUs on CPU.
+
+        Current PyTorch builds do not support old K10-class hardware reliably.
+        Compute capability 5.0+ is allowed; CPU-only PyTorch or older GPUs use
+        CPU automatically.
+        """
+        try:
+            import torch
+
+            if not torch.cuda.is_available():
+                return "cpu"
+            major, _minor = torch.cuda.get_device_capability(0)
+            if int(major) < 5:
+                return "cpu"
+            return "cuda:0"
+        except Exception:
+            return "cpu"
+
+    @property
+    def device(self) -> str:
+        return self._device or self._select_device()
 
     def _load(self):
         if self._model is not None:
             return self._model
         if not self.available():
             raise RuntimeError(f"Embedding模型未下载: {self.model_path}")
+
         from sentence_transformers import SentenceTransformer
 
-        self._model = SentenceTransformer(str(self.model_path), device="cpu")
+        self._device = self._select_device()
+        try:
+            self._model = SentenceTransformer(
+                str(self.model_path),
+                device=self._device,
+            )
+        except Exception:
+            if self._device == "cpu":
+                raise
+            self._device = "cpu"
+            self._model = SentenceTransformer(
+                str(self.model_path),
+                device="cpu",
+            )
         return self._model
 
     def build_missing(
@@ -98,31 +137,62 @@ class EmbeddingEngine:
         batch_size: int = 8,
         progress: Callable[[int, int, str], None] | None = None,
     ) -> int:
+        """Build only missing vectors and checkpoint every mini-batch.
+
+        Each mini-batch is committed immediately so an interruption does not
+        discard completed work. Progress is reported after every mini-batch.
+        """
         import numpy as np
 
+        batch_size = max(1, int(batch_size))
         model = self._load()
         done = 0
+
+        if progress:
+            progress(0, 0, f"Embedding模型已加载 | 设备={self.device}")
+
         while True:
             rows = self.db.missing_embedding_chunks(
-                self.model_name, limit=max(batch_size * 8, 64)
+                self.model_name,
+                limit=max(batch_size * 8, 64),
             )
             if not rows:
                 break
-            texts = [str(row["text"]) for row in rows]
-            vectors = model.encode(
-                texts,
-                batch_size=batch_size,
-                normalize_embeddings=True,
-                show_progress_bar=False,
-            )
-            items = []
-            for row, vector in zip(rows, vectors):
-                array = np.asarray(vector, dtype=np.float32)
-                items.append((int(row["id"]), int(array.size), array.tobytes()))
-            self.db.store_embeddings(self.model_name, items)
-            done += len(items)
-            if progress:
-                progress(done, 0, f"已生成 {done} 个向量")
+
+            for offset in range(0, len(rows), batch_size):
+                batch_rows = rows[offset : offset + batch_size]
+                texts = [str(row["text"]) for row in batch_rows]
+                vectors = model.encode(
+                    texts,
+                    batch_size=len(batch_rows),
+                    normalize_embeddings=True,
+                    show_progress_bar=False,
+                )
+
+                items = []
+                for row, vector in zip(batch_rows, vectors):
+                    array = np.asarray(vector, dtype=np.float32)
+                    items.append(
+                        (
+                            int(row["id"]),
+                            int(array.size),
+                            array.tobytes(),
+                        )
+                    )
+
+                self.db.store_embeddings(self.model_name, items)
+                done += len(items)
+                if progress:
+                    progress(
+                        done,
+                        0,
+                        (
+                            f"已生成 {done} 个新向量"
+                            f" | 设备={self.device}"
+                            f" | batch={len(items)}"
+                        ),
+                    )
+
         return done
 
     def search(self, query: str, limit: int = 20) -> list[tuple[int, float]]:
