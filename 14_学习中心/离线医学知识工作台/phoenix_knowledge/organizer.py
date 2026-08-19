@@ -199,8 +199,6 @@ class DeepOrganizer:
             reverse=True,
         )
 
-        # Keep a soft per-book balance so a large textbook cannot crowd every
-        # other source out of a multi-document synthesis.
         document_count = max(1, len({item.path for item in ordered}))
         soft_cap = max(20, int(candidate_limit / min(document_count, 8)) + 8)
         counts: dict[str, int] = {}
@@ -252,7 +250,7 @@ class DeepOrganizer:
         seen_pages: set[tuple[str, int]] = set()
         image_count = 0
 
-        for line in lines:
+        for line_index, line in enumerate(lines):
             rendered.append(line)
             citation_ids = [int(x) for x in _CITATION_RE.findall(line)]
             for chunk_id in citation_ids:
@@ -300,11 +298,9 @@ class DeepOrganizer:
                     ])
                     break
             if image_count >= max_images:
-                rendered.extend(lines[len(rendered):])
+                rendered.extend(lines[line_index + 1:])
                 break
 
-        # If generated text happened to put no citation in the body, retain a
-        # compact fallback image appendix rather than losing figures entirely.
         if image_count == 0:
             rendered.extend(["", "---", "## 相关原图", ""])
             for item in selected:
