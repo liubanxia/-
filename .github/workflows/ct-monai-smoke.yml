@@ -63,6 +63,10 @@ jobs:
         shell: pwsh
         run: python "07_测试/test_monai_lung_adapter_smoke.py"
 
+      - name: Run CT second-stage routing simulation
+        shell: pwsh
+        run: python "07_测试/test_ct_second_stage_simulation.py"
+
       - name: Run Phoenix core safety tests
         shell: pwsh
         run: python "07_测试/test_phoenix_core_safety.py"
