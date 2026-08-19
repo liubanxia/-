@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,12 +13,12 @@ _NUMBER_RE = re.compile(r"(?<![A-Za-z])\d+(?:[.,]\d+)*(?:%|mm|cm|mL|ml|mg|g|kg|H
 _ACRONYM_RE = re.compile(r"\b[A-Z][A-Z0-9-]{1,10}\b")
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
+_SIMPLIFIED_TARGETS = {"中文", "简体中文", "Chinese", "zh", "zh-CN"}
 
 
 def _cuda_is_usable() -> bool:
     try:
         import torch
-
         if not torch.cuda.is_available():
             return False
         major, _minor = torch.cuda.get_device_capability(0)
@@ -28,6 +29,13 @@ def _cuda_is_usable() -> bool:
 
 def _normalize_number(token: str) -> str:
     return token.replace(",", "").lower()
+
+
+def _flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
 
 
 @dataclass(frozen=True)
@@ -60,7 +68,6 @@ class TranslationValidator:
         translated = (translated or "").strip()
         reasons: list[str] = []
         score = 1.0
-
         if not translated:
             return QualityReport(False, 0.0, ("空译文",))
 
@@ -90,7 +97,7 @@ class TranslationValidator:
                 reasons.append(f"医学缩写保留率偏低({coverage:.0%})")
                 score -= 0.2
 
-        if target_language in {"中文", "简体中文", "Chinese", "zh", "zh-CN"}:
+        if target_language in _SIMPLIFIED_TARGETS:
             cjk_count = len(_CJK_RE.findall(translated))
             latin_count = len(_LATIN_RE.findall(translated))
             source_latin = len(_LATIN_RE.findall(source))
@@ -133,7 +140,6 @@ class _Seq2SeqBackend:
         self._model = None
         try:
             import torch
-
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         except Exception:
@@ -149,24 +155,17 @@ class MarianEnZhBackend(_Seq2SeqBackend):
             return
         if not self.available():
             raise RuntimeError(f"Marian翻译模型未下载: {self.model_path}")
-
         import torch
         from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-
         self._device = self._device_name()
-        self._tokenizer = AutoTokenizer.from_pretrained(
-            str(self.model_path), local_files_only=True
-        )
-        self._model = AutoModelForSeq2SeqLM.from_pretrained(
-            str(self.model_path), local_files_only=True
-        ).to(self._device)
+        self._tokenizer = AutoTokenizer.from_pretrained(str(self.model_path), local_files_only=True)
+        self._model = AutoModelForSeq2SeqLM.from_pretrained(str(self.model_path), local_files_only=True).to(self._device)
         self._model.eval()
         if self._device == "cpu":
             self._model.to(dtype=torch.float32)
 
     def translate(self, text: str) -> str:
         import torch
-
         self._load()
         prefix = ""
         try:
@@ -177,21 +176,10 @@ class MarianEnZhBackend(_Seq2SeqBackend):
                 prefix = ">>zho_Hans<< "
         except Exception:
             pass
-
-        inputs = self._tokenizer(
-            prefix + text,
-            return_tensors="pt",
-            truncation=True,
-            max_length=480,
-        )
+        inputs = self._tokenizer(prefix + text, return_tensors="pt", truncation=True, max_length=480)
         inputs = {key: value.to(self._device) for key, value in inputs.items()}
         with torch.inference_mode():
-            output = self._model.generate(
-                **inputs,
-                num_beams=4,
-                max_new_tokens=700,
-                renormalize_logits=True,
-            )
+            output = self._model.generate(**inputs, num_beams=4, max_new_tokens=700, renormalize_logits=True)
         return self._tokenizer.decode(output[0], skip_special_tokens=True).strip()
 
 
@@ -204,38 +192,23 @@ class NLLBEnZhBackend(_Seq2SeqBackend):
             return
         if not self.available():
             raise RuntimeError(f"NLLB翻译模型未下载: {self.model_path}")
-
         from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-
         self._device = self._device_name()
         self._tokenizer = AutoTokenizer.from_pretrained(
-            str(self.model_path),
-            local_files_only=True,
-            src_lang="eng_Latn",
+            str(self.model_path), local_files_only=True, src_lang="eng_Latn"
         )
-        self._model = AutoModelForSeq2SeqLM.from_pretrained(
-            str(self.model_path), local_files_only=True
-        ).to(self._device)
+        self._model = AutoModelForSeq2SeqLM.from_pretrained(str(self.model_path), local_files_only=True).to(self._device)
         self._model.eval()
 
     def translate(self, text: str) -> str:
         import torch
-
         self._load()
-        inputs = self._tokenizer(
-            text,
-            return_tensors="pt",
-            truncation=True,
-            max_length=900,
-        )
+        inputs = self._tokenizer(text, return_tensors="pt", truncation=True, max_length=900)
         inputs = {key: value.to(self._device) for key, value in inputs.items()}
         forced_bos = self._tokenizer.convert_tokens_to_ids("zho_Hans")
         with torch.inference_mode():
             output = self._model.generate(
-                **inputs,
-                forced_bos_token_id=forced_bos,
-                num_beams=4,
-                max_new_tokens=900,
+                **inputs, forced_bos_token_id=forced_bos, num_beams=4, max_new_tokens=900
             )
         return self._tokenizer.decode(output[0], skip_special_tokens=True).strip()
 
@@ -266,12 +239,13 @@ class QwenMedicalTranslationBackend:
 
 
 class MultiModelTranslationEngine:
-    """Fail-safe offline cascade for whole-book translation.
+    """Responsive offline translation cascade.
 
-    Order is intentionally translation-model first and general LLM last:
-    Marian -> NLLB -> Qwen3.5. A result must pass structural checks before it
-    stops the cascade. If every backend returns low-quality text, the best
-    candidate is kept but explicitly marked for review by the caller.
+    Simplified-Chinese translation defaults to Marian -> NLLB. Qwen3.5 is an
+    optional slow medical reviewer because a 4B multimodal model can exceed an
+    8 GB GPU and silently offload to CPU. Set PHOENIX_TRANSLATION_QWEN_REVIEW=1
+    to enable it. Other target languages use Qwen because the dedicated local
+    Marian/NLLB models are English->Simplified-Chinese only.
     """
 
     def __init__(self, paths: WorkbenchPaths, llm: LocalLLM):
@@ -288,25 +262,32 @@ class MultiModelTranslationEngine:
                 result.append(backend.name)
         return result
 
+    def active_backends(self, target_language: str = "中文") -> list[object]:
+        if target_language not in _SIMPLIFIED_TARGETS:
+            return [self.qwen] if self.qwen.available() else []
+        result: list[object] = []
+        if self.marian.available():
+            result.append(self.marian)
+        if self.nllb.available():
+            result.append(self.nllb)
+        if _flag("PHOENIX_TRANSLATION_QWEN_REVIEW", default=False) and self.qwen.available():
+            result.append(self.qwen)
+        return result
+
     def translate(self, source: str, target_language: str = "中文") -> TranslationDecision:
         attempts: list[TranslationAttempt] = []
         best: TranslationAttempt | None = None
         backend_errors: list[str] = []
+        backends = self.active_backends(target_language)
 
-        for backend in (self.marian, self.nllb, self.qwen):
-            if not backend.available():
-                continue
+        for backend in backends:
             try:
                 if isinstance(backend, QwenMedicalTranslationBackend):
                     text = backend.translate(source, target_language)
                 else:
                     text = backend.translate(source)
                 quality = self.validator.validate(source, text, target_language)
-                attempt = TranslationAttempt(
-                    backend=backend.name,
-                    text=text,
-                    quality=quality,
-                )
+                attempt = TranslationAttempt(backend=backend.name, text=text, quality=quality)
                 attempts.append(attempt)
                 if best is None or attempt.quality.score > best.quality.score:
                     best = attempt
@@ -330,11 +311,11 @@ class MultiModelTranslationEngine:
                 attempts=tuple(attempts),
             )
 
-        available = self.available_backends()
-        if not available:
+        if not backends:
+            if target_language in _SIMPLIFIED_TARGETS:
+                raise RuntimeError("没有可用英译中模型，请下载 Marian 或 NLLB。")
             raise RuntimeError(
-                "没有可用翻译模型。至少下载 opus-mt-en-zh、NLLB-200-distilled-600M "
-                "或 Qwen3.5-4B 中的一个。"
+                f"目标语言“{target_language}”需要Qwen本地模型；当前没有可用Qwen后端。"
             )
         raise RuntimeError("所有翻译模型均执行失败: " + " | ".join(backend_errors))
 

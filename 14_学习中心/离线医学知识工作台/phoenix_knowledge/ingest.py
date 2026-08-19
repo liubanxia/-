@@ -9,6 +9,7 @@ from typing import Callable
 from .chunker import chunk_text
 from .config import WorkbenchPaths
 from .db import KnowledgeDB
+from .pdf_assets import PDFAssetStore
 from .pdf_parser import export_docling_structure, iter_pdf_pages, pdf_page_count, sha256_file
 
 
@@ -24,12 +25,14 @@ class IngestResult:
     empty_pages: int
     copied_to_library: Path
     warning: str = ""
+    image_count: int = 0
 
 
 class LibraryIngestor:
     def __init__(self, db: KnowledgeDB, paths: WorkbenchPaths):
         self.db = db
         self.paths = paths
+        self.assets = PDFAssetStore(paths.runtime_root)
 
     def _library_copy(self, source: Path) -> Path:
         source = Path(source).resolve()
@@ -59,6 +62,8 @@ class LibraryIngestor:
         copy_into_library: bool = True,
         progress: ProgressCallback | None = None,
         stop_event: threading.Event | None = None,
+        extract_images: bool = True,
+        refresh_images: bool = False,
     ) -> IngestResult:
         source = Path(source).resolve()
         if not source.exists() or not source.is_file():
@@ -112,6 +117,23 @@ class LibraryIngestor:
         if stop_event is None or not stop_event.is_set():
             self.db.mark_document(document_id, status, warning)
 
+        image_count = 0
+        if extract_images and (stop_event is None or not stop_event.is_set()):
+            try:
+                if progress:
+                    progress(total_pages, total_pages, "正在提取PDF内图片并建立页码关联……")
+                manifest = self.assets.extract(pdf_path, force=refresh_images)
+                image_count = int(manifest.get("image_count", 0) or 0)
+                if progress:
+                    progress(
+                        total_pages,
+                        total_pages,
+                        f"图片资料已保存：{image_count} 张，可用于资料整理和翻译富媒体输出",
+                    )
+            except Exception as exc:
+                warning = (warning + "；" if warning else "") + f"图片提取失败: {exc}"
+                self.db.mark_document(document_id, status, warning)
+
         try:
             export_docling_structure(
                 pdf_path,
@@ -129,4 +151,5 @@ class LibraryIngestor:
             empty_pages=empty_pages,
             copied_to_library=pdf_path,
             warning=warning,
+            image_count=image_count,
         )

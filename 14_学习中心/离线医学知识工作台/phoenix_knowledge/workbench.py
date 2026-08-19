@@ -20,24 +20,16 @@ class MedicalKnowledgeWorkbench:
         self.ingestor = LibraryIngestor(self.db, self.paths)
         self.retriever = Retriever(self.db, self.paths)
         self.llm = LocalLLM(self.paths)
-        self.answerer = KnowledgeAnswerer(
-            self.retriever,
-            self.llm,
-        )
+        self.answerer = KnowledgeAnswerer(self.retriever, self.llm)
         self.organizer = DeepOrganizer(
             self.db,
             self.retriever,
             self.llm,
             self.paths.evidence_root,
+            self.paths.runtime_root,
         )
-        self.translator = PDFTranslator(
-            self.paths,
-            self.llm,
-        )
-        self.notes = TXTNotesOrganizer(
-            self.paths,
-            self.llm,
-        )
+        self.translator = PDFTranslator(self.paths, self.llm)
+        self.notes = TXTNotesOrganizer(self.paths, self.llm)
 
     def close(self):
         self.db.close()
@@ -56,6 +48,7 @@ class MedicalKnowledgeWorkbench:
             "llm_backend": self.llm.backend(),
             "embedding_available": self.retriever.embeddings.available(),
             "translation_backends": self.translator.engine.available_backends(),
+            "translation_qwen_review_default": False,
             "recent_tasks": [dict(row) for row in tasks],
         }
 
@@ -63,8 +56,7 @@ class MedicalKnowledgeWorkbench:
         for row in self.db.list_tasks(limit=100):
             if (
                 str(row["kind"]) == "deep_organize"
-                and str(row["status"])
-                in {"queued", "running", "failed", "paused"}
+                and str(row["status"]) in {"queued", "running", "failed", "paused"}
             ):
                 return row
         return None
@@ -76,32 +68,16 @@ class MedicalKnowledgeWorkbench:
         return self.answerer.ask(query, **kwargs)
 
     def organize(self, title: str, instruction: str, **kwargs):
-        return self.organizer.organize(
-            title,
-            instruction,
-            **kwargs,
-        )
+        return self.organizer.organize(title, instruction, **kwargs)
 
     def resume_task(self, task_id: int, **kwargs):
-        return self.organizer.resume(
-            int(task_id),
-            **kwargs,
-        )
+        return self.organizer.resume(int(task_id), **kwargs)
 
     def translate_book(self, path: Path, **kwargs):
-        return self.translator.translate_book(
-            Path(path),
-            **kwargs,
-        )
+        return self.translator.translate_book(Path(path), **kwargs)
 
     def organize_txt(self, source_text: str, **kwargs):
-        return self.notes.organize(
-            source_text,
-            **kwargs,
-        )
+        return self.notes.organize(source_text, **kwargs)
 
     def organize_txt_file(self, path: Path, **kwargs):
-        return self.notes.organize_file(
-            Path(path),
-            **kwargs,
-        )
+        return self.notes.organize_file(Path(path), **kwargs)

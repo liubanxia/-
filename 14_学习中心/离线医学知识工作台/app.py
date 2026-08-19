@@ -9,6 +9,7 @@ def _build_parser():
     parser = argparse.ArgumentParser(description="Phoenix 离线医学知识工作台")
     parser.add_argument("--ingest", nargs="*", metavar="PDF", help="导入一个或多个PDF")
     parser.add_argument("--ask", help="只依据PDF知识库回答")
+    parser.add_argument("--deep-qa", action="store_true", help="问答时启用Qwen深度归纳；默认使用快速证据模式")
     parser.add_argument("--organize", help="多书深度整理专题名称")
     parser.add_argument("--instruction", help="整理要求")
     parser.add_argument("--resume-task", type=int, help="继续一个未完成的多书整理任务ID")
@@ -51,6 +52,7 @@ def main() -> int:
                     print(
                         f"INGESTED={result.copied_to_library} "
                         f"PAGES={result.pages_indexed}/{result.pages_total} "
+                        f"IMAGES={result.image_count} "
                         f"WARNING={result.warning}",
                         flush=True,
                     )
@@ -62,7 +64,9 @@ def main() -> int:
                 print(f"EMBEDDINGS_ADDED={count}")
 
             if args.ask:
-                print(workbench.ask(args.ask).text)
+                answer = workbench.ask(args.ask, deep=bool(args.deep_qa))
+                print(f"ANSWER_MODE={answer.mode}")
+                print(answer.text)
 
             if args.organize:
                 if not args.instruction:
@@ -80,8 +84,7 @@ def main() -> int:
                 output, task_id = workbench.resume_task(
                     args.resume_task,
                     progress=lambda done, total, msg: print(
-                        f"{done}/{total} {msg}",
-                        flush=True,
+                        f"{done}/{total} {msg}", flush=True
                     ),
                 )
                 print(f"RESUMED_TASK_ID={task_id}\nOUTPUT={output}")
@@ -98,6 +101,8 @@ def main() -> int:
                 )
                 print(
                     f"TRANSLATION_OUTPUT={result.output_path}\n"
+                    f"TRANSLATION_FORMATS={','.join(str(x) for x in result.output_paths)}\n"
+                    f"IMAGES={result.image_count}\n"
                     f"WARNING_PAGES={result.warning_pages}\n"
                     f"BACKENDS={','.join(result.available_backends)}"
                 )
@@ -124,9 +129,13 @@ def main() -> int:
         if args.no_gui:
             return 0
 
-    from phoenix_knowledge.gui import run_gui
-
-    return int(run_gui())
+    from phoenix_knowledge import gui as gui_module
+    try:
+        from phoenix_knowledge.gui_enhancements import install as install_gui_enhancements
+        install_gui_enhancements(gui_module)
+    except Exception as exc:
+        print(f"GUI_ENHANCEMENT_WARNING={type(exc).__name__}: {exc}", flush=True)
+    return int(gui_module.run_gui())
 
 
 if __name__ == "__main__":

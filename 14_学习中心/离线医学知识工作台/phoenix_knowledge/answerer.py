@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 
@@ -24,12 +25,10 @@ class KnowledgeAnswerer:
 
     @staticmethod
     def _evidence_block(evidence: list[Evidence]) -> str:
-        parts = []
-        for item in evidence:
-            parts.append(
-                f"{item.citation} 书名：{item.title}；页码：{item.page}\n{item.text}"
-            )
-        return "\n\n".join(parts)
+        return "\n\n".join(
+            f"{item.citation} 书名：{item.title}；页码：{item.page}\n{item.text}"
+            for item in evidence
+        )
 
     @staticmethod
     def _source_footer(
@@ -50,9 +49,7 @@ class KnowledgeAnswerer:
             if key in seen:
                 continue
             seen.add(key)
-            lines.append(
-                f"- {item.citation} {item.title}，第{item.page}页"
-            )
+            lines.append(f"- {item.citation} {item.title}，第{item.page}页")
         return "\n".join(lines)
 
     def _evidence_only(
@@ -67,16 +64,14 @@ class KnowledgeAnswerer:
                 mode="evidence_only",
             )
         lines = [
-            "当前未加载本地生成模型。以下仅列出从PDF知识库检索到的原文证据，不做模型补充：",
+            "快速PDF问答：以下内容直接来自已导入资料，先保证立即可用；如需4B模型深度归纳，可开启深度问答模式。",
             "",
         ]
         for item in evidence:
             excerpt = item.text.strip()
-            if len(excerpt) > 700:
-                excerpt = excerpt[:700] + "……"
-            lines.append(
-                f"{item.citation} {item.title} 第{item.page}页\n{excerpt}\n"
-            )
+            if len(excerpt) > 900:
+                excerpt = excerpt[:900] + "……"
+            lines.append(f"{item.citation} {item.title} 第{item.page}页\n{excerpt}\n")
         lines.append(self._source_footer(evidence).strip())
         return AnswerResult(
             text="\n".join(lines).strip(),
@@ -84,22 +79,40 @@ class KnowledgeAnswerer:
             mode="evidence_only",
         )
 
+    @staticmethod
+    def _deep_enabled(explicit: bool | None) -> bool:
+        if explicit is not None:
+            return bool(explicit)
+        raw = os.environ.get("PHOENIX_KNOWLEDGE_DEEP_QA", "").strip().lower()
+        if not raw:
+            # Preserve the original API contract for programmatic callers and
+            # regression tests: if an LLM is available, ask() without an
+            # explicit mode may use it. The GUI and CLI explicitly request the
+            # fast path unless the user opts in to deep Qwen synthesis.
+            return True
+        return raw in {"1", "true", "yes", "on"}
+
     def ask(
         self,
         query: str,
         *,
         limit: int = 18,
         use_embeddings: bool = True,
+        deep: bool | None = None,
     ) -> AnswerResult:
         query = (query or "").strip()
         if not query:
             raise ValueError("问题不能为空")
+
         evidence = self.retriever.search(
             query,
             limit=limit,
             use_embeddings=use_embeddings,
         )
-        if not evidence or not self.llm.available():
+        if not evidence:
+            return self._evidence_only(query, evidence)
+
+        if not self._deep_enabled(deep) or not self.llm.available():
             return self._evidence_only(query, evidence)
 
         prompt = f"""你是 Phoenix 离线医学知识工作台。
@@ -118,14 +131,9 @@ class KnowledgeAnswerer:
 PDF证据：
 {self._evidence_block(evidence)}
 """
-        text = self.llm.generate(
-            prompt,
-            max_new_tokens=1600,
-        ).strip()
+        text = self.llm.generate(prompt, max_new_tokens=1600).strip()
         valid_ids = {item.chunk_id for item in evidence}
-        used_ids = {
-            int(x) for x in _CITATION_RE.findall(text)
-        } & valid_ids
+        used_ids = {int(x) for x in _CITATION_RE.findall(text)} & valid_ids
 
         if not used_ids:
             fallback = self._evidence_only(query, evidence)
