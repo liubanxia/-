@@ -296,13 +296,29 @@ class MultiModelTranslationEngine:
         self.nllb = NLLBEnZhBackend(paths)
         self.qwen = QwenMedicalTranslationBackend(llm)
 
+    @staticmethod
+    def _backend_available(backend, smart_level: str | None = None) -> bool:
+        """Support both smart-aware backends and legacy/simple test backends."""
+        if smart_level is not None:
+            try:
+                return bool(backend.available(smart_level))
+            except TypeError:
+                pass
+        try:
+            return bool(backend.available())
+        except Exception:
+            return False
+
     def available_backends(self) -> list[str]:
         result = []
-        if self.qwen.available("smart1") or self.qwen.available("smart2"):
+        if (
+            self._backend_available(self.qwen, "smart1")
+            or self._backend_available(self.qwen, "smart2")
+        ):
             result.append(self.qwen.name)
-        if self.marian.available():
+        if self._backend_available(self.marian):
             result.append(self.marian.name)
-        if self.nllb.available():
+        if self._backend_available(self.nllb):
             result.append(self.nllb.name)
         return result
 
@@ -314,13 +330,13 @@ class MultiModelTranslationEngine:
         level = _normalize_smart_level(smart_level)
         result: list[object] = []
 
-        if self.qwen.available(level):
+        if self._backend_available(self.qwen, level):
             result.append(self.qwen)
 
         if target_language in _SIMPLIFIED_TARGETS:
-            if self.marian.available():
+            if self._backend_available(self.marian):
                 result.append(self.marian)
-            if self.nllb.available():
+            if self._backend_available(self.nllb):
                 result.append(self.nllb)
 
         return result
