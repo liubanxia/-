@@ -26,7 +26,17 @@ MODELS = {
         "repo_id": "Qwen/Qwen3-Reranker-0.6B",
         "modelscope_id": "Qwen/Qwen3-Reranker-0.6B",
         "folder": "Qwen3-Reranker-0.6B",
-        "role": "候选证据重排序（预留，后续启用）",
+        "role": "候选证据重排序（深度模式预留，不进入默认低延迟路径）",
+        "required_any": [
+            ["config.json"],
+            ["model.safetensors", "model.safetensors.index.json", "pytorch_model.bin"],
+        ],
+    },
+    "generator_fast": {
+        "repo_id": "Qwen/Qwen3.5-2B",
+        "modelscope_id": "Qwen/Qwen3.5-2B",
+        "folder": "Qwen3.5-2B",
+        "role": "快速智能归纳、知识整理、TXT整理、可选翻译复核",
         "required_any": [
             ["config.json"],
             ["model.safetensors", "model.safetensors.index.json", "pytorch_model.bin"],
@@ -36,7 +46,7 @@ MODELS = {
         "repo_id": "Qwen/Qwen3.5-4B",
         "modelscope_id": "Qwen/Qwen3.5-4B",
         "folder": "Qwen3.5-4B",
-        "role": "离线问答、深度整理、医学翻译最终兜底",
+        "role": "4B深度质量模式；复杂PDF归纳和高质量复核，不作为默认响应路径",
         "required_any": [
             ["config.json"],
             ["model.safetensors", "model.safetensors.index.json", "pytorch_model.bin"],
@@ -70,10 +80,11 @@ MODELS = {
 }
 
 GROUPS = {
-    "translation": ["translation_fast", "translation_backup", "generator"],
+    "translation": ["translation_fast", "translation_backup", "generator_fast"],
     "translation_light": ["translation_fast"],
-    "knowledge": ["embedding", "reranker", "generator"],
-    "hospital_recommended": ["translation_fast", "embedding", "generator"],
+    "knowledge": ["embedding", "generator_fast", "reranker"],
+    "deep_quality": ["generator"],
+    "hospital_recommended": ["translation_fast", "embedding", "generator_fast"],
     "all": list(MODELS),
 }
 
@@ -114,14 +125,11 @@ def _download_huggingface(
     endpoint: str,
     ignore_patterns=None,
 ) -> Path:
-    # HfApi(endpoint=...) avoids relying on process-global HF_ENDPOINT and makes
-    # it safe to try multiple routes sequentially in one hospital-side process.
     from huggingface_hub import HfApi
 
     os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
     os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "30")
     if endpoint != "https://huggingface.co":
-        # Community mirrors may not support the Xet transport consistently.
         os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
     api = HfApi(endpoint=endpoint)
@@ -176,8 +184,6 @@ def validate_download(name: str, target: Path) -> tuple[bool, list[str]]:
         if not any((root / filename).is_file() and (root / filename).stat().st_size > 0 for filename in alternatives):
             missing.append(" / ".join(alternatives))
 
-    # Detect common interrupted-download leftovers. They can remain for resume,
-    # but the model must not be reported READY while only temporary files exist.
     model_payloads = [
         p for p in root.rglob("*")
         if p.is_file()

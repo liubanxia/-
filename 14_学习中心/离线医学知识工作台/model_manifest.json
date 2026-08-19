@@ -1,9 +1,15 @@
 {
+  "generator_fast": {
+    "repo_id": "Qwen/Qwen3.5-2B",
+    "folder": "Qwen3.5-2B",
+    "required": false,
+    "purpose": "responsive grounded synthesis, long-form organization, TXT organization, and optional medical translation review"
+  },
   "generator": {
     "repo_id": "Qwen/Qwen3.5-4B",
     "folder": "Qwen3.5-4B",
     "required": false,
-    "purpose": "grounded PDF-only answering, long-form organization, and final medical translation fallback/review"
+    "purpose": "deep-quality grounded PDF synthesis and complex review; not the default responsiveness path"
   },
   "embedding": {
     "repo_id": "Qwen/Qwen3-Embedding-0.6B",
@@ -15,7 +21,7 @@
     "repo_id": "Qwen/Qwen3-Reranker-0.6B",
     "folder": "Qwen3-Reranker-0.6B",
     "required": false,
-    "purpose": "reserved for second-stage evidence reranking"
+    "purpose": "reserved for optional second-stage evidence reranking; not used on the latency-critical default path"
   },
   "translation_fast": {
     "repo_id": "Helsinki-NLP/opus-mt-en-zh",

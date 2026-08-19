@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
@@ -11,7 +12,7 @@ _INSTALLED = False
 
 
 def install(gui_module) -> None:
-    """Apply lightweight GUI upgrades without duplicating the main GUI file."""
+    """Apply product/responsiveness upgrades without duplicating the main GUI."""
 
     global _INSTALLED
     if _INSTALLED:
@@ -19,6 +20,7 @@ def install(gui_module) -> None:
     _INSTALLED = True
 
     cls = gui_module.WorkbenchWindow
+    ask_worker_cls = gui_module.AskWorker
 
     original_init = cls.__init__
     original_qa_tab = cls._qa_tab
@@ -27,6 +29,35 @@ def install(gui_module) -> None:
     original_refresh_translation_models = cls.refresh_translation_models
     original_start_translation = cls.start_translation
     original_translation_done = cls._translation_done
+
+    def _ask_worker_run(self):
+        """Two-stage Q&A: lexical evidence first, semantic/deep result second."""
+        try:
+            started = time.perf_counter()
+            quick = self.workbench.ask(
+                self.query,
+                use_embeddings=False,
+                deep=False,
+            )
+            quick_elapsed = time.perf_counter() - started
+            self.completed.emit(
+                f"【即时检索 {quick_elapsed:.2f}s】\n"
+                f"{quick.text}\n\n"
+                "—— 正在后台做语义补全；如启用智能归纳，将在语义检索后继续生成 ——"
+            )
+
+            full_started = time.perf_counter()
+            full = self.workbench.ask(self.query)
+            full_elapsed = time.perf_counter() - full_started
+            model = self.workbench.llm.active_model_name()
+            self.completed.emit(
+                f"【完成 | 模式={full.mode} | 第二阶段 {full_elapsed:.2f}s"
+                f" | 生成模型={model}】\n\n{full.text}"
+            )
+        except Exception as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+
+    ask_worker_cls.run = _ask_worker_run
 
     def _init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
@@ -52,28 +83,48 @@ def install(gui_module) -> None:
 
     def _qa_tab(self):
         widget = original_qa_tab(self)
+        layout = widget.layout()
+
         self.deep_qa_checkbox = QCheckBox(
-            "使用 Qwen3.5 深度归纳（慢；8GB显卡可能发生CPU卸载。默认关闭）"
+            "智能归纳（优先 Qwen3.5-2B；未下载时回退4B。默认关闭）"
         )
         self.deep_qa_checkbox.setChecked(False)
-        layout = widget.layout()
+        self.force_4b_checkbox = QCheckBox(
+            "强制 Qwen3.5-4B 深度质量模式（最慢；8GB显卡可能CPU卸载）"
+        )
+        self.force_4b_checkbox.setChecked(False)
+        self.force_4b_checkbox.setEnabled(False)
+        self.deep_qa_checkbox.toggled.connect(self.force_4b_checkbox.setEnabled)
+
+        fast_name = self.workbench.llm.active_model_name("fast")
+        deep_name = self.workbench.llm.active_model_name("deep")
+        mode_label = QLabel(
+            "响应链：SQLite即时证据 → Embedding语义补全 → 可选智能归纳。"
+            f" 快速生成={fast_name}；深度生成={deep_name}。"
+        )
+        mode_label.setWordWrap(True)
+
         if layout is not None:
-            layout.insertWidget(2, self.deep_qa_checkbox)
+            layout.insertWidget(2, mode_label)
+            layout.insertWidget(3, self.deep_qa_checkbox)
+            layout.insertWidget(4, self.force_4b_checkbox)
         return widget
 
     def ask_question(self):
         checkbox = getattr(self, "deep_qa_checkbox", None)
-        if checkbox is not None and checkbox.isChecked():
-            os.environ["PHOENIX_KNOWLEDGE_DEEP_QA"] = "1"
-        else:
-            os.environ["PHOENIX_KNOWLEDGE_DEEP_QA"] = "0"
+        force_4b = getattr(self, "force_4b_checkbox", None)
+        intelligent = checkbox is not None and checkbox.isChecked()
+        deep4b = intelligent and force_4b is not None and force_4b.isChecked()
+
+        os.environ["PHOENIX_KNOWLEDGE_DEEP_QA"] = "1" if intelligent else "0"
+        os.environ["PHOENIX_KNOWLEDGE_LLM_PROFILE"] = "deep" if deep4b else "fast"
         return original_ask_question(self)
 
     def _translation_tab(self):
         widget = original_translation_tab(self)
         layout = widget.layout()
         self.translation_qwen_checkbox = QCheckBox(
-            "失败时启用 Qwen3.5 医学复核（慢；默认关闭，普通中文翻译使用 Marian → NLLB）"
+            "失败时启用 Qwen 医学复核（优先2B；默认关闭，普通中文翻译使用 Marian → NLLB）"
         )
         self.translation_qwen_checkbox.setChecked(False)
         format_label = QLabel(
@@ -115,10 +166,14 @@ def install(gui_module) -> None:
 
     def start_translation(self, retry_warning_pages: bool):
         checkbox = getattr(self, "translation_qwen_checkbox", None)
-        if checkbox is not None and checkbox.isChecked():
-            os.environ["PHOENIX_TRANSLATION_QWEN_REVIEW"] = "1"
-        else:
-            os.environ["PHOENIX_TRANSLATION_QWEN_REVIEW"] = "0"
+        qwen_review = checkbox is not None and checkbox.isChecked()
+        os.environ["PHOENIX_TRANSLATION_QWEN_REVIEW"] = "1" if qwen_review else "0"
+        os.environ["PHOENIX_KNOWLEDGE_LLM_PROFILE"] = "fast"
+
+        # Translation should not compete with stale embedding/Qwen weights for
+        # VRAM. Dedicated Marian/NLLB models are loaded only after this release.
+        self.workbench.retriever.embeddings.unload_model()
+        self.workbench.llm.unload()
         return original_start_translation(self, retry_warning_pages)
 
     def _translation_done(self, result):

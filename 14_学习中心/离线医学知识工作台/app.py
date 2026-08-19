@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 
@@ -9,7 +10,16 @@ def _build_parser():
     parser = argparse.ArgumentParser(description="Phoenix 离线医学知识工作台")
     parser.add_argument("--ingest", nargs="*", metavar="PDF", help="导入一个或多个PDF")
     parser.add_argument("--ask", help="只依据PDF知识库回答")
-    parser.add_argument("--deep-qa", action="store_true", help="问答时启用Qwen深度归纳；默认使用快速证据模式")
+    parser.add_argument(
+        "--deep-qa",
+        action="store_true",
+        help="问答时启用智能归纳；优先Qwen3.5-2B，默认仍是快速证据模式",
+    )
+    parser.add_argument(
+        "--deep-4b",
+        action="store_true",
+        help="问答时强制Qwen3.5-4B深度质量模式（最慢）",
+    )
     parser.add_argument("--organize", help="多书深度整理专题名称")
     parser.add_argument("--instruction", help="整理要求")
     parser.add_argument("--resume-task", type=int, help="继续一个未完成的多书整理任务ID")
@@ -49,7 +59,6 @@ def main() -> int:
     args = _build_parser().parse_args()
     non_license_action = _non_license_cli_action(args)
     license_action = _license_cli_action(args)
-    has_cli_action = non_license_action or license_action
 
     from phoenix_knowledge.config import get_paths
     from phoenix_knowledge.licensing import LicenseManager
@@ -106,13 +115,22 @@ def main() -> int:
                 print(f"EMBEDDINGS_ADDED={count}")
 
             if args.ask:
-                answer = workbench.ask(args.ask, deep=bool(args.deep_qa))
+                if args.deep_4b:
+                    os.environ["PHOENIX_KNOWLEDGE_LLM_PROFILE"] = "deep"
+                else:
+                    os.environ["PHOENIX_KNOWLEDGE_LLM_PROFILE"] = "fast"
+                answer = workbench.ask(
+                    args.ask,
+                    deep=bool(args.deep_qa or args.deep_4b),
+                )
                 print(f"ANSWER_MODE={answer.mode}")
+                print(f"GENERATOR={workbench.llm.active_model_name()}")
                 print(answer.text)
 
             if args.organize:
                 if not args.instruction:
                     raise SystemExit("--organize 必须同时提供 --instruction")
+                os.environ.setdefault("PHOENIX_KNOWLEDGE_LLM_PROFILE", "fast")
                 output, task_id = workbench.organize(
                     args.organize,
                     args.instruction,
@@ -123,6 +141,7 @@ def main() -> int:
                 print(f"TASK_ID={task_id}\nOUTPUT={output}")
 
             if args.resume_task is not None:
+                os.environ.setdefault("PHOENIX_KNOWLEDGE_LLM_PROFILE", "fast")
                 output, task_id = workbench.resume_task(
                     args.resume_task,
                     progress=lambda done, total, msg: print(
@@ -132,6 +151,7 @@ def main() -> int:
                 print(f"RESUMED_TASK_ID={task_id}\nOUTPUT={output}")
 
             if args.translate_book:
+                os.environ.setdefault("PHOENIX_KNOWLEDGE_LLM_PROFILE", "fast")
                 result = workbench.translate_book(
                     Path(args.translate_book),
                     start_page=max(1, int(args.start_page)),
@@ -150,6 +170,7 @@ def main() -> int:
                 )
 
             if args.organize_txt:
+                os.environ.setdefault("PHOENIX_KNOWLEDGE_LLM_PROFILE", "fast")
                 result = workbench.organize_txt_file(
                     Path(args.organize_txt),
                     title=args.note_title,

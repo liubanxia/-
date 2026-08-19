@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import math
 import re
 from collections import Counter
@@ -37,13 +38,7 @@ class Evidence:
 
 
 def query_variants(query: str, limit: int = 8) -> list[str]:
-    """Create conservative lexical fallbacks for Chinese natural-language queries.
-
-    SQLite's stock unicode61 tokenizer does not provide medical Chinese word
-    segmentation. We therefore search both the full query and a small set of
-    content-bearing fragments. This keeps the no-model baseline useful while
-    semantic retrieval remains optional.
-    """
+    """Create conservative lexical fallbacks for Chinese natural-language queries."""
 
     query = (query or "").strip()
     if not query:
@@ -80,18 +75,16 @@ class EmbeddingEngine:
         )
         self._model = None
         self._device = None
+        self._index_ids = None
+        self._index_matrix = None
+        self._query_cache: dict[str, object] = {}
 
     def available(self) -> bool:
         return self.model_path.exists() and any(self.model_path.iterdir())
 
     @staticmethod
     def _select_device() -> str:
-        """Use modern CUDA GPUs but keep legacy hospital GPUs on CPU.
-
-        Current PyTorch builds do not support old K10-class hardware reliably.
-        Compute capability 5.0+ is allowed; CPU-only PyTorch or older GPUs use
-        CPU automatically.
-        """
+        """Use modern CUDA GPUs but keep legacy hospital GPUs on CPU."""
         try:
             import torch
 
@@ -132,29 +125,101 @@ class EmbeddingEngine:
             )
         return self._model
 
-    def build_missing(
-        self,
-        batch_size: int = 8,
-        progress: Callable[[int, int, str], None] | None = None,
-    ) -> int:
-        """Build only missing vectors and checkpoint every mini-batch.
+    def unload_model(self) -> None:
+        """Release inference weights while retaining the small RAM vector index."""
+        self._model = None
+        self._device = None
+        self._query_cache.clear()
+        gc.collect()
+        try:
+            import torch
 
-        Each mini-batch is committed immediately so an interruption does not
-        discard completed work. Progress is reported after every mini-batch.
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+    def _invalidate_vector_index(self) -> None:
+        self._index_ids = None
+        self._index_matrix = None
+        self._query_cache.clear()
+
+    def _load_vector_index(self):
+        """Load all saved vectors once into one contiguous NumPy matrix.
+
+        Previously every question iterated 5k+ SQLite rows and rebuilt each
+        vector with np.frombuffer. Keeping a ~20 MB matrix for a 5k x 1k index
+        turns repeated similarity search into one BLAS matrix-vector product.
         """
         import numpy as np
 
-        batch_size = max(1, int(batch_size))
+        if self._index_ids is not None and self._index_matrix is not None:
+            return self._index_ids, self._index_matrix
+
+        ids: list[int] = []
+        vectors: list[object] = []
+        expected_dim: int | None = None
+
+        for row in self.db.iter_embeddings(self.model_name):
+            dim = int(row["dim"])
+            vector = np.frombuffer(row["vector"], dtype=np.float32, count=dim)
+            if expected_dim is None:
+                expected_dim = int(vector.size)
+            if vector.size != expected_dim:
+                continue
+            ids.append(int(row["chunk_id"]))
+            vectors.append(vector)
+
+        if not vectors:
+            self._index_ids = np.empty((0,), dtype=np.int64)
+            self._index_matrix = np.empty((0, 0), dtype=np.float32)
+            return self._index_ids, self._index_matrix
+
+        self._index_ids = np.asarray(ids, dtype=np.int64)
+        self._index_matrix = np.ascontiguousarray(
+            np.vstack(vectors),
+            dtype=np.float32,
+        )
+        return self._index_ids, self._index_matrix
+
+    def _adaptive_batch_size(self) -> int:
+        if self.device != "cuda:0":
+            return 8
+        try:
+            import torch
+
+            total_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+            if total_gb >= 12:
+                return 48
+            if total_gb >= 7:
+                return 32
+            return 16
+        except Exception:
+            return 16
+
+    def build_missing(
+        self,
+        batch_size: int | None = None,
+        progress: Callable[[int, int, str], None] | None = None,
+    ) -> int:
+        """Build only missing vectors and checkpoint every mini-batch."""
+        import numpy as np
+
         model = self._load()
+        batch_size = self._adaptive_batch_size() if batch_size is None else max(1, int(batch_size))
         done = 0
 
         if progress:
-            progress(0, 0, f"Embedding模型已加载 | 设备={self.device}")
+            progress(
+                0,
+                0,
+                f"Embedding模型已加载 | 设备={self.device} | batch={batch_size}",
+            )
 
         while True:
             rows = self.db.missing_embedding_chunks(
                 self.model_name,
-                limit=max(batch_size * 8, 64),
+                limit=max(batch_size * 4, 64),
             )
             if not rows:
                 break
@@ -181,6 +246,7 @@ class EmbeddingEngine:
                     )
 
                 self.db.store_embeddings(self.model_name, items)
+                self._invalidate_vector_index()
                 done += len(items)
                 if progress:
                     progress(
@@ -195,26 +261,53 @@ class EmbeddingEngine:
 
         return done
 
+    def _encode_query(self, query: str):
+        import numpy as np
+
+        cached = self._query_cache.get(query)
+        if cached is not None:
+            return cached
+
+        model = self._load()
+        vector = np.asarray(
+            model.encode(
+                [query],
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )[0],
+            dtype=np.float32,
+        )
+        if len(self._query_cache) >= 32:
+            self._query_cache.pop(next(iter(self._query_cache)))
+        self._query_cache[query] = vector
+        return vector
+
     def search(self, query: str, limit: int = 20) -> list[tuple[int, float]]:
         import numpy as np
 
-        model = self._load()
-        query_vector = np.asarray(
-            model.encode([query], normalize_embeddings=True, show_progress_bar=False)[0],
-            dtype=np.float32,
-        )
-        scores: list[tuple[int, float]] = []
-        for row in self.db.iter_embeddings(self.model_name):
-            vector = np.frombuffer(
-                row["vector"], dtype=np.float32, count=int(row["dim"])
-            )
-            if vector.size != query_vector.size:
-                continue
-            score = float(np.dot(query_vector, vector))
-            if math.isfinite(score):
-                scores.append((int(row["chunk_id"]), score))
-        scores.sort(key=lambda item: item[1], reverse=True)
-        return scores[:limit]
+        query_vector = self._encode_query(query)
+        ids, matrix = self._load_vector_index()
+        if matrix.size == 0 or matrix.shape[1] != query_vector.size:
+            return []
+
+        scores = matrix @ query_vector
+        finite = np.isfinite(scores)
+        if not finite.any():
+            return []
+        scores = np.where(finite, scores, -np.inf)
+
+        k = min(max(1, int(limit)), int(scores.size))
+        if k == scores.size:
+            order = np.argsort(scores)[::-1]
+        else:
+            candidate = np.argpartition(scores, -k)[-k:]
+            order = candidate[np.argsort(scores[candidate])[::-1]]
+
+        return [
+            (int(ids[index]), float(scores[index]))
+            for index in order[:k]
+            if math.isfinite(float(scores[index]))
+        ]
 
 
 class Retriever:
@@ -284,6 +377,8 @@ class Retriever:
                     else:
                         merged[chunk_id] = (row, vector_score)
             except Exception:
+                # Semantic retrieval is an enhancement. Lexical evidence remains
+                # available even if a model/runtime is temporarily unavailable.
                 pass
 
         ordered = sorted(
@@ -300,12 +395,7 @@ class Retriever:
         limit: int = 200,
         use_embeddings: bool = True,
     ) -> list[Evidence]:
-        """Retrieve a broad evidence pool without letting one book monopolize it.
-
-        The first pass caps each source document; a second score-ordered fill
-        restores unused capacity, so a one-book library can still use the full
-        requested limit.
-        """
+        """Retrieve a broad evidence pool without one book monopolizing it."""
 
         limit = max(1, int(limit))
         pool = self.search(

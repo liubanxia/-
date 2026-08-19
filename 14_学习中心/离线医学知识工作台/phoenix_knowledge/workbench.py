@@ -32,6 +32,21 @@ class MedicalKnowledgeWorkbench:
         self.notes = TXTNotesOrganizer(self.paths, self.llm)
 
     def close(self):
+        # Release model memory explicitly before closing the SQLite connection.
+        # This matters on portable/hospital machines where the process may be
+        # restarted repeatedly during one reading session.
+        try:
+            self.translator.engine.unload()
+        except Exception:
+            pass
+        try:
+            self.retriever.embeddings.unload_model()
+        except Exception:
+            pass
+        try:
+            self.llm.unload()
+        except Exception:
+            pass
         self.db.close()
 
     def status(self) -> dict:
@@ -46,9 +61,17 @@ class MedicalKnowledgeWorkbench:
             "documents": len(docs),
             "chunks": self.db.count_chunks(),
             "llm_backend": self.llm.backend(),
+            "generator_fast": self.llm.active_model_name("fast"),
+            "generator_deep": self.llm.active_model_name("deep"),
             "embedding_available": self.retriever.embeddings.available(),
+            "embedding_device": self.retriever.embeddings.device,
             "translation_backends": self.translator.engine.available_backends(),
             "translation_qwen_review_default": False,
+            "response_pipeline": [
+                "lexical_immediate",
+                "semantic_vector",
+                "optional_generator",
+            ],
             "recent_tasks": [dict(row) for row in tasks],
         }
 

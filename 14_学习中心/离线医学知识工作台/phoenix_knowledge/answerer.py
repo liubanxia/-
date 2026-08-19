@@ -64,7 +64,7 @@ class KnowledgeAnswerer:
                 mode="evidence_only",
             )
         lines = [
-            "快速PDF问答：以下内容直接来自已导入资料，先保证立即可用；如需4B模型深度归纳，可开启深度问答模式。",
+            "快速PDF问答：以下内容直接来自已导入资料；智能归纳属于可选第二阶段，不阻塞第一屏结果。",
             "",
         ]
         for item in evidence:
@@ -85,10 +85,6 @@ class KnowledgeAnswerer:
             return bool(explicit)
         raw = os.environ.get("PHOENIX_KNOWLEDGE_DEEP_QA", "").strip().lower()
         if not raw:
-            # Preserve the original API contract for programmatic callers and
-            # regression tests: if an LLM is available, ask() without an
-            # explicit mode may use it. The GUI and CLI explicitly request the
-            # fast path unless the user opts in to deep Qwen synthesis.
             return True
         return raw in {"1", "true", "yes", "on"}
 
@@ -131,7 +127,20 @@ class KnowledgeAnswerer:
 PDF证据：
 {self._evidence_block(evidence)}
 """
-        text = self.llm.generate(prompt, max_new_tokens=1600).strip()
+
+        try:
+            embeddings = getattr(self.retriever, "embeddings", None)
+            if embeddings is not None and hasattr(embeddings, "unload_model"):
+                embeddings.unload_model()
+        except Exception:
+            pass
+
+        profile = os.environ.get("PHOENIX_KNOWLEDGE_LLM_PROFILE", "fast")
+        max_tokens = 1600 if profile.strip().lower() in {"deep", "4b", "deep4b", "quality", "max"} else 900
+        text = self.llm.generate(
+            prompt,
+            max_new_tokens=max_tokens,
+        ).strip()
         valid_ids = {item.chunk_id for item in evidence}
         used_ids = {int(x) for x in _CITATION_RE.findall(text)} & valid_ids
 
