@@ -5,11 +5,12 @@ from pathlib import Path
 from .answerer import KnowledgeAnswerer
 from .config import WorkbenchPaths, get_paths
 from .db import KnowledgeDB
-from .ingest import LibraryIngestor
+from .document_ingest import MultiDocumentIngestor, SUPPORTED_EXTENSIONS
 from .llm import LocalLLM
 from .notes import TXTNotesOrganizer
-from .organizer import DeepOrganizer
+from .document_organizer import MultiDocumentOrganizer
 from .retrieval import Retriever
+from .rich_export import MultiFormatExporter
 from .translator import PDFTranslator
 
 
@@ -17,11 +18,11 @@ class MedicalKnowledgeWorkbench:
     def __init__(self, paths: WorkbenchPaths | None = None):
         self.paths = paths or get_paths()
         self.db = KnowledgeDB(self.paths.database)
-        self.ingestor = LibraryIngestor(self.db, self.paths)
+        self.ingestor = MultiDocumentIngestor(self.db, self.paths)
         self.retriever = Retriever(self.db, self.paths)
         self.llm = LocalLLM(self.paths)
         self.answerer = KnowledgeAnswerer(self.retriever, self.llm)
-        self.organizer = DeepOrganizer(
+        self.organizer = MultiDocumentOrganizer(
             self.db,
             self.retriever,
             self.llm,
@@ -30,11 +31,12 @@ class MedicalKnowledgeWorkbench:
         )
         self.translator = PDFTranslator(self.paths, self.llm)
         self.notes = TXTNotesOrganizer(self.paths, self.llm)
+        self.exporter = MultiFormatExporter(
+            self.paths.evidence_root / "多格式输出"
+        )
+        self.last_export_bundle = None
 
     def close(self):
-        # Release model memory explicitly before closing the SQLite connection.
-        # This matters on portable/hospital machines where the process may be
-        # restarted repeatedly during one reading session.
         try:
             self.translator.engine.unload()
         except Exception:
@@ -60,6 +62,8 @@ class MedicalKnowledgeWorkbench:
             "model_root": str(self.paths.model_root),
             "documents": len(docs),
             "chunks": self.db.count_chunks(),
+            "supported_input_formats": sorted(SUPPORTED_EXTENSIONS),
+            "organized_output_formats": ["pdf", "docx", "md", "txt"],
             "llm_backend": self.llm.backend(),
             "generator_fast": self.llm.active_model_name("fast"),
             "generator_deep": self.llm.active_model_name("deep"),
@@ -85,16 +89,29 @@ class MedicalKnowledgeWorkbench:
         return None
 
     def ingest(self, path: Path, **kwargs):
-        return self.ingestor.ingest_pdf(path, **kwargs)
+        return self.ingestor.ingest(Path(path), **kwargs)
 
     def ask(self, query: str, **kwargs):
         return self.answerer.ask(query, **kwargs)
 
     def organize(self, title: str, instruction: str, **kwargs):
-        return self.organizer.organize(title, instruction, **kwargs)
+        output, task_id = self.organizer.organize(title, instruction, **kwargs)
+        try:
+            self.last_export_bundle = self.exporter.export_path(
+                Path(output),
+                title=title or Path(output).stem,
+            )
+        except Exception:
+            self.last_export_bundle = None
+        return output, task_id
 
     def resume_task(self, task_id: int, **kwargs):
-        return self.organizer.resume(int(task_id), **kwargs)
+        output, resumed_id = self.organizer.resume(int(task_id), **kwargs)
+        try:
+            self.last_export_bundle = self.exporter.export_path(Path(output))
+        except Exception:
+            self.last_export_bundle = None
+        return output, resumed_id
 
     def translate_book(self, path: Path, **kwargs):
         return self.translator.translate_book(Path(path), **kwargs)

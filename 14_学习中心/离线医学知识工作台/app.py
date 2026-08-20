@@ -8,21 +8,26 @@ from pathlib import Path
 
 def _build_parser():
     parser = argparse.ArgumentParser(description="Phoenix 离线医学知识工作台")
-    parser.add_argument("--ingest", nargs="*", metavar="PDF", help="导入一个或多个PDF")
-    parser.add_argument("--ask", help="只依据PDF知识库回答")
+    parser.add_argument(
+        "--ingest",
+        nargs="*",
+        metavar="FILE",
+        help="导入一个或多个医学资料：PDF/PPTX/DOCX/TXT/MD",
+    )
+    parser.add_argument("--ask", help="只依据已导入医学资料知识库回答")
     parser.add_argument(
         "--deep-qa",
         action="store_true",
-        help="问答时启用智能归纳；优先Qwen3.5-2B，默认仍是快速证据模式",
+        help="问答时启用智能归纳；默认仍是快速证据模式",
     )
     parser.add_argument(
         "--deep-4b",
         action="store_true",
-        help="问答时强制Qwen3.5-4B深度质量模式（最慢）",
+        help="问答时强制智能2深度质量模式（最慢）",
     )
-    parser.add_argument("--organize", help="多书深度整理专题名称")
+    parser.add_argument("--organize", help="多资料深度整理专题名称")
     parser.add_argument("--instruction", help="整理要求")
-    parser.add_argument("--resume-task", type=int, help="继续一个未完成的多书整理任务ID")
+    parser.add_argument("--resume-task", type=int, help="继续一个未完成的多资料整理任务ID")
     parser.add_argument("--translate-book", metavar="PDF", help="整本PDF离线翻译")
     parser.add_argument("--start-page", type=int, default=1, help="整本翻译从第几页开始，默认1")
     parser.add_argument("--target-language", default="中文", help="翻译目标语言，默认中文")
@@ -84,6 +89,13 @@ def _license_cli_action(args) -> bool:
     return bool(args.machine_code or args.activate or args.license_status)
 
 
+def _print_export_bundle(workbench) -> None:
+    bundle = getattr(workbench, "last_export_bundle", None)
+    if bundle is None:
+        return
+    print("ORGANIZED_FORMATS=" + ",".join(str(path) for path in bundle.output_paths))
+
+
 def main() -> int:
     args = _build_parser().parse_args()
     _apply_compute_cli(args)
@@ -132,7 +144,7 @@ def main() -> int:
                     )
                     print(
                         f"INGESTED={result.copied_to_library} "
-                        f"PAGES={result.pages_indexed}/{result.pages_total} "
+                        f"UNITS={result.pages_indexed}/{result.pages_total} "
                         f"IMAGES={result.image_count} "
                         f"WARNING={result.warning}",
                         flush=True,
@@ -170,6 +182,7 @@ def main() -> int:
                     ),
                 )
                 print(f"TASK_ID={task_id}\nOUTPUT={output}")
+                _print_export_bundle(workbench)
 
             if args.resume_task is not None:
                 os.environ.setdefault("PHOENIX_KNOWLEDGE_LLM_PROFILE", "fast")
@@ -180,6 +193,7 @@ def main() -> int:
                     ),
                 )
                 print(f"RESUMED_TASK_ID={task_id}\nOUTPUT={output}")
+                _print_export_bundle(workbench)
 
             if args.translate_book:
                 os.environ.setdefault("PHOENIX_KNOWLEDGE_LLM_PROFILE", "fast")
@@ -245,6 +259,12 @@ def main() -> int:
         install_compute_gui(gui_module)
     except Exception as exc:
         print(f"COMPUTE_GUI_WARNING={type(exc).__name__}: {exc}", flush=True)
+    try:
+        from phoenix_knowledge.document_gui import install as install_document_gui
+
+        install_document_gui(gui_module)
+    except Exception as exc:
+        print(f"DOCUMENT_GUI_WARNING={type(exc).__name__}: {exc}", flush=True)
     return int(gui_module.run_gui())
 
 
