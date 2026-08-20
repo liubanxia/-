@@ -7,3 +7,4 @@ transformers>=4.57
 accelerate>=1.0
 safetensors>=0.4
 sentencepiece>=0.2
+torch

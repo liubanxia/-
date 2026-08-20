@@ -39,6 +39,10 @@ def install(gui_module) -> None:
         messages: list[str] = []
         failures: list[str] = []
         successes = 0
+        product_workbench = bool(
+            hasattr(self.workbench, "ingestor")
+            and hasattr(self.workbench, "retriever")
+        )
 
         for file_index, filename in enumerate(self.files, start=1):
             def callback(done, total, message):
@@ -52,7 +56,13 @@ def install(gui_module) -> None:
                 )
 
             try:
-                result = self.workbench.ingest(Path(filename), progress=callback)
+                kwargs = {"progress": callback}
+                if product_workbench:
+                    # Build semantic vectors once after the entire GUI batch;
+                    # rebuilding after every large book wastes GPU time and
+                    # makes the visible import percentage jump backwards.
+                    kwargs["_defer_embeddings"] = True
+                result = self.workbench.ingest(Path(filename), **kwargs)
                 successes += 1
                 suffix = f" | {result.warning}" if result.warning else ""
                 messages.append(
@@ -190,7 +200,10 @@ def install(gui_module) -> None:
 
         try:
             if source is not None and Path(source).is_file():
-                bundle = self.workbench.exporter.export_path(Path(source), title=title)
+                bundle = self.workbench.exporter.export_path(
+                    Path(source),
+                    title=title,
+                )
             else:
                 bundle = self.workbench.exporter.export_text(
                     self.organize_result.toPlainText(),
@@ -204,7 +217,9 @@ def install(gui_module) -> None:
             QMessageBox.information(
                 self,
                 "Phoenix 多格式输出",
-                "已生成：\n" + "\n".join(str(path) for path in bundle.output_paths),
+                "已生成：\n" + "\n".join(
+                    str(path) for path in bundle.output_paths
+                ),
             )
         except Exception as exc:
             self.workbench.last_export_error = f"{type(exc).__name__}: {exc}"
