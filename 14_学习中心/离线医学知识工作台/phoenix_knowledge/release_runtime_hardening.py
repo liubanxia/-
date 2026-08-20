@@ -27,15 +27,66 @@ def _modules_ready(names: tuple[str, ...]) -> bool:
 
 
 def local_generation_runtime_ready() -> bool:
-    """Runtime required by local Qwen generation."""
-
     return _modules_ready(_LLM_MODULES)
 
 
 def local_seq2seq_runtime_ready() -> bool:
-    """Runtime required by local Marian/NLLB fallback translation."""
-
     return _modules_ready(_SEQ2SEQ_MODULES)
+
+
+def _embedding_count(engine) -> int:
+    try:
+        with engine.db._lock:
+            row = engine.db._conn.execute(
+                "SELECT COUNT(*) FROM embeddings WHERE model_name=?",
+                (engine.model_name,),
+            ).fetchone()
+        return int(row[0] if row else 0)
+    except Exception:
+        return 0
+
+
+def _embedding_readiness(engine) -> dict:
+    chunks = int(engine.db.count_chunks())
+    vectors = _embedding_count(engine)
+    missing = max(0, chunks - vectors)
+    model_ready = model_dir_ready(engine.model_path)
+    runtime_ready = _module_importable("sentence_transformers")
+    ready = bool(
+        model_ready
+        and runtime_ready
+        and missing == 0
+    )
+    if not model_ready:
+        state = "model_missing"
+        label = "语义模型未下载或文件不完整"
+    elif not runtime_ready:
+        state = "runtime_missing"
+        label = "语义组件缺失或加载失败"
+    elif chunks == 0:
+        state = "ready"
+        label = "语义检索就绪（资料库为空）"
+    elif missing:
+        state = "index_incomplete"
+        label = f"语义索引 {vectors}/{chunks}"
+    else:
+        state = "ready"
+        label = f"语义索引 {vectors}/{chunks} READY"
+    return {
+        "state": state,
+        "label": label,
+        "ready": ready,
+        "model_ready": model_ready,
+        "runtime_ready": runtime_ready,
+        "chunks": chunks,
+        "vectors": vectors,
+        "missing": missing,
+        "device": (
+            engine.device
+            if model_ready and runtime_ready
+            else "unavailable"
+        ),
+    }
 
 
 def install() -> None:
@@ -54,32 +105,13 @@ def install() -> None:
     )
     from .workbench import MedicalKnowledgeWorkbench
 
-    # A pointer/config/status file by itself is not a usable model.
     EmbeddingEngine.available = lambda self: model_dir_ready(
         self.model_path
     )
+    EmbeddingEngine.readiness = _embedding_readiness
     _Seq2SeqBackend.available = lambda self: model_dir_ready(
         self.model_path
     )
-
-    if hasattr(EmbeddingEngine, "readiness"):
-        original_embedding_readiness = EmbeddingEngine.readiness
-
-        def embedding_readiness(self):
-            payload = dict(original_embedding_readiness(self))
-            if not model_dir_ready(self.model_path):
-                payload.update(
-                    {
-                        "state": "model_missing",
-                        "label": "语义模型未下载或文件不完整",
-                        "ready": False,
-                        "model_ready": False,
-                        "device": "unavailable",
-                    }
-                )
-            return payload
-
-        EmbeddingEngine.readiness = embedding_readiness
 
     original_llm_available = LocalLLM.available
 
@@ -88,7 +120,6 @@ def install() -> None:
             return False
         backend = self.backend(profile)
         if backend != "transformers_local":
-            # Explicitly authorized remote service or loopback local server.
             return True
         return local_generation_runtime_ready()
 

@@ -64,7 +64,7 @@ class ReleaseLaunchHardeningTests(unittest.TestCase):
 
                 engine = EmbeddingEngine(db, paths)
                 with patch(
-                    "phoenix_knowledge.release_hardening._runtime_module_available",
+                    "phoenix_knowledge.release_runtime_hardening._module_importable",
                     return_value=True,
                 ):
                     state = engine.readiness()
@@ -74,7 +74,7 @@ class ReleaseLaunchHardeningTests(unittest.TestCase):
                 self.assertEqual(state["missing"], 1)
 
                 with patch(
-                    "phoenix_knowledge.release_hardening._runtime_module_available",
+                    "phoenix_knowledge.release_runtime_hardening._module_importable",
                     return_value=False,
                 ):
                     state = engine.readiness()
