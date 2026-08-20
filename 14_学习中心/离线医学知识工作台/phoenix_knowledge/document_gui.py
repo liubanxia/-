@@ -26,6 +26,7 @@ def install(gui_module) -> None:
     original_organize_tab = cls._organize_tab
     original_organize_done = cls._organize_done
     original_use_for_translation = cls.use_selected_book_for_translation
+    original_failed = cls._failed
 
     def _library_tab(self):
         widget = original_library_tab(self)
@@ -34,8 +35,9 @@ def install(gui_module) -> None:
             text = label.text()
             if "PDF内容只在本机SSD解析和索引" in text:
                 label.setText(
-                    "PDF / PPTX / DOCX / TXT / Markdown 均只在本机SSD解析和索引；"
-                    "PPTX保留幻灯片编号、表格文字、备注和关联图片。"
+                    "PDF / PPT / PPTX / DOCX / TXT / Markdown 均只在本机SSD解析和索引；"
+                    "PPT/PPTX保留幻灯片编号、表格文字、备注和关联图片。"
+                    "老式PPT由Phoenix自动兼容转换，不要求用户手工另存。"
                 )
         for button in widget.findChildren(QPushButton):
             if button.text() == "导入PDF":
@@ -49,7 +51,7 @@ def install(gui_module) -> None:
         for label in widget.findChildren(QLabel):
             if "只根据已导入PDF回答" in label.text():
                 label.setText(
-                    "只根据已导入医学资料回答；PDF保留页码，PPTX保留幻灯片编号，"
+                    "只根据已导入医学资料回答；PDF保留页码，PPT/PPTX保留幻灯片编号，"
                     "所有结论继续保留来源编号。"
                 )
         for button in widget.findChildren(QPushButton):
@@ -61,7 +63,7 @@ def install(gui_module) -> None:
         widget = original_organize_tab(self)
         if hasattr(self, "multi_book_info"):
             self.multi_book_info.setText(
-                "默认从全部 PDF / PPTX / DOCX / TXT / Markdown 中跨资料检索、去重和合并；"
+                "默认从全部 PDF / PPT / PPTX / DOCX / TXT / Markdown 中跨资料检索、去重和合并；"
                 "整理完成自动输出 PDF + DOCX + Markdown + TXT。"
             )
         for button in widget.findChildren(QPushButton):
@@ -98,8 +100,8 @@ def install(gui_module) -> None:
             "选择医学资料",
             str(self.workbench.paths.source_root),
             (
-                "医学资料 (*.pdf *.pptx *.docx *.txt *.md);;"
-                "PDF (*.pdf);;PowerPoint (*.pptx);;Word (*.docx);;"
+                "医学资料 (*.pdf *.ppt *.pptx *.docx *.txt *.md);;"
+                "PDF (*.pdf);;PowerPoint (*.ppt *.pptx);;Word (*.docx);;"
                 "文本 (*.txt *.md)"
             ),
         )
@@ -152,6 +154,17 @@ def install(gui_module) -> None:
             )
         return result
 
+    def _failed(self, error: str):
+        cleaned = str(error)
+        for prefix in (
+            "LegacyPPTConversionError: ",
+            "RuntimeError: ",
+        ):
+            if cleaned.startswith(prefix):
+                cleaned = cleaned[len(prefix):]
+                break
+        return original_failed(self, cleaned)
+
     def use_selected_book_for_translation(self):
         item = self.library_list.currentItem()
         if item is None:
@@ -161,7 +174,7 @@ def install(gui_module) -> None:
             QMessageBox.information(
                 self,
                 "整本翻译目前仅支持PDF",
-                "PPTX / DOCX 已可进入知识库和多资料整理；"
+                "PPT / PPTX / DOCX 已可进入知识库和多资料整理；"
                 "整本双语版式翻译仍保留为 PDF 专用功能。",
             )
             return
@@ -175,4 +188,5 @@ def install(gui_module) -> None:
     cls.add_documents = add_documents
     cls.export_organize_bundle = export_organize_bundle
     cls._organize_done = _organize_done
+    cls._failed = _failed
     cls.use_selected_book_for_translation = use_selected_book_for_translation

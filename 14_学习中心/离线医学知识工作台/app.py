@@ -12,7 +12,7 @@ def _build_parser():
         "--ingest",
         nargs="*",
         metavar="FILE",
-        help="导入一个或多个医学资料：PDF/PPTX/DOCX/TXT/MD",
+        help="导入一个或多个医学资料：PDF/PPT/PPTX/DOCX/TXT/MD",
     )
     parser.add_argument("--ask", help="只依据已导入医学资料知识库回答")
     parser.add_argument(

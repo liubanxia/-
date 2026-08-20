@@ -5,7 +5,7 @@ from pathlib import Path
 from .answerer import KnowledgeAnswerer
 from .config import WorkbenchPaths, get_paths
 from .db import KnowledgeDB
-from .document_ingest import MultiDocumentIngestor, SUPPORTED_EXTENSIONS
+from .product_document_ingest import ProductDocumentIngestor, SUPPORTED_EXTENSIONS
 from .llm import LocalLLM
 from .notes import TXTNotesOrganizer
 from .document_organizer import MultiDocumentOrganizer
@@ -18,7 +18,7 @@ class MedicalKnowledgeWorkbench:
     def __init__(self, paths: WorkbenchPaths | None = None):
         self.paths = paths or get_paths()
         self.db = KnowledgeDB(self.paths.database)
-        self.ingestor = MultiDocumentIngestor(self.db, self.paths)
+        self.ingestor = ProductDocumentIngestor(self.db, self.paths)
         self.retriever = Retriever(self.db, self.paths)
         self.llm = LocalLLM(self.paths)
         self.answerer = KnowledgeAnswerer(self.retriever, self.llm)
@@ -63,6 +63,7 @@ class MedicalKnowledgeWorkbench:
             "documents": len(docs),
             "chunks": self.db.count_chunks(),
             "supported_input_formats": sorted(SUPPORTED_EXTENSIONS),
+            "legacy_ppt": self.ingestor.legacy_ppt_status(),
             "organized_output_formats": ["pdf", "docx", "md", "txt"],
             "llm_backend": self.llm.backend(),
             "generator_fast": self.llm.active_model_name("fast"),
