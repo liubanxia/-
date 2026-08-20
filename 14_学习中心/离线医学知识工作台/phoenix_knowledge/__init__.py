@@ -2,9 +2,11 @@ from .workbench import MedicalKnowledgeWorkbench
 from .translation_recovery import install as _install_translation_recovery
 from .scholarly_pubmed import install as _install_scholarly_pubmed
 from .scholarly_product_hardening import install as _install_scholarly_product_hardening
+from .translation_semantics import install as _install_translation_semantics
 
 _install_translation_recovery()
 _install_scholarly_pubmed()
 _install_scholarly_product_hardening()
+_install_translation_semantics()
 
 __all__ = ["MedicalKnowledgeWorkbench"]
