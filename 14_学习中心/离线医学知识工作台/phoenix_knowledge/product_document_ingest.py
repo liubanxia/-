@@ -23,14 +23,53 @@ SUPPORTED_EXTENSIONS = set(BASE_SUPPORTED_EXTENSIONS) | {".ppt"}
 
 
 class ProductDocumentIngestor(MultiDocumentIngestor):
-    """Product-grade document ingest with transparent legacy PPT support."""
+    """Product-grade document ingest with deduplicated storage and legacy PPT."""
 
     def __init__(self, db: KnowledgeDB, paths: WorkbenchPaths):
         super().__init__(db, paths)
         self.legacy_ppt = LegacyPPTConverter(paths)
+        self.pdf._library_copy = self._library_copy
 
     def supported(self, source: Path) -> bool:
         return Path(source).suffix.lower() in SUPPORTED_EXTENSIONS
+
+    def _library_copy(self, source: Path) -> Path:
+        source = Path(source).resolve()
+        root = Path(self.paths.source_root)
+        root.mkdir(parents=True, exist_ok=True)
+        direct = root / source.name
+        if direct.resolve() == source:
+            return source
+
+        source_digest = sha256_file(source)
+        stem, suffix = source.stem, source.suffix
+        candidates: list[Path] = []
+        if direct.exists():
+            candidates.append(direct)
+        candidates.extend(
+            path for path in sorted(root.glob(f"{stem}_*{suffix}"))
+            if path.is_file()
+        )
+
+        for candidate in candidates:
+            try:
+                if sha256_file(candidate) == source_digest:
+                    return candidate
+            except OSError:
+                continue
+
+        if not direct.exists():
+            target = direct
+        else:
+            counter = 2
+            while True:
+                target = root / f"{stem}_{counter}{suffix}"
+                if not target.exists():
+                    break
+                counter += 1
+
+        shutil.copy2(source, target)
+        return target
 
     def legacy_ppt_status(self) -> dict:
         return self.legacy_ppt.status().as_dict()
@@ -91,6 +130,7 @@ class ProductDocumentIngestor(MultiDocumentIngestor):
 
         manifest = {
             "source_path": str(original_ppt.resolve()),
+            "source_sha256": sha256_file(original_ppt),
             "source_type": "ppt",
             "converted_cache": str(converted_pptx.resolve()),
             "page_count": len(units),

@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
-_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\((.+)\)")
+_LINK_RE = re.compile(r"\[([^\]]+)\]\((.+)\)")
 _MARKUP_RE = re.compile(r"[*_`~]+")
 _SAFE_RE = re.compile(r'[\\/:*?"<>|\r\n]+')
 
@@ -88,18 +88,27 @@ def _write_docx(path: Path, markdown: str, base_dir: Path) -> None:
 
         heading = re.match(r"^(#{1,6})\s+(.*)$", line)
         if heading:
-            document.add_heading(_MARKUP_RE.sub("", heading.group(2)), level=min(len(heading.group(1)), 4))
+            document.add_heading(
+                _MARKUP_RE.sub("", heading.group(2)),
+                level=min(len(heading.group(1)), 4),
+            )
             continue
         bullet = re.match(r"^\s*[-*+]\s+(.*)$", line)
         if bullet:
-            document.add_paragraph(_MARKUP_RE.sub("", bullet.group(1)), style="List Bullet")
+            document.add_paragraph(
+                _MARKUP_RE.sub("", bullet.group(1)), style="List Bullet"
+            )
             continue
         numbered = re.match(r"^\s*(\d+)\.\s+(.*)$", line)
         if numbered:
-            document.add_paragraph(_MARKUP_RE.sub("", numbered.group(2)), style="List Number")
+            document.add_paragraph(
+                _MARKUP_RE.sub("", numbered.group(2)), style="List Number"
+            )
             continue
         if line.lstrip().startswith(">"):
-            document.add_paragraph(_MARKUP_RE.sub("", line.lstrip()[1:].strip()))
+            document.add_paragraph(
+                _MARKUP_RE.sub("", line.lstrip()[1:].strip())
+            )
             continue
         document.add_paragraph(_MARKUP_RE.sub("", line))
 
@@ -141,7 +150,11 @@ def _html_document(markdown: str) -> str:
             in_list = False
         if line.lstrip().startswith(">"):
             value = line.lstrip()[1:].strip()
-            blocks.append("<div style='border-left:2px solid #888;padding-left:8px;color:#444'>" + html.escape(value) + "</div>")
+            blocks.append(
+                "<div style='border-left:2px solid #888;padding-left:8px;color:#444'>"
+                + html.escape(value)
+                + "</div>"
+            )
         else:
             blocks.append(f"<p>{html.escape(_MARKUP_RE.sub('', line))}</p>")
     if in_list:
@@ -173,12 +186,28 @@ def _write_image_page(doc, image_path: Path, label: str) -> None:
     import fitz
 
     page = doc.new_page(width=595.0, height=842.0)
-    page.insert_text((32.0, 38.0), f"图：{label}", fontsize=10)
-    target = fitz.Rect(32.0, 56.0, 563.0, 810.0)
+    caption_rect = fitz.Rect(32.0, 24.0, 563.0, 54.0)
+    caption = (
+        "<html><head><meta charset='utf-8'></head>"
+        f"<body><b>图：</b>{html.escape(label)}</body></html>"
+    )
+    try:
+        page.insert_htmlbox(caption_rect, caption, scale_low=0.7)
+    except TypeError:
+        page.insert_htmlbox(caption_rect, caption)
+
+    target = fitz.Rect(32.0, 60.0, 563.0, 810.0)
     try:
         page.insert_image(target, filename=str(image_path), keep_proportion=True)
     except Exception:
-        page.insert_textbox(target, f"[图像无法嵌入：{image_path.name}]", fontsize=10)
+        fallback = (
+            "<html><head><meta charset='utf-8'></head>"
+            f"<body>[图像无法嵌入：{html.escape(image_path.name)}]</body></html>"
+        )
+        try:
+            page.insert_htmlbox(target, fallback, scale_low=0.7)
+        except TypeError:
+            page.insert_htmlbox(target, fallback)
 
 
 def _write_pdf(path: Path, markdown: str, base_dir: Path) -> None:

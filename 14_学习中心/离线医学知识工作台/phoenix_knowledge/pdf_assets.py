@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import re
@@ -12,7 +13,18 @@ _SAFE_RE = re.compile(r'[\\/:*?"<>|\r\n]+')
 
 
 def _safe_name(text: str) -> str:
-    return (_SAFE_RE.sub('_', text).strip(' ._') or 'document')[:120]
+    return (_SAFE_RE.sub('_', text).strip(' ._') or 'document')[:96]
+
+
+def _sha256_file(path: Path, block_size: int = 4 * 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as handle:
+        while True:
+            block = handle.read(block_size)
+            if not block:
+                break
+            digest.update(block)
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -24,14 +36,41 @@ class PageAsset:
 
 
 class PDFAssetStore:
-    """Persist PDF embedded images without changing the source PDF."""
+    """Persist source-linked images without cross-document cache collisions."""
 
     def __init__(self, runtime_root: Path):
         self.root = Path(runtime_root) / 'pdf_assets'
         self.root.mkdir(parents=True, exist_ok=True)
+        self._fingerprints: dict[str, tuple[int, int, str]] = {}
+
+    @staticmethod
+    def _source_identity(source_path: Path) -> str:
+        source = Path(source_path).expanduser()
+        try:
+            resolved = source.resolve()
+        except OSError:
+            resolved = source.absolute()
+        return str(resolved).casefold()
+
+    def _source_sha(self, source_path: Path) -> str:
+        source = Path(source_path).resolve()
+        stat = source.stat()
+        identity = self._source_identity(source)
+        cached = self._fingerprints.get(identity)
+        signature = (int(stat.st_size), int(stat.st_mtime_ns))
+        if cached is not None and cached[:2] == signature:
+            return cached[2]
+        digest = _sha256_file(source)
+        self._fingerprints[identity] = (signature[0], signature[1], digest)
+        return digest
 
     def document_root(self, pdf_path: Path) -> Path:
-        return self.root / _safe_name(Path(pdf_path).stem)
+        source = Path(pdf_path)
+        identity = hashlib.sha256(
+            self._source_identity(source).encode('utf-8', errors='surrogatepass')
+        ).hexdigest()[:16]
+        suffix = _safe_name(source.suffix.lower().lstrip('.') or 'file')
+        return self.root / f'{_safe_name(source.stem)}_{suffix}_{identity}'
 
     def manifest_path(self, pdf_path: Path) -> Path:
         return self.document_root(pdf_path) / 'manifest.json'
@@ -49,14 +88,21 @@ class PDFAssetStore:
         pdf_path = Path(pdf_path).resolve()
         if not pdf_path.is_file() or pdf_path.suffix.lower() != '.pdf':
             raise ValueError(f'不是可读取PDF: {pdf_path}')
+
+        current_sha = self._source_sha(pdf_path)
         existing = self._read_manifest(pdf_path)
-        if existing and not force:
+        if (
+            existing
+            and not force
+            and str(existing.get('source_sha256') or '') == current_sha
+            and str(existing.get('source_path') or '') == str(pdf_path)
+        ):
             return existing
 
         import fitz
 
         doc_root = self.document_root(pdf_path)
-        if force and doc_root.exists():
+        if doc_root.exists():
             shutil.rmtree(doc_root, ignore_errors=True)
         doc_root.mkdir(parents=True, exist_ok=True)
         pages: dict[str, list[dict]] = {}
@@ -103,6 +149,7 @@ class PDFAssetStore:
 
         manifest = {
             'source_path': str(pdf_path),
+            'source_sha256': current_sha,
             'pdf_pages': total_pages,
             'image_count': sum(len(v) for v in pages.values()),
             'pages': pages,
@@ -115,8 +162,18 @@ class PDFAssetStore:
     def page_assets(self, pdf_path: Path, page: int, *, ensure: bool = False) -> list[PageAsset]:
         pdf_path = Path(pdf_path)
         manifest = self._read_manifest(pdf_path)
-        if not manifest and ensure:
-            manifest = self.extract(pdf_path)
+        if pdf_path.suffix.lower() == '.pdf' and ensure:
+            try:
+                current_sha = self._source_sha(pdf_path)
+            except OSError:
+                current_sha = ''
+            if (
+                not manifest
+                or str(manifest.get('source_sha256') or '') != current_sha
+                or str(manifest.get('source_path') or '') != str(pdf_path.resolve())
+            ):
+                manifest = self.extract(pdf_path, force=True)
+
         doc_root = self.document_root(pdf_path)
         result: list[PageAsset] = []
         for item in (manifest.get('pages') or {}).get(str(int(page)), []):

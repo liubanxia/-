@@ -6,7 +6,7 @@ from .answerer import KnowledgeAnswerer
 from .config import WorkbenchPaths, get_paths
 from .db import KnowledgeDB
 from .product_document_ingest import ProductDocumentIngestor, SUPPORTED_EXTENSIONS
-from .llm import LocalLLM
+from .llm_safe import LocalLLM
 from .notes import TXTNotesOrganizer
 from .document_organizer import MultiDocumentOrganizer
 from .retrieval import Retriever
@@ -35,6 +35,7 @@ class MedicalKnowledgeWorkbench:
             self.paths.evidence_root / "多格式输出"
         )
         self.last_export_bundle = None
+        self.last_export_error = ""
 
     def close(self):
         try:
@@ -78,6 +79,7 @@ class MedicalKnowledgeWorkbench:
                 "optional_generator",
             ],
             "recent_tasks": [dict(row) for row in tasks],
+            "last_export_error": self.last_export_error,
         }
 
     def latest_resumable_task(self):
@@ -97,21 +99,25 @@ class MedicalKnowledgeWorkbench:
 
     def organize(self, title: str, instruction: str, **kwargs):
         output, task_id = self.organizer.organize(title, instruction, **kwargs)
+        self.last_export_bundle = None
+        self.last_export_error = ""
         try:
             self.last_export_bundle = self.exporter.export_path(
                 Path(output),
                 title=title or Path(output).stem,
             )
-        except Exception:
-            self.last_export_bundle = None
+        except Exception as exc:
+            self.last_export_error = f"{type(exc).__name__}: {exc}"
         return output, task_id
 
     def resume_task(self, task_id: int, **kwargs):
         output, resumed_id = self.organizer.resume(int(task_id), **kwargs)
+        self.last_export_bundle = None
+        self.last_export_error = ""
         try:
             self.last_export_bundle = self.exporter.export_path(Path(output))
-        except Exception:
-            self.last_export_bundle = None
+        except Exception as exc:
+            self.last_export_error = f"{type(exc).__name__}: {exc}"
         return output, resumed_id
 
     def translate_book(self, path: Path, **kwargs):

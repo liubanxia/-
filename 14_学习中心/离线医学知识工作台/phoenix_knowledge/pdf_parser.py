@@ -48,20 +48,16 @@ def _pypdf_reader(path: Path):
 
 
 def iter_pdf_pages(path: Path) -> Iterator[tuple[int, str]]:
-    """Compatibility text iterator used by translation and older callers."""
+    """Compatibility iterator with the same OCR behavior as knowledge ingest.
+
+    Translation and older callers must not diverge from the document library:
+    a scanned page that is searchable after local OCR must also be translatable.
+    """
     path = Path(path)
     if path.suffix.lower() != ".pdf":
         raise ValueError(f"仅支持PDF: {path}")
-    try:
-        yield from _fitz_reader(path)
-        return
-    except ImportError:
-        pass
-    try:
-        yield from _pypdf_reader(path)
-        return
-    except ImportError as exc:
-        raise RuntimeError("缺少PDF解析依赖。安装 PyMuPDF（推荐）或 pypdf。") from exc
+    for extracted in iter_pdf_pages_with_ocr(path):
+        yield extracted.page, extracted.text
 
 
 def _flag(name: str, default: bool = False) -> bool:
@@ -83,7 +79,11 @@ def _ocr_page_text(page) -> str:
     return (page.get_text("text", textpage=textpage) or "").strip()
 
 
-def iter_pdf_pages_with_ocr(path: Path, *, min_native_chars: int = 24) -> Iterator[PDFPageExtraction]:
+def iter_pdf_pages_with_ocr(
+    path: Path,
+    *,
+    min_native_chars: int = 24,
+) -> Iterator[PDFPageExtraction]:
     """Extract native text and OCR likely scanned pages when local OCR exists.
 
     Missing OCR resources are returned as metadata so ingest can mark the

@@ -46,7 +46,8 @@ def install(gui_module) -> None:
                 successes += 1
                 suffix = f" | {result.warning}" if result.warning else ""
                 messages.append(
-                    f"✓ {Path(filename).name}: {result.pages_indexed}/{result.pages_total} 单元{suffix}"
+                    f"✓ {Path(filename).name}: "
+                    f"{result.pages_indexed}/{result.pages_total} 单元{suffix}"
                 )
             except Exception as exc:
                 detail = f"{type(exc).__name__}: {exc}"
@@ -57,7 +58,11 @@ def install(gui_module) -> None:
                     f"[{file_index}/{total_files}] 当前文件失败，继续下一份资料",
                 )
 
-        summary = [f"批量导入完成：成功 {successes}，失败 {len(failures)}。", *messages, *failures]
+        summary = [
+            f"批量导入完成：成功 {successes}，失败 {len(failures)}。",
+            *messages,
+            *failures,
+        ]
         if successes:
             self.completed.emit("\n".join(summary))
         else:
@@ -119,7 +124,12 @@ def install(gui_module) -> None:
         original_init(self, *args, **kwargs)
         tabs = self.centralWidget()
         if isinstance(tabs, QTabWidget):
-            names = {0: "医学资料库", 1: "资料问答", 2: "多资料知识整理", 4: "笔记整理"}
+            names = {
+                0: "医学资料库",
+                1: "资料问答",
+                2: "多资料知识整理",
+                4: "笔记整理",
+            }
             for index, name in names.items():
                 if index < tabs.count():
                     tabs.setTabText(index, name)
@@ -147,34 +157,69 @@ def install(gui_module) -> None:
 
     def export_organize_bundle(self):
         source = getattr(self, "last_organize_path", None)
-        title = (self.topic_title.text().strip() if hasattr(self, "topic_title") else "") or "多资料知识整理"
+        title = (
+            self.topic_title.text().strip()
+            if hasattr(self, "topic_title")
+            else ""
+        ) or "多资料知识整理"
+
         try:
             if source is not None and Path(source).is_file():
                 bundle = self.workbench.exporter.export_path(Path(source), title=title)
             else:
-                bundle = self.workbench.exporter.export_text(self.organize_result.toPlainText(), title=title)
+                bundle = self.workbench.exporter.export_text(
+                    self.organize_result.toPlainText(),
+                    title=title,
+                )
             self.workbench.last_export_bundle = bundle
-            self.organize_status.setText("多格式输出完成：带图PDF / DOCX / Markdown / TXT")
+            self.workbench.last_export_error = ""
+            self.organize_status.setText(
+                "多格式输出完成：带图PDF / DOCX / Markdown / TXT"
+            )
             QMessageBox.information(
                 self,
                 "Phoenix 多格式输出",
                 "已生成：\n" + "\n".join(str(path) for path in bundle.output_paths),
             )
         except Exception as exc:
-            QMessageBox.warning(self, "导出失败", f"{type(exc).__name__}: {exc}")
+            self.workbench.last_export_error = f"{type(exc).__name__}: {exc}"
+            QMessageBox.warning(
+                self,
+                "导出失败",
+                f"{type(exc).__name__}: {exc}",
+            )
 
     def _organize_done(self, output: str):
         result = original_organize_done(self, output)
         bundle = getattr(self.workbench, "last_export_bundle", None)
+        export_error = str(
+            getattr(self.workbench, "last_export_error", "") or ""
+        ).strip()
         if bundle is not None:
             self.organize_status.setText(
-                f"整理完成；已同时生成带图 PDF / DOCX / Markdown / TXT：{bundle.output_dir}"
+                f"整理完成；已同时生成带图 PDF / DOCX / Markdown / TXT："
+                f"{bundle.output_dir}"
+            )
+        elif export_error:
+            self.organize_status.setText(
+                "整理正文已完成，但多格式导出失败；正文和checkpoint均已保留。"
+            )
+            QMessageBox.warning(
+                self,
+                "多格式导出失败",
+                "医学整理正文已经保存，不会丢失。\n"
+                "PDF / DOCX / Markdown / TXT 自动导出失败：\n"
+                f"{export_error}\n\n"
+                "可点击“导出 PDF/DOCX/MD/TXT”重试。",
             )
         return result
 
     def _failed(self, error: str):
         cleaned = str(error)
-        for prefix in ("LegacyPPTConversionError: ", "RuntimeError: "):
+        for prefix in (
+            "LegacyPPTConversionError: ",
+            "RuntimeError: ",
+        ):
             if cleaned.startswith(prefix):
                 cleaned = cleaned[len(prefix):]
                 break
@@ -189,7 +234,8 @@ def install(gui_module) -> None:
             QMessageBox.information(
                 self,
                 "整本翻译目前仅支持PDF",
-                "PPT / PPTX / DOCX 已可进入知识库和多资料整理；整本双语版式翻译仍保留为 PDF 专用功能。",
+                "PPT / PPTX / DOCX 已可进入知识库和多资料整理；"
+                "整本双语版式翻译仍保留为 PDF 专用功能。",
             )
             return
         return original_use_for_translation(self)

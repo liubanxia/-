@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -9,7 +10,12 @@ from .config import WorkbenchPaths, resolve_model_dir
 from .llm import LocalLLM
 
 
-_NUMBER_RE = re.compile(r"(?<![A-Za-z])\d+(?:[.,]\d+)*(?:%|mm|cm|mL|ml|mg|g|kg|HU|kV|mAs)?", re.I)
+_MEASUREMENT_RE = re.compile(
+    r"(?<![A-Za-z0-9_.])(?P<sign>[+\-\u2212]?)\s*"
+    r"(?P<number>\d+(?:[.,]\d+)*)"
+    r"(?:\s*(?P<unit>%|mmHg|cmH2O|mm|cm|mL|ml|mg|kg|g|HU|kV|mAs|mGy|Gy|mSv|Sv|°C))?",
+    re.I,
+)
 _ACRONYM_RE = re.compile(r"\b[A-Z][A-Z0-9-]{1,10}\b")
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
@@ -27,8 +33,14 @@ def _cuda_is_usable() -> bool:
         return False
 
 
-def _normalize_number(token: str) -> str:
-    return token.replace(",", "").lower()
+def _numeric_tokens(text: str) -> list[str]:
+    result: list[str] = []
+    for match in _MEASUREMENT_RE.finditer(text or ""):
+        sign = (match.group("sign") or "").replace("\u2212", "-")
+        number = (match.group("number") or "").replace(",", "")
+        unit = (match.group("unit") or "").lower()
+        result.append(f"{sign}{number}{unit}")
+    return result
 
 
 def _flag(name: str, default: bool = False) -> bool:
@@ -72,10 +84,10 @@ class TranslationDecision:
 class TranslationValidator:
     """Structural guardrail for medical translation.
 
-    This validator is deliberately conservative: it checks for omissions,
-    corrupted numbers/units, lost acronyms and obviously untranslated output.
-    Natural Chinese medical prose is produced by the intelligent translation
-    backend instead of trying to infer semantic quality from heuristics alone.
+    Numeric values, signs and measurement units are treated as safety-critical:
+    a mismatch prevents automatic acceptance even if the surrounding prose is
+    fluent. This protects values such as ``-20 HU`` and ``12 mm`` from silently
+    becoming ``20 HU`` or ``12 cm``.
     """
 
     def validate(self, source: str, translated: str, target_language: str = "中文") -> QualityReport:
@@ -83,6 +95,8 @@ class TranslationValidator:
         translated = (translated or "").strip()
         reasons: list[str] = []
         score = 1.0
+        hard_numeric_failure = False
+
         if not translated:
             return QualityReport(False, 0.0, ("空译文",))
 
@@ -95,14 +109,18 @@ class TranslationValidator:
                 reasons.append("译文明显过长，疑似扩写或重复")
                 score -= 0.3
 
-        source_numbers = [_normalize_number(x) for x in _NUMBER_RE.findall(source)]
-        if source_numbers:
-            translated_numbers = {_normalize_number(x) for x in _NUMBER_RE.findall(translated)}
-            kept = sum(1 for token in source_numbers if token in translated_numbers)
-            coverage = kept / len(source_numbers)
-            if coverage < 0.8:
-                reasons.append(f"数字/单位保留率偏低({coverage:.0%})")
-                score -= 0.35
+        source_tokens = Counter(_numeric_tokens(source))
+        if source_tokens:
+            translated_tokens = Counter(_numeric_tokens(translated))
+            kept = sum((source_tokens & translated_tokens).values())
+            total = sum(source_tokens.values())
+            coverage = kept / max(total, 1)
+            if coverage < 1.0:
+                hard_numeric_failure = True
+                reasons.append(
+                    f"数字/单位/正负号未完整保留({coverage:.0%})"
+                )
+                score = min(score - 0.35, 0.55)
 
         acronyms = list(dict.fromkeys(_ACRONYM_RE.findall(source)))
         if acronyms:
@@ -130,7 +148,11 @@ class TranslationValidator:
                 score -= 0.25
 
         score = max(0.0, min(1.0, score))
-        return QualityReport(score >= 0.62, score, tuple(reasons))
+        return QualityReport(
+            (not hard_numeric_failure) and score >= 0.62,
+            score,
+            tuple(reasons),
+        )
 
 
 class _Seq2SeqBackend:
