@@ -72,7 +72,7 @@ class ComputeGateway:
         self._warning = ""
 
     @staticmethod
-    def _flag(name: str, default: bool = Falsi -> bool:
+    def _flag(name: str, default: bool = False) -> bool:
         raw = os.environ.get(name, "").strip().lower()
         if not raw:
             return default
@@ -165,7 +165,7 @@ class ComputeGateway:
                 try:
                     names.append(str(torch.cuda.get_device_name(index)))
                 except Exception:
-                    names.append(f"CUDA:{ index}")
+                    names.append(f"CUDA:{index}")
                 try:
                     props = torch.cuda.get_device_properties(index)
                     memory.append(round(float(props.total_memory) / (1024 ** 3), 2))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from .organizer import DeepOrganizer
@@ -8,7 +9,7 @@ from .retrieval import Evidence
 
 def _locator(item: Evidence) -> str:
     suffix = Path(item.path).suffix.lower()
-    if suffix == ".pptx":
+    if suffix in {".ppt", ".pptx"}:
         return f"第{item.page}张幻灯片"
     if suffix == ".docx":
         return f"文档单元{item.page}"
@@ -37,7 +38,7 @@ class MultiDocumentOrganizer(DeepOrganizer):
 5. 严格区分影像征象、诊断结论、鉴别诊断、检查前提、随访/处理建议，禁止混写。
 6. 优先保留可直接用于临床阅读的具体信息，删除空泛套话。
 7. 不制造新的 S 编号，不改变原始数字和单位。
-8. PDF页码、PPTX幻灯片编号、DOCX/文本单元编号都属于来源定位信息，必须保留。
+8. PDF页码、PPT/PPTX幻灯片编号、DOCX/文本单元编号都属于来源定位信息，必须保留。
 
 用户要求：{instruction}
 
@@ -70,6 +71,46 @@ class MultiDocumentOrganizer(DeepOrganizer):
             )
         return "\n".join(lines)
 
+    def _task_evidence(self, task_id: int) -> list[Evidence]:
+        task = self.db.get_task(task_id)
+        if task is None:
+            return []
+        try:
+            payload = json.loads(task["payload_json"] or "{}")
+            chunk_ids = [int(value) for value in payload.get("chunk_ids", [])]
+        except Exception:
+            return []
+        rows = self.db.fetch_chunks(chunk_ids)
+        return self._rows_to_evidence(rows)
+
+    def _normalize_output_locators(self, output: Path, task_id: int) -> None:
+        if not output.is_file() or not task_id:
+            return
+        evidence = self._task_evidence(task_id)
+        if not evidence:
+            return
+        text = output.read_text(encoding="utf-8", errors="replace")
+        for item in evidence:
+            correct = _locator(item)
+            legacy = f"第{item.page}页"
+            text = text.replace(
+                f"- {item.citation} {item.title}，{legacy}",
+                f"- {item.citation} {item.title}，{correct}",
+            )
+            text = text.replace(
+                f"图像来源：{item.title} · {legacy}",
+                f"图像来源：{item.title} · {correct}",
+            )
+            text = text.replace(
+                f"### {item.title} · {legacy}",
+                f"### {item.title} · {correct}",
+            )
+            text = text.replace(
+                f"![{item.title} {legacy} 图",
+                f"![{item.title} {correct} 图",
+            )
+        output.write_text(text, encoding="utf-8")
+
     def _attach_images_inline(self, *args, **kwargs) -> int:
         count = super()._attach_images_inline(*args, **kwargs)
         if args:
@@ -84,3 +125,9 @@ class MultiDocumentOrganizer(DeepOrganizer):
             )
             output.write_text(text, encoding="utf-8")
         return count
+
+    def organize(self, *args, **kwargs):
+        output, task_id = super().organize(*args, **kwargs)
+        if task_id:
+            self._normalize_output_locators(Path(output), int(task_id))
+        return output, task_id

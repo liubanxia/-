@@ -280,12 +280,12 @@ class QwenMedicalTranslationBackend:
 
 
 class MultiModelTranslationEngine:
-    """Offline medical translation with intelligent-first quality routing.
+    """Offline medical translation with strict intelligent-first quality routing.
 
-    The built-in intelligent medical translator is the preferred final output.
-    Marian / NLLB remain fast fallbacks. A legacy externally substituted review
-    backend keeps its historical opt-in behavior so old integrations and tests
-    do not unexpectedly run a third model.
+    The intelligent medical translator is preferred, but a result is accepted
+    only when the validator passes it. If validation fails, Phoenix continues
+    through the deterministic Marian/NLLB fallback chain and only returns a
+    review-required best effort when every available backend fails validation.
     """
 
     def __init__(self, paths: WorkbenchPaths, llm: LocalLLM):
@@ -339,8 +339,6 @@ class MultiModelTranslationEngine:
                 result.append(self.qwen)
         elif _flag("PHOENIX_TRANSLATION_QWEN_REVIEW", default=False):
             if self._backend_available(self.qwen):
-                # Historical substituted review backend remains last in the
-                # fallback chain instead of becoming the new primary engine.
                 pass
 
         if target_language in _SIMPLIFIED_TARGETS:
@@ -391,16 +389,7 @@ class MultiModelTranslationEngine:
                 if best is None or attempt.quality.score > best.quality.score:
                     best = attempt
 
-                if isinstance(backend, QwenMedicalTranslationBackend):
-                    if quality.ok or quality.score >= 0.45:
-                        return TranslationDecision(
-                            text=text,
-                            backend=backend.name,
-                            quality=quality,
-                            needs_review=not quality.ok,
-                            attempts=tuple(attempts),
-                        )
-                elif quality.ok:
+                if quality.ok:
                     return TranslationDecision(
                         text=text,
                         backend=backend.name,

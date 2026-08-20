@@ -3,12 +3,24 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from .llm import LocalLLM
 from .retrieval import Evidence, Retriever
 
 
 _CITATION_RE = re.compile(r"\[S(\d+)\]")
+
+
+def _locator(item: Evidence) -> str:
+    suffix = Path(item.path).suffix.lower()
+    if suffix in {".ppt", ".pptx"}:
+        return f"第{item.page}张幻灯片"
+    if suffix == ".docx":
+        return f"文档单元{item.page}"
+    if suffix in {".txt", ".md"}:
+        return f"文本单元{item.page}"
+    return f"第{item.page}页"
 
 
 @dataclass(frozen=True)
@@ -26,7 +38,7 @@ class KnowledgeAnswerer:
     @staticmethod
     def _evidence_block(evidence: list[Evidence]) -> str:
         return "\n\n".join(
-            f"{item.citation} 书名：{item.title}；页码：{item.page}\n{item.text}"
+            f"{item.citation} 资料：{item.title}；位置：{_locator(item)}\n{item.text}"
             for item in evidence
         )
 
@@ -49,7 +61,7 @@ class KnowledgeAnswerer:
             if key in seen:
                 continue
             seen.add(key)
-            lines.append(f"- {item.citation} {item.title}，第{item.page}页")
+            lines.append(f"- {item.citation} {item.title}，{_locator(item)}")
         return "\n".join(lines)
 
     def _evidence_only(
@@ -64,14 +76,14 @@ class KnowledgeAnswerer:
                 mode="evidence_only",
             )
         lines = [
-            "快速PDF问答：以下内容直接来自已导入资料；智能归纳属于可选第二阶段，不阻塞第一屏结果。",
+            "快速资料问答：以下内容直接来自已导入资料；智能归纳属于可选第二阶段，不阻塞第一屏结果。",
             "",
         ]
         for item in evidence:
             excerpt = item.text.strip()
             if len(excerpt) > 900:
                 excerpt = excerpt[:900] + "……"
-            lines.append(f"{item.citation} {item.title} 第{item.page}页\n{excerpt}\n")
+            lines.append(f"{item.citation} {item.title} · {_locator(item)}\n{excerpt}\n")
         lines.append(self._source_footer(evidence).strip())
         return AnswerResult(
             text="\n".join(lines).strip(),
@@ -114,17 +126,17 @@ class KnowledgeAnswerer:
         prompt = f"""你是 Phoenix 离线医学知识工作台。
 
 绝对规则：
-1. 只能依据下面给出的PDF证据回答，不得使用训练记忆、常识、互联网或未提供资料补充事实。
+1. 只能依据下面给出的本地医学资料证据回答，不得使用训练记忆、常识、互联网或未提供资料补充事实。
 2. 每一个医学事实、数字、诊断标准、鉴别点、检查方法和建议都必须在句末标注对应证据编号，例如 [S12]。
 3. 如果证据不足，明确写“当前导入资料中未找到明确依据”。
-4. 不要编造页码、书名或来源编号。
+4. 不要编造页码、幻灯片编号、文档单元、书名或来源编号。
 5. 可以对多份证据做归纳、对照、去重，但不得改变原意。
 6. 输出中文，优先按“核心结论—影像征象—鉴别诊断—陷阱/注意点—来源”组织；如果用户另有格式要求，以用户要求为准。
 
 用户要求：
 {query}
 
-PDF证据：
+本地资料证据：
 {self._evidence_block(evidence)}
 """
 
@@ -148,7 +160,7 @@ PDF证据：
             fallback = self._evidence_only(query, evidence)
             return AnswerResult(
                 text=(
-                    "本地生成模型返回的内容没有有效PDF引用，Phoenix已阻止该答案。\n\n"
+                    "本地生成模型返回的内容没有有效资料引用，Phoenix已阻止该答案。\n\n"
                     + fallback.text
                 ),
                 evidence=evidence,

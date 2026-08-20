@@ -28,6 +28,43 @@ def install(gui_module) -> None:
     original_use_for_translation = cls.use_selected_book_for_translation
     original_failed = cls._failed
 
+    def _ingest_worker_run(self):
+        total_files = max(1, len(self.files))
+        messages: list[str] = []
+        failures: list[str] = []
+        successes = 0
+
+        for file_index, filename in enumerate(self.files, start=1):
+            def callback(done, total, message):
+                base = int(((file_index - 1) / total_files) * 100)
+                span = 100 / total_files
+                pct = base + int((done / max(total, 1)) * span)
+                self.progress.emit(pct, 100, f"[{file_index}/{total_files}] {message}")
+
+            try:
+                result = self.workbench.ingest(Path(filename), progress=callback)
+                successes += 1
+                suffix = f" | {result.warning}" if result.warning else ""
+                messages.append(
+                    f"✓ {Path(filename).name}: {result.pages_indexed}/{result.pages_total} 单元{suffix}"
+                )
+            except Exception as exc:
+                detail = f"{type(exc).__name__}: {exc}"
+                failures.append(f"✗ {Path(filename).name}: {detail}")
+                self.progress.emit(
+                    int(file_index / total_files * 100),
+                    100,
+                    f"[{file_index}/{total_files}] 当前文件失败，继续下一份资料",
+                )
+
+        summary = [f"批量导入完成：成功 {successes}，失败 {len(failures)}。", *messages, *failures]
+        if successes:
+            self.completed.emit("\n".join(summary))
+        else:
+            self.failed.emit("\n".join(summary))
+
+    ingest_worker_cls.run = _ingest_worker_run
+
     def _library_tab(self):
         widget = original_library_tab(self)
         labels = widget.findChildren(QLabel)
@@ -36,8 +73,8 @@ def install(gui_module) -> None:
             if "PDF内容只在本机SSD解析和索引" in text:
                 label.setText(
                     "PDF / PPT / PPTX / DOCX / TXT / Markdown 均只在本机SSD解析和索引；"
+                    "扫描PDF会自动尝试本地OCR，失败会明确标记OCR_REQUIRED；"
                     "PPT/PPTX保留幻灯片编号、表格文字、备注和关联图片。"
-                    "老式PPT由Phoenix自动兼容转换，不要求用户手工另存。"
                 )
         for button in widget.findChildren(QPushButton):
             if button.text() == "导入PDF":
@@ -64,7 +101,7 @@ def install(gui_module) -> None:
         if hasattr(self, "multi_book_info"):
             self.multi_book_info.setText(
                 "默认从全部 PDF / PPT / PPTX / DOCX / TXT / Markdown 中跨资料检索、去重和合并；"
-                "整理完成自动输出 PDF + DOCX + Markdown + TXT。"
+                "整理完成自动输出带图 PDF + DOCX + Markdown + TXT。"
             )
         for button in widget.findChildren(QPushButton):
             if button.text() == "整理全部书籍":
@@ -82,12 +119,7 @@ def install(gui_module) -> None:
         original_init(self, *args, **kwargs)
         tabs = self.centralWidget()
         if isinstance(tabs, QTabWidget):
-            names = {
-                0: "医学资料库",
-                1: "资料问答",
-                2: "多资料知识整理",
-                4: "笔记整理",
-            }
+            names = {0: "医学资料库", 1: "资料问答", 2: "多资料知识整理", 4: "笔记整理"}
             for index, name in names.items():
                 if index < tabs.count():
                     tabs.setTabText(index, name)
@@ -115,51 +147,34 @@ def install(gui_module) -> None:
 
     def export_organize_bundle(self):
         source = getattr(self, "last_organize_path", None)
-        title = (
-            self.topic_title.text().strip()
-            if hasattr(self, "topic_title")
-            else ""
-        ) or "多资料知识整理"
-
+        title = (self.topic_title.text().strip() if hasattr(self, "topic_title") else "") or "多资料知识整理"
         try:
             if source is not None and Path(source).is_file():
                 bundle = self.workbench.exporter.export_path(Path(source), title=title)
             else:
-                bundle = self.workbench.exporter.export_text(
-                    self.organize_result.toPlainText(),
-                    title=title,
-                )
+                bundle = self.workbench.exporter.export_text(self.organize_result.toPlainText(), title=title)
             self.workbench.last_export_bundle = bundle
-            self.organize_status.setText(
-                "多格式输出完成：PDF / DOCX / Markdown / TXT"
-            )
+            self.organize_status.setText("多格式输出完成：带图PDF / DOCX / Markdown / TXT")
             QMessageBox.information(
                 self,
                 "Phoenix 多格式输出",
                 "已生成：\n" + "\n".join(str(path) for path in bundle.output_paths),
             )
         except Exception as exc:
-            QMessageBox.warning(
-                self,
-                "导出失败",
-                f"{type(exc).__name__}: {exc}",
-            )
+            QMessageBox.warning(self, "导出失败", f"{type(exc).__name__}: {exc}")
 
     def _organize_done(self, output: str):
         result = original_organize_done(self, output)
         bundle = getattr(self.workbench, "last_export_bundle", None)
         if bundle is not None:
             self.organize_status.setText(
-                f"整理完成；已同时生成 PDF / DOCX / Markdown / TXT：{bundle.output_dir}"
+                f"整理完成；已同时生成带图 PDF / DOCX / Markdown / TXT：{bundle.output_dir}"
             )
         return result
 
     def _failed(self, error: str):
         cleaned = str(error)
-        for prefix in (
-            "LegacyPPTConversionError: ",
-            "RuntimeError: ",
-        ):
+        for prefix in ("LegacyPPTConversionError: ", "RuntimeError: "):
             if cleaned.startswith(prefix):
                 cleaned = cleaned[len(prefix):]
                 break
@@ -174,8 +189,7 @@ def install(gui_module) -> None:
             QMessageBox.information(
                 self,
                 "整本翻译目前仅支持PDF",
-                "PPT / PPTX / DOCX 已可进入知识库和多资料整理；"
-                "整本双语版式翻译仍保留为 PDF 专用功能。",
+                "PPT / PPTX / DOCX 已可进入知识库和多资料整理；整本双语版式翻译仍保留为 PDF 专用功能。",
             )
             return
         return original_use_for_translation(self)

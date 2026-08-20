@@ -32,7 +32,8 @@ class LegacyPPTConverter:
     Priority:
     1. Phoenix-bundled / explicitly configured LibreOffice.
     2. System LibreOffice.
-    3. Microsoft PowerPoint COM automation on Windows.
+    3. Microsoft PowerPoint COM automation on Windows, but only when the
+       PowerPoint COM class is actually registered on the machine.
 
     The conversion result is cached by source SHA-256, so the expensive
     compatibility conversion happens only once for an unchanged presentation.
@@ -116,6 +117,41 @@ class LegacyPPTConverter:
         candidate = Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
         return candidate if candidate.is_file() else None
 
+    @staticmethod
+    def _powerpoint_registered() -> bool:
+        """Return True only when Microsoft PowerPoint COM is really installed.
+
+        PowerShell is present on most Windows systems and is not evidence that
+        Office/PowerPoint exists. Checking the COM ProgID prevents the GUI from
+        advertising legacy-PPT support that will only fail at import time.
+        """
+        if os.name != "nt":
+            return False
+        try:
+            import winreg
+        except ImportError:
+            return False
+
+        candidates = (
+            r"PowerPoint.Application\CLSID",
+            r"WOW6432Node\Classes\PowerPoint.Application\CLSID",
+        )
+        roots = (winreg.HKEY_CLASSES_ROOT, winreg.HKEY_LOCAL_MACHINE)
+        for root in roots:
+            for key_name in candidates:
+                try:
+                    with winreg.OpenKey(root, key_name):
+                        return True
+                except OSError:
+                    continue
+        return False
+
+    @classmethod
+    def _find_powerpoint_powershell(cls) -> Path | None:
+        if not cls._powerpoint_registered():
+            return None
+        return cls._find_powershell()
+
     def status(self) -> LegacyPPTStatus:
         libreoffice = self._find_libreoffice()
         if libreoffice is not None:
@@ -128,14 +164,14 @@ class LegacyPPTConverter:
                 message="老式PPT可自动兼容转换",
             )
 
-        powershell = self._find_powershell()
+        powershell = self._find_powerpoint_powershell()
         if powershell is not None:
             return LegacyPPTStatus(
                 available=True,
                 backend="powerpoint_com",
                 executable=str(powershell),
                 bundled=False,
-                message="将自动尝试调用本机 Microsoft PowerPoint 转换老式PPT",
+                message="已检测到本机 Microsoft PowerPoint，可自动转换老式PPT",
             )
 
         return LegacyPPTStatus(
@@ -143,7 +179,7 @@ class LegacyPPTConverter:
             backend="unavailable",
             message=(
                 "当前电脑没有可用的老式PPT转换组件。正式版可随程序附带LibreOffice兼容组件，"
-                "也可使用本机Microsoft PowerPoint。"
+                "或使用已安装并注册COM组件的Microsoft PowerPoint。"
             ),
         )
 
@@ -269,7 +305,7 @@ finally {
             except Exception as exc:
                 errors.append(str(exc))
 
-        powershell = self._find_powershell()
+        powershell = self._find_powerpoint_powershell()
         if powershell is not None:
             try:
                 self._convert_with_powerpoint(powershell, source, target)
