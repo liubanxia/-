@@ -175,7 +175,8 @@ class CoreTest(unittest.TestCase):
             FakeLLM("肺结节可有分叶征。"),
         )
         result = answerer.ask(
-            "肺结节征象"
+            "肺结节征象",
+            deep=True,
         )
         self.assertEqual(
             result.mode,
@@ -203,7 +204,8 @@ class CoreTest(unittest.TestCase):
             ),
         )
         result = answerer.ask(
-            "肺结节征象"
+            "肺结节征象",
+            deep=True,
         )
         self.assertEqual(
             result.mode,

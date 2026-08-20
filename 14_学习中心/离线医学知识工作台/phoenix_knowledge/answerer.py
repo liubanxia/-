@@ -10,6 +10,9 @@ from .retrieval import Evidence, Retriever
 
 
 _CITATION_RE = re.compile(r"\[S(\d+)\]")
+_SCHOLARLY_FULLTEXT = {".html", ".htm", ".xml", ".nxml", ".jats"}
+_SCHOLARLY_METADATA = {".nbib", ".ris", ".bib", ".bibtex", ".json", ".csljson"}
+_CNKI_PAPER = {".caj", ".nh", ".hn", ".kdh", ".teb", ".c8"}
 
 
 def _locator(item: Evidence) -> str:
@@ -20,6 +23,12 @@ def _locator(item: Evidence) -> str:
         return f"文档单元{item.page}"
     if suffix in {".txt", ".md"}:
         return f"文本单元{item.page}"
+    if suffix in _SCHOLARLY_FULLTEXT:
+        return f"论文单元{item.page}"
+    if suffix in _SCHOLARLY_METADATA:
+        return f"文献记录{item.page}"
+    if suffix in _CNKI_PAPER:
+        return f"第{item.page}页"
     return f"第{item.page}页"
 
 
@@ -83,7 +92,9 @@ class KnowledgeAnswerer:
             excerpt = item.text.strip()
             if len(excerpt) > 900:
                 excerpt = excerpt[:900] + "……"
-            lines.append(f"{item.citation} {item.title} · {_locator(item)}\n{excerpt}\n")
+            lines.append(
+                f"{item.citation} {item.title} · {_locator(item)}\n{excerpt}\n"
+            )
         lines.append(self._source_footer(evidence).strip())
         return AnswerResult(
             text="\n".join(lines).strip(),
@@ -95,7 +106,10 @@ class KnowledgeAnswerer:
     def _deep_enabled(explicit: bool | None) -> bool:
         if explicit is not None:
             return bool(explicit)
-        raw = os.environ.get("PHOENIX_KNOWLEDGE_DEEP_QA", "").strip().lower()
+        raw = os.environ.get(
+            "PHOENIX_KNOWLEDGE_DEEP_QA",
+            "",
+        ).strip().lower()
         if not raw:
             return True
         return raw in {"1", "true", "yes", "on"}
@@ -129,9 +143,9 @@ class KnowledgeAnswerer:
 1. 只能依据下面给出的本地医学资料证据回答，不得使用训练记忆、常识、互联网或未提供资料补充事实。
 2. 每一个医学事实、数字、诊断标准、鉴别点、检查方法和建议都必须在句末标注对应证据编号，例如 [S12]。
 3. 如果证据不足，明确写“当前导入资料中未找到明确依据”。
-4. 不要编造页码、幻灯片编号、文档单元、书名或来源编号。
-5. 可以对多份证据做归纳、对照、去重，但不得改变原意。
-6. 输出中文，优先按“核心结论—影像征象—鉴别诊断—陷阱/注意点—来源”组织；如果用户另有格式要求，以用户要求为准。
+4. 不要编造页码、幻灯片编号、论文单元、文献记录、书名或来源编号。
+5. 可以对教材、课件、论文和题录证据做归纳、对照、去重，但不得改变原意。
+6. 输出中文，优先按“核心结论—影像征象—鉴别诊断—研究证据—陷阱/注意点—来源”组织；如果用户另有格式要求，以用户要求为准。
 
 用户要求：
 {query}
@@ -141,20 +155,38 @@ class KnowledgeAnswerer:
 """
 
         try:
-            embeddings = getattr(self.retriever, "embeddings", None)
-            if embeddings is not None and hasattr(embeddings, "unload_model"):
+            embeddings = getattr(
+                self.retriever,
+                "embeddings",
+                None,
+            )
+            if embeddings is not None and hasattr(
+                embeddings,
+                "unload_model",
+            ):
                 embeddings.unload_model()
         except Exception:
             pass
 
-        profile = os.environ.get("PHOENIX_KNOWLEDGE_LLM_PROFILE", "fast")
-        max_tokens = 1600 if profile.strip().lower() in {"deep", "4b", "deep4b", "quality", "max"} else 900
+        profile = os.environ.get(
+            "PHOENIX_KNOWLEDGE_LLM_PROFILE",
+            "fast",
+        )
+        max_tokens = (
+            1600
+            if profile.strip().lower()
+            in {"deep", "4b", "deep4b", "quality", "max"}
+            else 900
+        )
         text = self.llm.generate(
             prompt,
             max_new_tokens=max_tokens,
         ).strip()
         valid_ids = {item.chunk_id for item in evidence}
-        used_ids = {int(x) for x in _CITATION_RE.findall(text)} & valid_ids
+        used_ids = {
+            int(x)
+            for x in _CITATION_RE.findall(text)
+        } & valid_ids
 
         if not used_ids:
             fallback = self._evidence_only(query, evidence)
@@ -168,7 +200,10 @@ class KnowledgeAnswerer:
             )
 
         return AnswerResult(
-            text=text + self._source_footer(evidence, used_ids),
+            text=text + self._source_footer(
+                evidence,
+                used_ids,
+            ),
             evidence=evidence,
             mode="grounded_generation",
         )

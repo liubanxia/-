@@ -3,7 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFileDialog, QLabel, QMessageBox, QPushButton, QTabWidget
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QTabWidget,
+)
 
 
 _INSTALLED = False
@@ -39,7 +45,11 @@ def install(gui_module) -> None:
                 base = int(((file_index - 1) / total_files) * 100)
                 span = 100 / total_files
                 pct = base + int((done / max(total, 1)) * span)
-                self.progress.emit(pct, 100, f"[{file_index}/{total_files}] {message}")
+                self.progress.emit(
+                    pct,
+                    100,
+                    f"[{file_index}/{total_files}] {message}",
+                )
 
             try:
                 result = self.workbench.ingest(Path(filename), progress=callback)
@@ -77,13 +87,16 @@ def install(gui_module) -> None:
             text = label.text()
             if "PDF内容只在本机SSD解析和索引" in text:
                 label.setText(
-                    "PDF / PPT / PPTX / DOCX / TXT / Markdown 均只在本机SSD解析和索引；"
-                    "扫描PDF会自动尝试本地OCR，失败会明确标记OCR_REQUIRED；"
-                    "PPT/PPTX保留幻灯片编号、表格文字、备注和关联图片。"
+                    "教材、课件、论文和题录均只在本机SSD解析；"
+                    "支持 PDF / PPT / PPTX / DOCX / TXT / MD / "
+                    "HTML / JATS-NXML / NBIB / RIS / BibTeX / CSL-JSON / "
+                    "CAJ / NH / KDH / TEB。"
+                    "扫描PDF会自动尝试本地OCR；"
+                    "论文保留 DOI/PMID/PMCID、摘要、章节、表格和关联图片。"
                 )
         for button in widget.findChildren(QPushButton):
             if button.text() == "导入PDF":
-                button.setText("导入资料")
+                button.setText("导入资料/论文")
             elif button.text() == "选中书→整本翻译":
                 button.setText("选中PDF→整本翻译")
         return widget
@@ -93,8 +106,10 @@ def install(gui_module) -> None:
         for label in widget.findChildren(QLabel):
             if "只根据已导入PDF回答" in label.text():
                 label.setText(
-                    "只根据已导入医学资料回答；PDF保留页码，PPT/PPTX保留幻灯片编号，"
-                    "所有结论继续保留来源编号。"
+                    "只根据已导入医学资料回答；"
+                    "教材、课件、论文和文献题录统一检索，"
+                    "PDF/CAJ保留页码，PPT保留幻灯片编号，"
+                    "JATS/HTML保留论文单元，所有结论继续保留来源编号。"
                 )
         for button in widget.findChildren(QPushButton):
             if button.text() == "根据PDF回答":
@@ -105,12 +120,13 @@ def install(gui_module) -> None:
         widget = original_organize_tab(self)
         if hasattr(self, "multi_book_info"):
             self.multi_book_info.setText(
-                "默认从全部 PDF / PPT / PPTX / DOCX / TXT / Markdown 中跨资料检索、去重和合并；"
+                "默认从教材、课件、论文全文和文献题录中跨资料检索、去重和合并；"
+                "论文会保留 DOI/PMID、研究设计、样本量、统计指标和来源定位；"
                 "整理完成自动输出带图 PDF + DOCX + Markdown + TXT。"
             )
         for button in widget.findChildren(QPushButton):
             if button.text() == "整理全部书籍":
-                button.setText("整理全部资料")
+                button.setText("整理全部资料/论文")
             elif button.text() == "另存TXT":
                 try:
                     button.clicked.disconnect()
@@ -127,7 +143,7 @@ def install(gui_module) -> None:
             names = {
                 0: "医学资料库",
                 1: "资料问答",
-                2: "多资料知识整理",
+                2: "多资料/论文联合整理",
                 4: "笔记整理",
             }
             for index, name in names.items():
@@ -139,11 +155,20 @@ def install(gui_module) -> None:
             return
         files, _ = QFileDialog.getOpenFileNames(
             self,
-            "选择医学资料",
+            "选择医学资料/论文",
             str(self.workbench.paths.source_root),
             (
-                "医学资料 (*.pdf *.ppt *.pptx *.docx *.txt *.md);;"
-                "PDF (*.pdf);;PowerPoint (*.ppt *.pptx);;Word (*.docx);;"
+                "医学资料与论文 ("
+                "*.pdf *.ppt *.pptx *.docx *.txt *.md "
+                "*.html *.htm *.xml *.nxml *.jats "
+                "*.nbib *.ris *.bib *.bibtex *.json *.csljson "
+                "*.caj *.nh *.hn *.kdh *.teb *.c8"
+                ");;"
+                "论文全文 (*.pdf *.html *.htm *.xml *.nxml *.jats "
+                "*.caj *.nh *.hn *.kdh *.teb *.c8);;"
+                "文献题录 (*.nbib *.ris *.bib *.bibtex *.json *.csljson);;"
+                "PowerPoint (*.ppt *.pptx);;"
+                "Word (*.docx);;"
                 "文本 (*.txt *.md)"
             ),
         )
@@ -197,7 +222,7 @@ def install(gui_module) -> None:
         ).strip()
         if bundle is not None:
             self.organize_status.setText(
-                f"整理完成；已同时生成带图 PDF / DOCX / Markdown / TXT："
+                "整理完成；已同时生成带图 PDF / DOCX / Markdown / TXT："
                 f"{bundle.output_dir}"
             )
         elif export_error:
@@ -218,6 +243,7 @@ def install(gui_module) -> None:
         cleaned = str(error)
         for prefix in (
             "LegacyPPTConversionError: ",
+            "CNKIConversionError: ",
             "RuntimeError: ",
         ):
             if cleaned.startswith(prefix):
@@ -234,8 +260,10 @@ def install(gui_module) -> None:
             QMessageBox.information(
                 self,
                 "整本翻译目前仅支持PDF",
-                "PPT / PPTX / DOCX 已可进入知识库和多资料整理；"
-                "整本双语版式翻译仍保留为 PDF 专用功能。",
+                "论文/课件/题录已可进入知识库和联合整理；"
+                "原页+中文双语版式翻译仍保留为 PDF 专用功能。"
+                "CAJ/NH/KDH/TEB 导入时会在后台离线转PDF参与知识库，"
+                "但不会替换用户原文件。",
             )
             return
         return original_use_for_translation(self)
