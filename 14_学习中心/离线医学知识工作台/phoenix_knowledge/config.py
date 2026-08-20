@@ -13,26 +13,123 @@ def discover_project_root(start: Path | None = None) -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-def resolve_model_dir(model_root: Path, folder: str) -> Path:
-    """Resolve either a direct model folder or a ModelScope cache pointer.
+def model_dir_ready(path: Path) -> bool:
+    """A model directory is READY only when config and real weights exist."""
 
-    Some ModelScope releases accept ``local_dir`` and place files exactly in
-    Phoenix's model directory. Older releases only expose ``cache_dir`` and
-    return their own snapshot path. ``model_download.py`` stores that returned
-    path in ``MODELSCOPE_CACHE_PATH.txt`` so the offline runtime can still find
-    the actual snapshot without moving multi-GB model files.
+    path = Path(path)
+    try:
+        if not path.is_dir() or not (path / "config.json").is_file():
+            return False
+        direct_weights = (
+            "model.safetensors",
+            "pytorch_model.bin",
+            "model.safetensors.index.json",
+            "pytorch_model.bin.index.json",
+        )
+        if any(
+            (path / name).is_file()
+            and (path / name).stat().st_size > 0
+            for name in direct_weights
+        ):
+            return True
+        # Sharded downloads can use nonstandard shard filenames while the
+        # index/config remain conventional.
+        return any(
+            item.is_file()
+            and item.stat().st_size > 0
+            and item.suffix.lower() in {".safetensors", ".bin"}
+            for item in path.iterdir()
+        )
+    except OSError:
+        return False
+
+
+def _write_pointer(pointer: Path, resolved: Path) -> None:
+    try:
+        temp = pointer.with_suffix(pointer.suffix + ".tmp")
+        temp.write_text(str(resolved), encoding="utf-8")
+        os.replace(temp, pointer)
+    except OSError:
+        pass
+
+
+def _rebase_modelscope_pointer(model_root: Path, stale: Path) -> Path | None:
+    """Recover a stale absolute ModelScope pointer after D:/G: remounting."""
+
+    model_root = Path(model_root).resolve()
+    cache_root = model_root / "_modelscope_cache"
+    candidates: list[Path] = []
+
+    stale_parts = list(stale.parts)
+    try:
+        marker_index = next(
+            index
+            for index, part in enumerate(stale_parts)
+            if part == "_modelscope_cache"
+        )
+        relative = Path(*stale_parts[marker_index + 1 :])
+        if relative.parts:
+            candidates.append(cache_root / relative)
+    except StopIteration:
+        pass
+
+    # Pointers from older Phoenix builds can contain the full project path.
+    # Reconstruct the stable suffix below 04_AI模型 on the current SSD.
+    try:
+        marker_index = next(
+            index
+            for index, part in enumerate(stale_parts)
+            if part == "04_AI模型"
+        )
+        project_root = model_root.parent.parent
+        relative = Path(*stale_parts[marker_index:])
+        candidates.append(project_root / relative)
+    except StopIteration:
+        pass
+
+    for candidate in candidates:
+        try:
+            if candidate.is_dir() and model_dir_ready(candidate):
+                return candidate.resolve()
+        except OSError:
+            continue
+
+    # Only search the Phoenix-owned cache, and only when the old absolute
+    # pointer is already broken. This keeps normal startup cheap.
+    if cache_root.is_dir() and stale.name:
+        try:
+            for candidate in cache_root.rglob(stale.name):
+                if candidate.is_dir() and model_dir_ready(candidate):
+                    return candidate.resolve()
+        except OSError:
+            pass
+    return None
+
+
+def resolve_model_dir(model_root: Path, folder: str) -> Path:
+    """Resolve a direct model folder or portable ModelScope cache pointer.
+
+    Older Phoenix/ModelScope combinations stored an absolute snapshot path in
+    ``MODELSCOPE_CACHE_PATH.txt``. The same physical SSD can be D: on a
+    development PC and G: at the hospital, so a stale drive letter is rebased
+    onto the current Phoenix-owned cache before the model is declared missing.
     """
 
-    target = Path(model_root) / folder
+    model_root = Path(model_root)
+    target = model_root / folder
     pointer = target / "MODELSCOPE_CACHE_PATH.txt"
 
     if pointer.is_file():
         try:
             raw = pointer.read_text(encoding="utf-8").strip()
             if raw:
-                resolved = Path(raw).expanduser()
-                if resolved.exists() and resolved.is_dir():
-                    return resolved.resolve()
+                stale = Path(raw).expanduser()
+                if stale.is_dir() and model_dir_ready(stale):
+                    return stale.resolve()
+                recovered = _rebase_modelscope_pointer(model_root, stale)
+                if recovered is not None:
+                    _write_pointer(pointer, recovered)
+                    return recovered
         except OSError:
             pass
 

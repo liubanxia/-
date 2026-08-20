@@ -180,6 +180,34 @@ def _database_snapshot(workbench, *, keep: int = 3) -> Path | None:
     return target
 
 
+def _capability_flags(workbench, status: dict) -> dict[str, bool]:
+    """Report each product capability independently.
+
+    Missing semantic dependencies must not make a working local Qwen appear
+    unavailable, and missing sentencepiece must not hide a working Qwen
+    translation path.
+    """
+
+    fast = bool(
+        status.get(
+            "generator_fast_ready",
+            workbench.llm.available("fast"),
+        )
+    )
+    deep = bool(
+        status.get(
+            "generator_deep_ready",
+            workbench.llm.available("deep"),
+        )
+    )
+    return {
+        "semantic": bool(status.get("semantic_ready")),
+        "smart1": fast,
+        "smart2": deep,
+        "translation": bool(status.get("translation_backends") or []),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Phoenix 医学知识工作台首次启动自检"
@@ -238,9 +266,8 @@ def main() -> int:
             flush=True,
         )
         print(
-            "Phoenix 将继续启动：资料导入、关键词检索和证据查看可用；"
-            "语义检索、智能问答或翻译会明确显示未就绪，"
-            "不再让整个平台打不开。",
+            "Phoenix 将继续启动，并按能力分别判断：缺语义组件只影响语义检索，"
+            "缺生成组件只影响本地智能问答，缺翻译组件只影响对应翻译后端。",
             flush=True,
         )
 
@@ -260,6 +287,7 @@ def main() -> int:
                 print("知识库：完整性检查通过", flush=True)
 
             status = workbench.status()
+            capability = _capability_flags(workbench, status)
             print(
                 f"资料库：{status['documents']} 份 · "
                 f"知识块 {status['chunks']} · "
@@ -267,10 +295,8 @@ def main() -> int:
                 flush=True,
             )
             print(
-                f"智能1："
-                f"{'READY' if workbench.llm.available('fast') and not ai_missing else '未就绪'} · "
-                f"智能2："
-                f"{'READY' if workbench.llm.available('deep') and not ai_missing else '未就绪'}",
+                f"智能1：{'READY' if capability['smart1'] else '未就绪'} · "
+                f"智能2：{'READY' if capability['smart2'] else '未就绪'}",
                 flush=True,
             )
             backends = status.get("translation_backends") or []
@@ -278,8 +304,8 @@ def main() -> int:
                 "医学翻译："
                 + (
                     "READY · " + ", ".join(backends)
-                    if backends and not ai_missing
-                    else "未就绪或仅基础模式"
+                    if capability["translation"]
+                    else "未就绪"
                 ),
                 flush=True,
             )

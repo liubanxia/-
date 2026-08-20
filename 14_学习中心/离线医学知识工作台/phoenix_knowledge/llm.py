@@ -8,7 +8,7 @@ import urllib.parse
 import urllib.request
 
 from .compute_gateway import ComputeGateway
-from .config import WorkbenchPaths, resolve_model_dir
+from .config import WorkbenchPaths, model_dir_ready, resolve_model_dir
 
 
 class LocalLLM:
@@ -24,7 +24,7 @@ class LocalLLM:
     - deepspeed: optional DeepSpeed inference wrapper on local CUDA.
     - remote: explicitly authorized OpenAI-compatible external GPU/API service.
 
-    Remote mode is never selected automatically and never stores an API key on disk.
+    Remote mode is never enabled by discovery and never stores an API key on disk.
     """
 
     model_name = "Qwen3.5-4B"
@@ -33,10 +33,16 @@ class LocalLLM:
 
     def __init__(self, paths: WorkbenchPaths):
         self.paths = paths
-        self.fast_model_path = resolve_model_dir(paths.model_root, self.fast_model_name)
-        self.deep_model_path = resolve_model_dir(paths.model_root, self.deep_model_name)
+        self.fast_model_path = resolve_model_dir(
+            paths.model_root, self.fast_model_name
+        )
+        self.deep_model_path = resolve_model_dir(
+            paths.model_root, self.deep_model_name
+        )
         self.model_path = self.deep_model_path
-        self.server_url = os.environ.get("PHOENIX_KNOWLEDGE_LLM_URL", "").strip()
+        self.server_url = os.environ.get(
+            "PHOENIX_KNOWLEDGE_LLM_URL", ""
+        ).strip()
         self.compute = ComputeGateway(paths)
         self._processor = None
         self._model = None
@@ -66,10 +72,7 @@ class LocalLLM:
 
     @staticmethod
     def _path_ready(path) -> bool:
-        try:
-            return path.exists() and any(path.iterdir())
-        except OSError:
-            return False
+        return model_dir_ready(path)
 
     @staticmethod
     def _normalize_profile(profile: str | None) -> str:
@@ -78,13 +81,33 @@ class LocalLLM:
             or os.environ.get("PHOENIX_KNOWLEDGE_LLM_PROFILE", "")
             or "fast"
         ).strip().lower()
-        if raw in {"deep", "4b", "deep4b", "quality", "max", "smart2"}:
+        if raw in {
+            "deep",
+            "4b",
+            "deep4b",
+            "quality",
+            "max",
+            "smart2",
+        }:
             return "deep"
         return "fast"
 
     def reload_compute_config(self) -> None:
-        self.server_url = os.environ.get("PHOENIX_KNOWLEDGE_LLM_URL", "").strip()
+        self.server_url = os.environ.get(
+            "PHOENIX_KNOWLEDGE_LLM_URL", ""
+        ).strip()
         self.compute.reload()
+        # Re-resolve ModelScope pointers because the SSD may have been remounted
+        # under another drive letter since the previous process.
+        self.fast_model_path = resolve_model_dir(
+            self.paths.model_root,
+            self.fast_model_name,
+        )
+        self.deep_model_path = resolve_model_dir(
+            self.paths.model_root,
+            self.deep_model_name,
+        )
+        self.model_path = self.deep_model_path
 
     def compute_status(self) -> dict:
         status = self.compute.status()
@@ -115,7 +138,10 @@ class LocalLLM:
             (self.deep_model_name, self.deep_model_path),
         )
 
-    def selected_model(self, profile: str | None = None) -> tuple[str, object] | None:
+    def selected_model(
+        self,
+        profile: str | None = None,
+    ) -> tuple[str, object] | None:
         for name, path in self._local_candidates(profile):
             if self._path_ready(path):
                 return name, path
@@ -125,10 +151,15 @@ class LocalLLM:
         mode = self.compute.status().effective_mode
         if self.compute.requested_mode() == "remote":
             if mode == "remote":
-                return self.compute.remote_model(self._normalize_profile(profile))
+                return self.compute.remote_model(
+                    self._normalize_profile(profile)
+                )
             return "remote-unavailable"
         if self.server_url and self._is_loopback_url(self.server_url):
-            return os.environ.get("PHOENIX_KNOWLEDGE_LLM_MODEL", "local-server-model")
+            return os.environ.get(
+                "PHOENIX_KNOWLEDGE_LLM_MODEL",
+                "local-server-model",
+            )
         selected = self.selected_model(profile)
         return selected[0] if selected else "none"
 
@@ -137,7 +168,11 @@ class LocalLLM:
         status = self.compute.status()
 
         if requested == "remote":
-            return "remote_server" if status.effective_mode == "remote" else "remote_unavailable"
+            return (
+                "remote_server"
+                if status.effective_mode == "remote"
+                else "remote_unavailable"
+            )
 
         if self.server_url:
             if not self._is_loopback_url(self.server_url):
@@ -157,30 +192,48 @@ class LocalLLM:
 
     def _server_generate(self, prompt: str, max_new_tokens: int) -> str:
         if not self._is_loopback_url(self.server_url):
-            raise RuntimeError("知识工作台本地服务只允许回环地址。")
+            raise RuntimeError(
+                "知识工作台本地服务只允许回环地址。"
+            )
 
         payload = {
-            "model": os.environ.get("PHOENIX_KNOWLEDGE_LLM_MODEL", "local-model"),
+            "model": os.environ.get(
+                "PHOENIX_KNOWLEDGE_LLM_MODEL", "local-model"
+            ),
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.2,
             "max_tokens": int(max_new_tokens),
         }
         request = urllib.request.Request(
             self.server_url,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            data=json.dumps(
+                payload,
+                ensure_ascii=False,
+            ).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=600) as response:
-                data = json.loads(response.read().decode("utf-8"))
+            with urllib.request.urlopen(
+                request,
+                timeout=600,
+            ) as response:
+                data = json.loads(
+                    response.read().decode("utf-8")
+                )
         except (OSError, socket.error) as exc:
-            raise RuntimeError(f"本地LLM服务不可用: {exc}") from exc
+            raise RuntimeError(
+                f"本地LLM服务不可用: {exc}"
+            ) from exc
 
         try:
-            return str(data["choices"][0]["message"]["content"]).strip()
+            return str(
+                data["choices"][0]["message"]["content"]
+            ).strip()
         except Exception as exc:
-            raise RuntimeError(f"本地LLM响应格式异常: {data}") from exc
+            raise RuntimeError(
+                f"本地LLM响应格式异常: {data}"
+            ) from exc
 
     def _remote_generate(
         self,
@@ -190,7 +243,10 @@ class LocalLLM:
     ) -> str:
         status = self.compute.status()
         if status.effective_mode != "remote":
-            warning = status.warning or "外接GPU/API未授权或未配置"
+            warning = (
+                status.warning
+                or "外接GPU/API未授权或未配置"
+            )
             raise RuntimeError(warning)
 
         url = self.compute.remote_chat_url()
@@ -199,7 +255,9 @@ class LocalLLM:
 
         normalized_profile = self._normalize_profile(profile)
         payload: dict = {
-            "model": self.compute.remote_model(normalized_profile),
+            "model": self.compute.remote_model(
+                normalized_profile
+            ),
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.2,
             "max_tokens": int(max_new_tokens),
@@ -207,7 +265,11 @@ class LocalLLM:
         }
         if self.compute.is_deepseek_remote():
             payload["thinking"] = {
-                "type": "enabled" if normalized_profile == "deep" else "disabled"
+                "type": (
+                    "enabled"
+                    if normalized_profile == "deep"
+                    else "disabled"
+                )
             }
 
         headers = {"Content-Type": "application/json"}
@@ -215,24 +277,42 @@ class LocalLLM:
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         elif self.compute.remote_is_public():
-            raise RuntimeError("公网外接GPU/API需要API密钥；密钥仅保存在当前进程环境变量中。")
+            raise RuntimeError(
+                "公网外接GPU/API需要API密钥；"
+                "密钥仅保存在当前进程环境变量中。"
+            )
 
         request = urllib.request.Request(
             url,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            data=json.dumps(
+                payload,
+                ensure_ascii=False,
+            ).encode("utf-8"),
             headers=headers,
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=900) as response:
-                data = json.loads(response.read().decode("utf-8"))
+            with urllib.request.urlopen(
+                request,
+                timeout=900,
+            ) as response:
+                data = json.loads(
+                    response.read().decode("utf-8")
+                )
         except Exception as exc:
-            raise RuntimeError(f"外接GPU/API调用失败: {type(exc).__name__}: {exc}") from exc
+            raise RuntimeError(
+                "外接GPU/API调用失败: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
 
         try:
-            return str(data["choices"][0]["message"]["content"]).strip()
+            return str(
+                data["choices"][0]["message"]["content"]
+            ).strip()
         except Exception as exc:
-            raise RuntimeError(f"外接GPU/API响应格式异常: {data}") from exc
+            raise RuntimeError(
+                f"外接GPU/API响应格式异常: {data}"
+            ) from exc
 
     def unload(self) -> None:
         self._processor = None
@@ -252,8 +332,13 @@ class LocalLLM:
     def _load_transformers(self, profile: str | None = None):
         selected = self.selected_model(profile)
         if selected is None:
-            candidates = ", ".join(name for name, _ in self._local_candidates(profile))
-            raise RuntimeError(f"本地生成模型未下载: {candidates}")
+            candidates = ", ".join(
+                name
+                for name, _ in self._local_candidates(profile)
+            )
+            raise RuntimeError(
+                f"本地生成模型未下载或不完整: {candidates}"
+            )
 
         model_name, model_path = selected
         if (
@@ -269,7 +354,10 @@ class LocalLLM:
         os.environ["HF_HUB_OFFLINE"] = "1"
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
-        from transformers import AutoModelForMultimodalLM, AutoProcessor
+        from transformers import (
+            AutoModelForMultimodalLM,
+            AutoProcessor,
+        )
 
         processor = AutoProcessor.from_pretrained(
             str(model_path),
@@ -282,7 +370,10 @@ class LocalLLM:
             "torch_dtype": "auto",
             "low_cpu_mem_usage": True,
         }
-        if effective_mode == "cuda" and self._cuda_is_usable():
+        if (
+            effective_mode == "cuda"
+            and self._cuda_is_usable()
+        ):
             model_kwargs["device_map"] = "auto"
 
         model = AutoModelForMultimodalLM.from_pretrained(
@@ -293,7 +384,9 @@ class LocalLLM:
 
         engine = None
         if effective_mode == "deepspeed":
-            model, engine = self.compute.wrap_deepspeed_inference(model)
+            model, engine = self.compute.wrap_deepspeed_inference(
+                model
+            )
         elif effective_mode == "cpu":
             try:
                 model = model.to("cpu")
@@ -318,7 +411,9 @@ class LocalLLM:
         messages = [
             {
                 "role": "user",
-                "content": [{"type": "text", "text": prompt}],
+                "content": [
+                    {"type": "text", "text": prompt}
+                ],
             }
         ]
         inputs = self._processor.apply_chat_template(
@@ -331,10 +426,15 @@ class LocalLLM:
         try:
             device = getattr(self._model, "device", None)
             if device is None:
-                device = next(self._model.parameters()).device
+                device = next(
+                    self._model.parameters()
+                ).device
         except Exception:
             device = torch.device("cpu")
-        inputs = {key: value.to(device) for key, value in inputs.items()}
+        inputs = {
+            key: value.to(device)
+            for key, value in inputs.items()
+        }
         input_length = inputs["input_ids"].shape[-1]
         with torch.inference_mode():
             output = self._model.generate(
@@ -344,7 +444,10 @@ class LocalLLM:
                 use_cache=True,
             )
         generated = output[0][input_length:]
-        return self._processor.decode(generated, skip_special_tokens=True).strip()
+        return self._processor.decode(
+            generated,
+            skip_special_tokens=True,
+        ).strip()
 
     def generate(
         self,
@@ -355,14 +458,26 @@ class LocalLLM:
     ) -> str:
         backend = self.backend(profile)
         if backend == "blocked_nonlocal_url":
-            raise RuntimeError("PHOENIX_KNOWLEDGE_LLM_URL 不是本机地址，已拒绝。")
+            raise RuntimeError(
+                "PHOENIX_KNOWLEDGE_LLM_URL 不是本机地址，已拒绝。"
+            )
         if backend == "remote_unavailable":
             status = self.compute.status()
-            raise RuntimeError(status.warning or "外接GPU/API未授权或未配置")
+            raise RuntimeError(
+                status.warning
+                or "外接GPU/API未授权或未配置"
+            )
         if backend == "remote_server":
-            return self._remote_generate(prompt, max_new_tokens, profile=profile)
+            return self._remote_generate(
+                prompt,
+                max_new_tokens,
+                profile=profile,
+            )
         if backend == "local_server":
-            return self._server_generate(prompt, max_new_tokens)
+            return self._server_generate(
+                prompt,
+                max_new_tokens,
+            )
         if backend == "transformers_local":
             return self._transformers_generate(
                 prompt,

@@ -42,6 +42,7 @@ class ReleaseLaunchHardeningTests(unittest.TestCase):
             model = paths.model_root / "Qwen3-Embedding-0.6B"
             model.mkdir(parents=True)
             (model / "config.json").write_text("{}", encoding="utf-8")
+            (model / "model.safetensors").write_bytes(b"weights")
 
             db = KnowledgeDB(paths.database)
             try:
@@ -95,10 +96,16 @@ class ReleaseLaunchHardeningTests(unittest.TestCase):
             engine.marian.available = lambda: False
             engine.nllb.available = lambda: True
 
-            self.assertNotIn(engine.nllb.name, engine.available_backends())
+            self.assertNotIn(
+                engine.nllb.name,
+                engine.available_backends(),
+            )
             active = engine.active_backends("中文", "smart1")
             self.assertFalse(
-                any(getattr(item, "name", "") == engine.nllb.name for item in active)
+                any(
+                    getattr(item, "name", "") == engine.nllb.name
+                    for item in active
+                )
             )
 
     def test_hard_failed_translation_page_is_forced_back_into_resume_queue(self):

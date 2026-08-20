@@ -6,6 +6,8 @@ from .translation_semantics import install as _install_translation_semantics
 from .translation_short_chinese import install as _install_translation_short_chinese
 from .release_hardening import install as _install_release_hardening
 from .release_memory_hardening import install as _install_release_memory_hardening
+from .release_runtime_hardening import install as _install_release_runtime_hardening
+from .release_portability import install as _install_release_portability
 
 _install_translation_recovery()
 _install_scholarly_pubmed()
@@ -14,5 +16,7 @@ _install_translation_semantics()
 _install_translation_short_chinese()
 _install_release_hardening()
 _install_release_memory_hardening()
+_install_release_runtime_hardening()
+_install_release_portability()
 
 __all__ = ["MedicalKnowledgeWorkbench"]

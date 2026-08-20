@@ -61,11 +61,17 @@ class ComputeSettingsDialog(QDialog):
 
         settings = self.gateway._settings
         requested = self.gateway.requested_mode()
-        self.mode_combo.setCurrentIndex(1 if requested == "remote" and self.gateway.is_deepseek_remote() else 0)
+        self.mode_combo.setCurrentIndex(
+            1
+            if requested == "remote" and self.gateway.is_deepseek_remote()
+            else 0
+        )
         self.remote_url.setText(settings.remote_url or _DEEPSEEK_URL)
         self.fast_model.setText(settings.remote_model_fast)
         self.deep_model.setText(settings.remote_model_deep)
-        self.api_key.setText(os.environ.get("PHOENIX_KNOWLEDGE_REMOTE_API_KEY", ""))
+        self.api_key.setText(
+            os.environ.get("PHOENIX_KNOWLEDGE_REMOTE_API_KEY", "")
+        )
         self.allow_remote.setChecked(self.gateway.remote_allowed())
 
         form.addRow("算力来源：", self.mode_combo)
@@ -124,7 +130,10 @@ class ComputeSettingsDialog(QDialog):
         form = self.layout().itemAt(1).layout()
         if form is not None:
             for row in (4, 5, 6):
-                label_item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+                label_item = form.itemAt(
+                    row,
+                    QFormLayout.ItemRole.LabelRole,
+                )
                 if label_item and label_item.widget():
                     label_item.widget().setVisible(advanced)
 
@@ -133,8 +142,14 @@ class ComputeSettingsDialog(QDialog):
         if status.gpu_names:
             parts = []
             for index, name in enumerate(status.gpu_names):
-                vram = status.gpu_vram_gb[index] if index < len(status.gpu_vram_gb) else 0.0
-                parts.append(f"{name} ({vram:.1f}GB)" if vram else name)
+                vram = (
+                    status.gpu_vram_gb[index]
+                    if index < len(status.gpu_vram_gb)
+                    else 0.0
+                )
+                parts.append(
+                    f"{name} ({vram:.1f}GB)" if vram else name
+                )
             gpu = " / ".join(parts)
         else:
             gpu = "未发现可用 NVIDIA CUDA GPU"
@@ -163,7 +178,9 @@ class ComputeSettingsDialog(QDialog):
                 )
                 return
 
-            remote_url = self.remote_url.text().strip() or _DEEPSEEK_URL
+            remote_url = (
+                self.remote_url.text().strip() or _DEEPSEEK_URL
+            )
             self.gateway.save_settings(
                 mode="remote",
                 remote_url=remote_url,
@@ -176,13 +193,19 @@ class ComputeSettingsDialog(QDialog):
         else:
             self.gateway.save_settings(
                 mode="auto",
-                remote_url=self.remote_url.text().strip() or _DEEPSEEK_URL,
+                remote_url=(
+                    self.remote_url.text().strip()
+                    or _DEEPSEEK_URL
+                ),
                 remote_model_fast=self.fast_model.text().strip(),
                 remote_model_deep=self.deep_model.text().strip(),
             )
             os.environ["PHOENIX_KNOWLEDGE_ACCELERATOR"] = "auto"
             os.environ["PHOENIX_KNOWLEDGE_ALLOW_REMOTE"] = "0"
-            os.environ.pop("PHOENIX_KNOWLEDGE_REMOTE_API_KEY", None)
+            os.environ.pop(
+                "PHOENIX_KNOWLEDGE_REMOTE_API_KEY",
+                None,
+            )
 
         self.workbench.llm.reload_compute_config()
         self.accept()
@@ -204,10 +227,14 @@ def install(gui_module) -> None:
             if status.warning:
                 text += " ⚠"
             self.compute_status_label.setText(text)
-            self.compute_status_label.setToolTip(status.warning or text)
+            self.compute_status_label.setToolTip(
+                status.warning or text
+            )
         except Exception as exc:
             self.compute_status_label.setText("算力：检测失败")
-            self.compute_status_label.setToolTip(f"{type(exc).__name__}: {exc}")
+            self.compute_status_label.setToolTip(
+                f"{type(exc).__name__}: {exc}"
+            )
 
     def _open_compute_settings(self):
         dialog = ComputeSettingsDialog(self.workbench, self)
@@ -221,11 +248,19 @@ def install(gui_module) -> None:
     def _init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
         self.compute_status_label = QLabel()
-        self.compute_status_label.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        self.compute_status_label.setAlignment(
+            Qt.AlignmentFlag.AlignVCenter
+        )
         compute_button = QPushButton("算力设置")
-        compute_button.setToolTip("普通用户只需选择本机自动或 DeepSeek 云算力")
-        compute_button.clicked.connect(self._open_compute_settings)
-        self.statusBar().addPermanentWidget(self.compute_status_label)
+        compute_button.setToolTip(
+            "普通用户只需选择本机自动或 DeepSeek 云算力"
+        )
+        compute_button.clicked.connect(
+            self._open_compute_settings
+        )
+        self.statusBar().addPermanentWidget(
+            self.compute_status_label
+        )
         self.statusBar().addPermanentWidget(compute_button)
         self._update_compute_label()
 
@@ -234,7 +269,17 @@ def install(gui_module) -> None:
     cls.__init__ = _init
 
     try:
-        from .release_gui_hardening import install as install_release_gui_hardening
+        from .release_gui_hardening import (
+            install as install_release_gui_hardening,
+        )
         install_release_gui_hardening(gui_module)
+    except Exception:
+        pass
+
+    try:
+        from .release_gui_truth import (
+            install as install_release_gui_truth,
+        )
+        install_release_gui_truth(gui_module)
     except Exception:
         pass

@@ -8,13 +8,36 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import runtime_preflight
+from phoenix_knowledge.config import WorkbenchPaths
 from phoenix_knowledge.db import KnowledgeDB
+from phoenix_knowledge.llm_safe import LocalLLM as SafeLocalLLM
 from phoenix_knowledge.release_hardening import _runtime_module_available
 from phoenix_knowledge.release_memory_hardening import (
     _unload_embeddings,
     _unload_llm,
 )
 from phoenix_knowledge.rich_export import MultiFormatExporter
+from phoenix_knowledge.translation_models import MultiModelTranslationEngine
+
+
+def _paths(root: Path) -> WorkbenchPaths:
+    return WorkbenchPaths(
+        project_root=root,
+        source_root=root / "sources",
+        runtime_root=root / "runtime",
+        evidence_root=root / "evidence",
+        model_root=root / "models",
+        database=root / "runtime" / "knowledge.sqlite3",
+        structure_root=root / "runtime" / "structure",
+    ).ensure()
+
+
+class _UnavailableLLM:
+    def available(self, *args, **kwargs):
+        return False
+
+    def unload(self):
+        return None
 
 
 class ReleaseAuditV2Tests(unittest.TestCase):
@@ -46,6 +69,70 @@ class ReleaseAuditV2Tests(unittest.TestCase):
             self.assertFalse(
                 _runtime_module_available("sentence_transformers")
             )
+
+    def test_local_qwen_folder_is_not_ready_when_generation_runtime_is_broken(self):
+        with tempfile.TemporaryDirectory() as temp:
+            paths = _paths(Path(temp))
+            model = paths.model_root / "Qwen3.5-2B"
+            model.mkdir(parents=True)
+            (model / "config.json").write_text("{}", encoding="utf-8")
+            (model / "model.safetensors").write_bytes(b"weights")
+            llm = SafeLocalLLM(paths)
+            self.assertEqual(llm.backend("fast"), "transformers_local")
+            with patch(
+                "phoenix_knowledge.release_runtime_hardening.local_generation_runtime_ready",
+                return_value=False,
+            ):
+                self.assertFalse(llm.available("fast"))
+
+    def test_seq2seq_translation_fallbacks_require_runtime_not_just_folders(self):
+        with tempfile.TemporaryDirectory() as temp:
+            paths = _paths(Path(temp))
+            for folder in (
+                "opus-mt-en-zh",
+                "NLLB-200-distilled-600M",
+            ):
+                model = paths.model_root / folder
+                model.mkdir(parents=True)
+                (model / "config.json").write_text("{}", encoding="utf-8")
+                (model / "model.safetensors").write_bytes(b"weights")
+
+            engine = MultiModelTranslationEngine(paths, _UnavailableLLM())
+            with patch(
+                "phoenix_knowledge.release_runtime_hardening.local_seq2seq_runtime_ready",
+                return_value=False,
+            ):
+                names = engine.available_backends()
+                active = engine.active_backends("中文", "smart1")
+            self.assertNotIn(engine.marian.name, names)
+            self.assertNotIn(engine.nllb.name, names)
+            self.assertFalse(
+                any(
+                    getattr(item, "name", "")
+                    in {engine.marian.name, engine.nllb.name}
+                    for item in active
+                )
+            )
+
+    def test_preflight_reports_capabilities_independently(self):
+        class _LLM:
+            def available(self, profile=None):
+                return profile in {"fast", "deep"}
+
+        fake = SimpleNamespace(llm=_LLM())
+        flags = runtime_preflight._capability_flags(
+            fake,
+            {
+                "semantic_ready": False,
+                "generator_fast_ready": True,
+                "generator_deep_ready": True,
+                "translation_backends": ["qwen35_medical_translation"],
+            },
+        )
+        self.assertFalse(flags["semantic"])
+        self.assertTrue(flags["smart1"])
+        self.assertTrue(flags["smart2"])
+        self.assertTrue(flags["translation"])
 
     def test_rich_pdf_export_keeps_chinese_and_citations(self):
         import fitz
