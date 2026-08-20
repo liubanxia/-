@@ -34,8 +34,37 @@ def _build_parser():
     parser.add_argument("--machine-code", action="store_true", help="显示正式版离线授权机器码")
     parser.add_argument("--activate", metavar="CODE", help="写入并验证离线激活码")
     parser.add_argument("--license-status", action="store_true", help="显示产品授权状态")
+    parser.add_argument(
+        "--compute",
+        choices=["auto", "cpu", "cuda", "deepspeed", "remote"],
+        help="算力来源：自动/CPU/CUDA/DeepSpeed/外接GPU API",
+    )
+    parser.add_argument(
+        "--gpu-url",
+        help="外接OpenAI兼容GPU/API地址，例如 https://api.deepseek.com 或局域网服务",
+    )
+    parser.add_argument("--gpu-model-fast", help="外接服务快速模型名")
+    parser.add_argument("--gpu-model-deep", help="外接服务质量模型名")
+    parser.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help="本次运行明确允许把当前处理文本发送到外接GPU/API",
+    )
     parser.add_argument("--no-gui", action="store_true", help="完成命令行任务后不启动窗口")
     return parser
+
+
+def _apply_compute_cli(args) -> None:
+    if args.compute:
+        os.environ["PHOENIX_KNOWLEDGE_ACCELERATOR"] = args.compute
+    if args.gpu_url:
+        os.environ["PHOENIX_KNOWLEDGE_REMOTE_URL"] = args.gpu_url
+    if args.gpu_model_fast:
+        os.environ["PHOENIX_KNOWLEDGE_REMOTE_MODEL_FAST"] = args.gpu_model_fast
+    if args.gpu_model_deep:
+        os.environ["PHOENIX_KNOWLEDGE_REMOTE_MODEL_DEEP"] = args.gpu_model_deep
+    if args.allow_remote:
+        os.environ["PHOENIX_KNOWLEDGE_ALLOW_REMOTE"] = "1"
 
 
 def _non_license_cli_action(args) -> bool:
@@ -57,6 +86,7 @@ def _license_cli_action(args) -> bool:
 
 def main() -> int:
     args = _build_parser().parse_args()
+    _apply_compute_cli(args)
     non_license_action = _non_license_cli_action(args)
     license_action = _license_cli_action(args)
 
@@ -125,6 +155,7 @@ def main() -> int:
                 )
                 print(f"ANSWER_MODE={answer.mode}")
                 print(f"GENERATOR={workbench.llm.active_model_name()}")
+                print(f"COMPUTE={workbench.llm.compute.status().label()}")
                 print(answer.text)
 
             if args.organize:
@@ -166,7 +197,8 @@ def main() -> int:
                     f"TRANSLATION_FORMATS={','.join(str(x) for x in result.output_paths)}\n"
                     f"IMAGES={result.image_count}\n"
                     f"WARNING_PAGES={result.warning_pages}\n"
-                    f"BACKENDS={','.join(result.available_backends)}"
+                    f"BACKENDS={','.join(result.available_backends)}\n"
+                    f"COMPUTE={workbench.llm.compute.status().label()}"
                 )
 
             if args.organize_txt:
@@ -185,7 +217,9 @@ def main() -> int:
                 )
 
             if args.status:
-                print(json.dumps(workbench.status(), ensure_ascii=False, indent=2))
+                payload = workbench.status()
+                payload["compute"] = workbench.llm.compute_status()
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
         finally:
             workbench.close()
 
@@ -201,9 +235,16 @@ def main() -> int:
     from phoenix_knowledge import gui as gui_module
     try:
         from phoenix_knowledge.gui_enhancements import install as install_gui_enhancements
+
         install_gui_enhancements(gui_module)
     except Exception as exc:
         print(f"GUI_ENHANCEMENT_WARNING={type(exc).__name__}: {exc}", flush=True)
+    try:
+        from phoenix_knowledge.compute_gui import install as install_compute_gui
+
+        install_compute_gui(gui_module)
+    except Exception as exc:
+        print(f"COMPUTE_GUI_WARNING={type(exc).__name__}: {exc}", flush=True)
     return int(gui_module.run_gui())
 
 
