@@ -1,188 +1,253 @@
-# Phoenix 离线医学知识工作台
+# Phoenix 医学知识工作台
 
-这是 Project Phoenix 的独立离线医学知识整理窗口。它不负责阅片推理，不接云端 API，不从互联网补充医学知识；知识来源限定为用户主动导入的 PDF 书籍、指南、规范和个人资料。
+Phoenix 医学知识工作台是 Project Phoenix 中独立的离线医学资料学习、检索、问答、联合整理和整本翻译产品。正常使用不依赖 PACS 阅片链，也不会自动修改医学影像主模型权重。
 
-## 当前窗口
+## 正式发布基线
 
-- **PDF资料库**：导入书籍、逐页索引、建立本地检索库。
-- **PDF问答**：只依据已导入PDF回答，保留书名、页码和来源编号。
-- **多书知识整理**：从全部已导入PDF跨书检索、去重、分批整理和分层合并。
-- **整本书翻译**：默认从第1页翻到最后一页，也可指定起始页；逐页保存、断点续翻、多模型自动兜底。
-- **TXT笔记整理**：读取TXT/MD或直接粘贴文字，一键整理成可保存、可复习、可打印的笔记。
-- **打印**：PDF问答、多书整理、整本译本和TXT整理结果均提供打印/打印预览。
+普通用户的默认入口是：
 
-## 核心原则
+```text
+启动Phoenix医学知识工作台.bat
+```
 
-1. **PDF 是事实来源，模型只负责整理。** 生成式知识回答必须引用当前检索到的 `[S编号]` 证据；没有有效引用的生成结果会被程序拦截并退回“原文证据模式”。
-2. **运行阶段可完全断网。** PDF 解析、SQLite/FTS 检索、向量索引、问答、整理、翻译和笔记处理均读取本地文件与本地模型。
-3. **长任务可恢复。** PDF 按页写入 SQLite；多书整理按批次保存 checkpoint；整本翻译每页单独落盘。
-4. **来源可追溯。** 每个PDF知识块保存书名、文件路径、页码、块编号。
-5. **不影响 Phoenix 阅片主链。** 本项目位于 `14_学习中心/离线医学知识工作台/`，与 CT/DR 推理代码解耦。
+启动器会自动：
+
+1. 识别 SSD 上的 Project Phoenix 根目录，不写死 D: / G:；
+2. 使用 SSD 自带 `02_开发环境/python.exe`；
+3. 执行一次运行环境自检；
+4. 缺少 Python 运行组件时一次性尝试修复，不再让用户逐个 `pip install`；
+5. 算力默认 `auto`：可用 NVIDIA CUDA 时自动 GPU，否则自动 CPU；
+6. 自检通过后直接打开工作台。
+
+维护人员仍可使用：
+
+```bash
+python app.py
+python app.py --status --no-gui
+python real_acceptance.py
+```
+
+## 主功能
+
+### 医学资料库
+
+统一支持：
+
+- PDF
+- PPT / PPTX
+- DOCX
+- TXT / Markdown
+- HTML
+- XML / NXML / JATS
+- NBIB
+- RIS
+- BibTeX
+- CSL-JSON
+- CAJ / NH / HN / KDH / TEB / C8
+
+资料只在本机 SSD 解析。PDF 优先使用 PyMuPDF；扫描 PDF 在本地 OCR 条件满足时自动尝试 OCR。资料、SQLite、checkpoint、图片缓存和输出结果不提交到 GitHub。
+
+导入完成后，如果 Qwen Embedding 模型和 `sentence-transformers` 运行组件均可用，Phoenix 会自动补齐缺失向量，不再要求普通用户手工点击“生成向量索引”。
+
+### 资料问答
+
+问答链：
+
+```text
+用户问题
+→ SQLite FTS / 中文关键词召回
+→ Qwen3 Embedding 语义召回
+→ 融合证据
+→ 可选 Qwen 智能归纳
+→ 引用安全检查
+→ 输出
+```
+
+所有生成式医学事实必须保留 `[S编号]`。如果模型生成内容没有合法来源编号，Phoenix 会阻止该答案并退回原始证据模式。
+
+GUI 提供：
+
+- 快速证据
+- 智能1
+- 智能2
+
+智能1优先使用本地快速生成模型，智能2使用质量模型。
+
+## 语义检索 READY 的定义
+
+正式版不再以“Embedding 文件夹存在”作为 READY。
+
+只有同时满足以下条件才显示真实 READY：
+
+- Qwen3 Embedding 模型目录有效；
+- `sentence-transformers` 可以实际加载；
+- 已导入知识块全部拥有对应向量。
+
+状态示例：
+
+```text
+语义模型未下载
+语义组件缺失
+语义索引 3200/5445
+语义索引 5445/5445 READY
+```
+
+## 多资料 / 论文联合整理
+
+联合整理不是把全部书籍一次塞进模型上下文。
+
+流程：
+
+```text
+多个检索视角
+→ 跨资料召回
+→ 文档覆盖控制
+→ 分批证据整理
+→ 每批 checkpoint
+→ 分层合并
+→ 来源编号校验
+→ 相关原图插入
+→ 多格式输出
+```
+
+长任务持续显示当前阶段、已运行时间和最近一次模型响应时间。暂停后保留 checkpoint；恢复时从已完成批次继续。
+
+最终自动生成：
+
+- PDF
+- DOCX
+- Markdown
+- TXT
+
+任何一个多格式导出失败时，正文和 checkpoint 仍会保留，并明确提示失败原因。
+
+## 整本医学 PDF 翻译
+
+默认翻译策略：
+
+1. Qwen 智能医学翻译；
+2. Marian 英译中兜底；
+3. NLLB 仅在 Development / Research 环境作为非商业故障恢复模型。
+
+正式产品 / 商业模式会自动禁止 NLLB，因为其模型许可为 CC-BY-NC-4.0。
+
+翻译安全门重点保护：
+
+- 数字
+- 单位
+- 正负号
+- 左右侧
+- 阴性 / 阳性
+- 否定
+- 不确定性
+- 良恶性
+- 急慢性
+- 增强 / 不增强
+- 信号 / 密度方向变化
+- 敏感度 / 特异度与数值绑定
+
+每页翻译后立即写入 checkpoint。硬失败页不会再因为存在失败占位文本而被错误当成“已完成”；再次继续时会自动重新翻译硬失败页。
+
+### PDF 成品
+
+默认：
+
+- 原 PDF 页面在上；
+- 中文译文在下；
+- 生成完整 PDF；
+- 同时按指定页数生成 PDF 分册。
+
+正式版 PDF 保存策略取消大文件上的 `garbage=3` 全文件重整理，改为：
+
+```text
+garbage=0
+deflate=True
+临时文件写入
+原子替换
+```
+
+目标是避免数百页医学教材在 100% 翻译后长时间“假死”，同时避免关闭压缩造成 PDF 体积暴涨。
+
+暂停发生在安全页面边界。用户在“暂停请求尚未完成”期间再次点击继续，Phoenix 会记录继续请求，当前页安全落盘后自动恢复。
+
+## 算力设置
+
+普通用户只显示两种模式：
+
+- 本机自动（推荐）
+- DeepSeek 云算力
+
+“本机自动”会自动选择 CUDA / CPU，高级用户不需要手工选择 CUDA、DeepSpeed。
+
+DeepSeek 需要 API Key，并且必须明确勾选本次运行允许发送学习资料文本。患者资料禁止使用云端算力。
+
+高级设置默认隐藏，可配置服务地址和模型名称。当前 DeepSeek 默认：
+
+- `deepseek-v4-flash`
+- `deepseek-v4-pro`
+
+API Key 只保存在当前运行进程，不写入 Phoenix 配置文件。
 
 ## SSD 目录
 
-运行时自动从代码位置识别 Project Phoenix 根目录，不写死 D: 或 G:。
-
-- PDF 原书：`14_学习中心/PDF资料/`
-- SQLite/checkpoint：`14_学习中心/离线医学知识工作台_data/`
-- 结构化 Docling 输出（可选）：`14_学习中心/离线医学知识工作台_data/docling_structure/`
+- 原始学习资料：`14_学习中心/PDF资料/`
+- 工作台运行数据：`14_学习中心/离线医学知识工作台_data/`
 - 本地模型：`04_AI模型/知识工作台/`
-- 多书整理结果：`15_证据中心/PDF知识整理/`
+- 整理结果：`15_证据中心/PDF知识整理/`
 - 整本译本：`15_证据中心/PDF知识整理/PDF整本翻译/`
-- TXT整理笔记：`15_证据中心/PDF知识整理/TXT整理笔记/`
 
-这些目录均属于本地资料、模型或运行数据，不提交到 GitHub。
+路径均通过工程根目录动态解析，不依赖固定盘符。
 
-## 最低可用版本
+## 运行依赖
+
+基础依赖：
 
 ```bash
 python -m pip install -r requirements-base.txt
-python app.py
 ```
 
-没有任何大模型时，程序仍可导入 PDF、按页建立可恢复索引、使用中文关键词回退检索并显示书名/页码原文证据。AI翻译和AI笔记整理需要至少一个对应本地模型。
+完整日常运行依赖：
 
-## 本地模型
+```bash
+python -m pip install -r requirements-runtime.txt
+```
 
-### 知识整理
-
-- `Qwen/Qwen3.5-4B`：PDF问答、长期专题整理、TXT笔记整理、翻译最终兜底。
-- `Qwen/Qwen3-Embedding-0.6B`：语义检索。
-- `Qwen/Qwen3-Reranker-0.6B`：二阶段重排预留。
-
-### 整本书翻译的多模型级联
-
-整本英文医学书翻译默认按下面顺序工作：
-
-1. `Helsinki-NLP/opus-mt-en-zh`：轻量英译中专用模型，第一模型。
-2. `facebook/nllb-200-distilled-600M`：第二兜底；仅作为研究/非商业的故障恢复模型。
-3. `Qwen/Qwen3.5-4B`：最后医学翻译兜底/复核模型。
-
-不是每段都同时跑三个模型。第一模型输出后先做自动质量检查：
-
-- 是否空译或明显漏译；
-- 译文是否异常过短/过长；
-- 数字、单位、CT/MRI参数是否丢失；
-- 医学缩写是否大量丢失；
-- 是否仍然大段保持英文；
-- 是否出现重复输出。
-
-检查失败才自动切到下一个模型。全部模型都失败时，程序不会让一整本书停止，而是在对应段落标记失败并保留原文，继续后面的页面，同时写入 audit JSON，之后可使用“重试警告页”。
-
-## 模型下载
-
-默认优先尝试 ModelScope：
+模型下载和开发增强：
 
 ```bash
 python -m pip install -r requirements-ai.txt
-python model_download.py translation_light --source modelscope
-python model_download.py embedding --source modelscope
-python model_download.py generator --source modelscope
 ```
 
-翻译三模型全部准备：
+普通用户不需要手工执行这些命令，双击启动器会先做自检。
+
+## 正式上线真实平台验收
+
+在装有真实资料和真实本地模型的 SSD 上执行：
 
 ```bash
-python model_download.py translation --source modelscope
+python real_acceptance.py
 ```
 
-如果 ModelScope 某个模型线路不稳定，可只对该模型切换 Hugging Face：
+验收内容：
 
-```bash
-python model_download.py translation_fast --source huggingface
-python model_download.py translation_backup --source huggingface
-```
+1. 真实资料库和完整语义向量覆盖；
+2. 中文问题跨语言检索；
+3. 真实资料问答及 `[S编号]`；
+4. 本地医学翻译和安全校验；
+5. 两页真实模型整本 PDF 翻译、压缩写入和分册；
+6. 多资料联合整理；
+7. PDF / DOCX / Markdown / TXT 输出。
 
-下载结束后运行阶段可以完全断网。
-
-## 整本书翻译
-
-窗口中选择一本PDF后：
-
-1. “从第几页开始”默认1；
-2. 点击“开始/继续整本翻译”；
-3. 程序逐页、逐段翻译；
-4. 每完成一页立即保存；
-5. 再次打开同一本书会自动跳过已完成页；
-6. 有模型失败或质量异常的页面计入“警告页”；
-7. 下载了更多模型后可点击“重试警告页”；
-8. 全部完成后合成为一个完整TXT译本。
-
-命令行：
-
-```bash
-python app.py --translate-book "D:/books/Core Radiology.pdf" --start-page 1 --no-gui
-python app.py --translate-book "D:/books/Core Radiology.pdf" --start-page 1 --retry-warning-pages --no-gui
-```
-
-## 多书知识整理
-
-多书整理不是一次把所有书塞进上下文。流程是：
-
-1. 从全部PDF召回较大的相关证据池；
-2. 做跨书籍覆盖，避免单本书垄断候选；
-3. 分批生成带来源编号的高密度笔记；
-4. 每批结束立即保存 checkpoint；
-5. 使用分层合并避免超长上下文；
-6. 最终文件保留来源索引。
-
-电脑异常退出后，重新打开窗口点击“继续未完成任务”即可恢复。
-
-## TXT笔记整理与打印
-
-TXT/MD可以直接读取，也可以把零散笔记粘贴到窗口。长TXT会自动分段整理再分层合并，不要求一次塞进模型上下文。
-
-结果默认保存为TXT，同时窗口提供：
-
-- 保存TXT；
-- 打印预览；
-- 直接打印。
-
-命令行：
-
-```bash
-python app.py --organize-txt "D:/notes/chest_ct.txt" --note-title "胸部CT复习笔记" --instruction "按征象、诊断、鉴别、陷阱和报告表达整理" --no-gui
-```
-
-## Embedding 索引
-
-下载 `Qwen3-Embedding-0.6B` 并安装 `sentence-transformers` 后，可在窗口点击“生成向量索引”，或：
-
-```bash
-python app.py --build-embeddings --no-gui
-```
-
-没有 embedding 时系统自动使用 SQLite FTS + 中文关键词回退检索。
-
-## 本地生成模型
-
-默认寻找 `04_AI模型/知识工作台/Qwen3.5-4B/`。程序使用 `local_files_only=True` 加载，并设置 Transformers/Hugging Face 离线模式。新显卡可使用本地GPU；当前PyTorch不支持的老GPU自动保持CPU路径。
-
-也可以连接本机启动的 OpenAI-compatible 服务：
+只有最后出现：
 
 ```text
-PHOENIX_KNOWLEDGE_LLM_URL=http://127.0.0.1:8080/v1/chat/completions
+PHOENIX_RELEASE_ACCEPTANCE=PASS
 ```
 
-只允许 `localhost / 127.0.0.1 / ::1`，外部URL会被拒绝。
+才视为当前机器、当前 SSD、当前资料库和当前模型组合完成正式平台验收。
 
-## Docling
+## 发布边界
 
-基础索引优先使用 PyMuPDF。Docling 作为可选结构化增强，用于复杂版面、表格和OCR。只有明确设置 `PHOENIX_ENABLE_DOCLING=1` 时程序才尝试结构化导出，避免医院断网环境因为缺少额外资产而等待网络。
-
-## 其他命令行示例
-
-```bash
-python app.py --ingest "D:/books/Core Radiology.pdf" --no-gui
-python app.py --ask "整理肺磨玻璃结节的恶性CT征象和鉴别诊断" --no-gui
-python app.py --organize "肺磨玻璃结节" --instruction "汇总全部PDF：征象、良恶性判断、鉴别、随访、漏诊点、报告模板；每条保留来源" --no-gui
-python app.py --resume-task 3 --no-gui
-python app.py --status --no-gui
-```
-
-## 当前边界
-
-- 纯扫描PDF如果没有文本层，PyMuPDF可能提取不到文字；系统会标记OCR警告，不会把空白当作可靠医学证据或可靠译文。
-- NLLB只作为故障恢复翻译模型，不作为医学专业翻译质量的最终裁决模型。
-- Reranker已预留，但当前主检索采用FTS/中文关键词 + Qwen3 Embedding融合。
-- 本工具只整理知识、翻译和笔记，不自动修改 Phoenix 主模型权重。
+- GitHub Actions 回归测试用于验证代码兼容性和回归，不等于真实 GPU / 本地大模型验收。
+- 正式上线必须同时通过 Windows CI 和 `real_acceptance.py` 的真实机器验收。
+- 本工具用于医学知识资料整理和辅助学习，不替代医生临床判断。

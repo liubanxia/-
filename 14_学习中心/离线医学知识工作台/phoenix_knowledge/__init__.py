@@ -4,11 +4,13 @@ from .scholarly_pubmed import install as _install_scholarly_pubmed
 from .scholarly_product_hardening import install as _install_scholarly_product_hardening
 from .translation_semantics import install as _install_translation_semantics
 from .translation_short_chinese import install as _install_translation_short_chinese
+from .release_hardening import install as _install_release_hardening
 
 _install_translation_recovery()
 _install_scholarly_pubmed()
 _install_scholarly_product_hardening()
 _install_translation_semantics()
 _install_translation_short_chinese()
+_install_release_hardening()
 
 __all__ = ["MedicalKnowledgeWorkbench"]
