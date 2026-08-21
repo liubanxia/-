@@ -48,13 +48,13 @@ if not exist "%PY%" (
 
 pushd "%HERE%"
 echo.
-echo ==================== 第一阶段：快速实跑总检 ====================
-"%PY%" "%HERE%onsite_preflight.py"
+echo ==================== 第一阶段：正式装配链快速总检 ====================
+"%PY%" "%HERE%onsite_preflight_final.py"
 set "PRE_RC=%ERRORLEVEL%"
 
 if "%PRE_RC%"=="3" (
     echo.
-    echo 结论：BLOCKED。基础/输出/架构存在硬故障。
+    echo 结论：BLOCKED。基础/输出/架构/正式GUI装配存在硬故障。
     echo 不继续加载大模型，也不要逐个按钮试。
     popd
     pause
@@ -73,8 +73,8 @@ if "%PRE_RC%"=="2" (
 echo.
 echo ==================== 第二阶段：全功能真实验收 ====================
 echo 将真实调用：资料检索、智能1、医学翻译、整本PDF输出、
-echo 多资料联合整理、多格式导出、GUI接线。
-"%PY%" "%HERE%real_acceptance.py"
+echo 多资料联合整理、多格式导出、GUI正式装配链。
+"%PY%" "%HERE%real_acceptance_final.py"
 set "FULL_RC=%ERRORLEVEL%"
 
 popd
@@ -82,7 +82,7 @@ echo.
 if "%FULL_RC%"=="0" (
     echo ============================================================
     echo PHOENIX_FULL_ACCEPTANCE=PASS
-    echo 结论：READY。快速总检和真实功能验收均通过。
+    echo 结论：READY。正式装配链总检和真实功能验收均通过。
     echo ============================================================
     pause
     exit /b 0

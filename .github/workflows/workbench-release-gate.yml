@@ -7,13 +7,17 @@ on:
       - 'fix/**'
     paths:
       - '14_学习中心/离线医学知识工作台/phoenix_knowledge/**/*.py'
-      - '14_学习中心/离线医学知识工作台/onsite_preflight.py'
+      - '14_学习中心/离线医学知识工作台/app.py'
+      - '14_学习中心/离线医学知识工作台/onsite_preflight*.py'
+      - '14_学习中心/离线医学知识工作台/real_acceptance*.py'
       - '14_学习中心/离线医学知识工作台/tests/**/*.py'
       - '.github/workflows/workbench-release-gate.yml'
   pull_request:
     paths:
       - '14_学习中心/离线医学知识工作台/phoenix_knowledge/**/*.py'
-      - '14_学习中心/离线医学知识工作台/onsite_preflight.py'
+      - '14_学习中心/离线医学知识工作台/app.py'
+      - '14_学习中心/离线医学知识工作台/onsite_preflight*.py'
+      - '14_学习中心/离线医学知识工作台/real_acceptance*.py'
       - '14_学习中心/离线医学知识工作台/tests/**/*.py'
       - '.github/workflows/workbench-release-gate.yml'
 
@@ -60,12 +64,19 @@ jobs:
       - name: Compile release contracts
         run: >-
           python -m py_compile
+          app.py
+          onsite_preflight.py
+          onsite_preflight_final.py
+          real_acceptance.py
+          real_acceptance_final.py
+          phoenix_knowledge/gui_bootstrap.py
+          phoenix_knowledge/release_gui_hardening.py
+          phoenix_knowledge/translation_models.py
           phoenix_knowledge/output_contracts.py
           phoenix_knowledge/workbench_stability_core.py
           phoenix_knowledge/translation_output_validation.py
           phoenix_knowledge/translation_stability_core.py
           phoenix_knowledge/translation_pdf.py
-          onsite_preflight.py
 
       - name: Run workbench output and architecture regressions
         run: >-
@@ -77,3 +88,6 @@ jobs:
           tests.test_translation_storage_budget
           tests.test_compact_translation_layout
           tests.test_translation_storage_gui
+          tests.test_gui_bootstrap_contract
+          tests.test_translation_backend_priority
+          tests.test_final_gui_runtime_contract

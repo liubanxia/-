@@ -118,6 +118,7 @@ class ReleaseCandidateHardeningTests(unittest.TestCase):
             result = engine.translate(
                 "CT showed a 12 mm pulmonary nodule measuring 45 HU with pleural retraction.",
                 "中文",
+                smart_level="smart2",
             )
             self.assertEqual(result.backend, "fallback_good")
             self.assertTrue(result.quality.ok)

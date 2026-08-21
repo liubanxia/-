@@ -302,12 +302,14 @@ class QwenMedicalTranslationBackend:
 
 
 class MultiModelTranslationEngine:
-    """Offline medical translation with strict intelligent-first quality routing.
+    """Offline medical translation with deterministic quality routing.
 
-    The intelligent medical translator is preferred, but a result is accepted
-    only when the validator passes it. If validation fails, Phoenix continues
-    through the deterministic Marian/NLLB fallback chain and only returns a
-    review-required best effort when every available backend fails validation.
+    Smart1/default whole-book English-to-Chinese translation uses the dedicated
+    Marian backend first, then NLLB, and only invokes the much heavier Qwen
+    generator when deterministic translation is unavailable or fails the
+    medical safety validator. Smart2 deliberately reverses that priority for a
+    user-requested quality-first pass. Every candidate is still subject to the
+    same numeric/unit/acronym validation before automatic acceptance.
     """
 
     def __init__(self, paths: WorkbenchPaths, llm: LocalLLM):
@@ -333,7 +335,11 @@ class MultiModelTranslationEngine:
         return isinstance(self.qwen, QwenMedicalTranslationBackend)
 
     def available_backends(self) -> list[str]:
-        result = []
+        result: list[str] = []
+        if self._backend_available(self.marian):
+            result.append(self.marian.name)
+        if self._backend_available(self.nllb):
+            result.append(self.nllb.name)
         if self._real_smart_backend():
             if (
                 self._backend_available(self.qwen, "smart1")
@@ -342,10 +348,6 @@ class MultiModelTranslationEngine:
                 result.append(self.qwen.name)
         elif self._backend_available(self.qwen):
             result.append(self.qwen.name)
-        if self._backend_available(self.marian):
-            result.append(self.marian.name)
-        if self._backend_available(self.nllb):
-            result.append(self.nllb.name)
         return result
 
     def active_backends(
@@ -354,28 +356,29 @@ class MultiModelTranslationEngine:
         smart_level: str = "smart1",
     ) -> list[object]:
         level = _normalize_smart_level(smart_level)
-        result: list[object] = []
-
+        smart_backend_available = False
         if self._real_smart_backend():
-            if self._backend_available(self.qwen, level):
-                result.append(self.qwen)
+            smart_backend_available = self._backend_available(self.qwen, level)
         elif _flag("PHOENIX_TRANSLATION_QWEN_REVIEW", default=False):
-            if self._backend_available(self.qwen):
-                pass
+            smart_backend_available = self._backend_available(self.qwen)
 
+        dedicated: list[object] = []
         if target_language in _SIMPLIFIED_TARGETS:
             if self._backend_available(self.marian):
-                result.append(self.marian)
+                dedicated.append(self.marian)
             if self._backend_available(self.nllb):
-                result.append(self.nllb)
+                dedicated.append(self.nllb)
 
-        if (
-            not self._real_smart_backend()
-            and _flag("PHOENIX_TRANSLATION_QWEN_REVIEW", default=False)
-            and self._backend_available(self.qwen)
-        ):
+        if level == "smart2":
+            result: list[object] = []
+            if smart_backend_available:
+                result.append(self.qwen)
+            result.extend(dedicated)
+            return result
+
+        result = list(dedicated)
+        if smart_backend_available:
             result.append(self.qwen)
-
         return result
 
     def translate(

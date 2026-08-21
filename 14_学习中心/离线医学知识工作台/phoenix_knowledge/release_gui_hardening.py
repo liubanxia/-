@@ -67,6 +67,13 @@ def _elapsed_text(seconds: float) -> str:
 
 
 def install(gui_module) -> None:
+    """Install the final GUI task/runtime contract.
+
+    This installer must run after every compatibility/product GUI extension.
+    It owns all long-task entry points so later modules cannot reintroduce
+    silent ``if busy: return`` behaviour.
+    """
+
     global _INSTALLED
     if _INSTALLED:
         return
@@ -77,6 +84,10 @@ def install(gui_module) -> None:
     original_init = cls.__init__
     original_status_text = cls._status_text
     original_ingest_done = cls._ingest_done
+    original_add_pdfs = cls.add_pdfs
+    original_add_documents = getattr(cls, "add_documents", original_add_pdfs)
+    original_ask_question = cls.ask_question
+    original_start_notes_organize = cls.start_notes_organize
     original_organize_progress = cls._organize_progress
     original_translation_progress = cls._translation_progress
     original_start_organize = cls.start_organize
@@ -112,6 +123,70 @@ def install(gui_module) -> None:
             )
         except Exception:
             return original_status_text(self)
+
+    def _current_task_label(self) -> str:
+        worker = getattr(self, "worker", None)
+        if worker is None or not worker.isRunning():
+            return ""
+        if isinstance(worker, _TranslationWorkerV2):
+            return "整本翻译"
+        if isinstance(worker, _OrganizeWorkerV2):
+            return "多资料整理"
+        if isinstance(worker, _EmbeddingWorkerV2):
+            return "语义索引"
+        name = type(worker).__name__.lower()
+        if "ingest" in name:
+            return "资料导入"
+        if "ask" in name:
+            return "资料问答"
+        if "note" in name:
+            return "笔记整理"
+        return "后台任务"
+
+    def _busy_notice(self, requested_action: str) -> None:
+        current = self._current_task_label() or "后台任务"
+        message = (
+            f"当前正在执行“{current}”，暂不能同时启动“{requested_action}”。\n\n"
+            "任务仍在运行，不是按钮失效。请在对应页查看进度；"
+            "整理/翻译任务可使用暂停按钮，在安全保存点暂停后再启动其他任务。"
+        )
+        try:
+            self.statusBar().showMessage(
+                f"当前任务：{current}；{requested_action}未启动",
+                8000,
+            )
+        except Exception:
+            pass
+        QMessageBox.information(
+            self,
+            "Phoenix 当前有任务运行",
+            message,
+        )
+
+    def _track_worker(self, label: str) -> None:
+        worker = getattr(self, "worker", None)
+        if worker is None or not hasattr(worker, "finished"):
+            return
+        if bool(getattr(worker, "_phoenix_finish_hooked", False)):
+            return
+        worker._phoenix_finish_hooked = True
+
+        def finished() -> None:
+            if getattr(self, "worker", None) is worker:
+                self.worker = None
+            try:
+                self.statusBar().showMessage(
+                    f"{label}任务已结束，可以继续使用其他功能。",
+                    6000,
+                )
+            except Exception:
+                pass
+            try:
+                self.refresh_resume_state()
+            except Exception:
+                pass
+
+        worker.finished.connect(finished)
 
     def _heartbeat_tick(self) -> None:
         worker = getattr(self, "worker", None)
@@ -181,6 +256,20 @@ def install(gui_module) -> None:
         self._embedding_last_at = 0.0
         self._embedding_last_msg = ""
 
+        if hasattr(self, "translation_smart_combo"):
+            smart1 = self.translation_smart_combo.findData("smart1")
+            smart2 = self.translation_smart_combo.findData("smart2")
+            if smart1 >= 0:
+                self.translation_smart_combo.setItemText(
+                    smart1,
+                    "快速翻译（专用模型优先，推荐）",
+                )
+            if smart2 >= 0:
+                self.translation_smart_combo.setItemText(
+                    smart2,
+                    "智能2（质量优先，可能较慢）",
+                )
+
         self._phoenix_heartbeat_timer = QTimer(self)
         self._phoenix_heartbeat_timer.setInterval(1000)
         self._phoenix_heartbeat_timer.timeout.connect(
@@ -191,10 +280,32 @@ def install(gui_module) -> None:
         QTimer.singleShot(350, self._maybe_auto_index)
         self.statusBar().showMessage(self._status_text())
 
+    def add_documents(self):
+        if self._busy():
+            self._busy_notice("资料导入")
+            return
+        result = original_add_documents(self)
+        self._track_worker("资料导入")
+        return result
+
+    def ask_question(self):
+        if self._busy():
+            self._busy_notice("资料问答")
+            return
+        result = original_ask_question(self)
+        self._track_worker("资料问答")
+        return result
+
+    def start_notes_organize(self):
+        if self._busy():
+            self._busy_notice("笔记整理")
+            return
+        result = original_start_notes_organize(self)
+        self._track_worker("笔记整理")
+        return result
+
     def _ingest_done(self, message: str):
         result = original_ingest_done(self, message)
-        # GUI batch import intentionally defers vector generation. Run exactly
-        # once after all successful files have committed their chunks.
         QTimer.singleShot(100, self._maybe_auto_index)
         return result
 
@@ -218,6 +329,7 @@ def install(gui_module) -> None:
 
     def build_embeddings(self):
         if self._busy():
+            self._busy_notice("语义索引")
             return
         try:
             status = self.workbench.status()
@@ -269,6 +381,7 @@ def install(gui_module) -> None:
         self.worker.completed.connect(self._embedding_done)
         self.worker.failed.connect(self._failed)
         self.worker.start()
+        self._track_worker("语义索引")
 
     def _organize_progress(
         self,
@@ -316,13 +429,17 @@ def install(gui_module) -> None:
                 self.organize_status.setText(
                     self._organize_last_msg
                 )
+            else:
+                self._busy_notice("多资料整理")
             return
         self._organize_resume_pending = False
         now = time.monotonic()
         self._organize_started_at = now
         self._organize_last_at = now
         self._organize_last_msg = "正在启动多资料整理"
-        return original_start_organize(self)
+        result = original_start_organize(self)
+        self._track_worker("多资料整理")
+        return result
 
     def resume_organize(self):
         if self._busy():
@@ -340,12 +457,16 @@ def install(gui_module) -> None:
                 self.organize_status.setText(
                     self._organize_last_msg
                 )
+            else:
+                self._busy_notice("继续多资料整理")
             return
         now = time.monotonic()
         self._organize_started_at = now
         self._organize_last_at = now
         self._organize_last_msg = "正在恢复多资料整理"
-        return original_resume_organize(self)
+        result = original_resume_organize(self)
+        self._track_worker("多资料整理")
+        return result
 
     def pause_organize(self):
         worker = getattr(self, "worker", None)
@@ -382,36 +503,29 @@ def install(gui_module) -> None:
 
     def refresh_translation_models(self):
         try:
+            status = self.workbench.status()
             smart1 = (
                 "可用"
-                if self.workbench.llm.available("fast")
+                if status.get("generator_fast_ready", self.workbench.llm.available("fast"))
                 else "未就绪"
             )
             smart2 = (
                 "可用"
-                if self.workbench.llm.available("deep")
+                if status.get("generator_deep_ready", self.workbench.llm.available("deep"))
                 else "未就绪"
             )
             names = list(
                 self.workbench.translator.engine.available_backends()
             )
-            fallback_names = [
-                name
-                for name in names
-                if "qwen" not in name.lower()
-            ]
-            fallback = "可用" if fallback_names else "未就绪"
-            commercial = bool(
-                self.workbench.status().get("commercial_release")
-            )
+            route = " → ".join(names) if names else "未就绪"
+            commercial = bool(status.get("commercial_release"))
             suffix = (
                 " | 商业版已禁用非商业模型"
                 if commercial
                 else ""
             )
             self.translation_models_label.setText(
-                f"翻译能力：智能1={smart1} | "
-                f"智能2={smart2} | 自动兜底={fallback}{suffix}"
+                f"翻译路由：{route} | 智能1={smart1} | 智能2={smart2}{suffix}"
             )
         except Exception:
             return original_refresh_translation_models(self)
@@ -438,6 +552,7 @@ def install(gui_module) -> None:
                 )
             return
         if self._busy():
+            self._busy_notice("整本翻译")
             return
 
         self._translation_resume_pending = False
@@ -445,10 +560,12 @@ def install(gui_module) -> None:
         self._translation_started_at = now
         self._translation_last_at = now
         self._translation_last_msg = "正在启动整本医学翻译"
-        return original_start_translation(
+        result = original_start_translation(
             self,
             retry_warning_pages,
         )
+        self._track_worker("整本翻译")
+        return result
 
     def pause_translation(self):
         self._translation_resume_pending = False
@@ -481,10 +598,28 @@ def install(gui_module) -> None:
         self._translation_resume_pending = False
         return original_translation_failed(self, error)
 
+    for guarded in (
+        add_documents,
+        ask_question,
+        start_notes_organize,
+        build_embeddings,
+        start_organize,
+        resume_organize,
+        start_translation,
+    ):
+        guarded.__phoenix_busy_guard__ = True
+
     cls._status_text = _status_text
+    cls._current_task_label = _current_task_label
+    cls._busy_notice = _busy_notice
+    cls._track_worker = _track_worker
     cls._heartbeat_tick = _heartbeat_tick
     cls._maybe_auto_index = _maybe_auto_index
     cls.__init__ = _init
+    cls.add_pdfs = add_documents
+    cls.add_documents = add_documents
+    cls.ask_question = ask_question
+    cls.start_notes_organize = start_notes_organize
     cls._ingest_done = _ingest_done
     cls._embedding_progress = _embedding_progress
     cls._embedding_done = _embedding_done
@@ -502,3 +637,4 @@ def install(gui_module) -> None:
     cls.pause_translation = pause_translation
     cls._translation_done = _translation_done
     cls._translation_failed = _translation_failed
+    cls.__phoenix_release_gui_hardening__ = 2

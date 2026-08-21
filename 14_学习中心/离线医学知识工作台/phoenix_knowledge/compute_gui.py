@@ -270,9 +270,8 @@ class ComputeSettingsDialog(QDialog):
             )
             return
 
-        # Public providers require a key. A custom loopback/LAN OpenAI endpoint
-        # may intentionally run without authentication.
         from urllib.parse import urlparse
+
         host = (urlparse(remote_url).hostname or "").lower()
         localish = _local_or_private_host(host)
         if not key and not (selected == "custom_openai" and localish):
@@ -283,7 +282,6 @@ class ComputeSettingsDialog(QDialog):
             )
             return
 
-        # Clear generic overrides so the provider-specific state is authoritative.
         os.environ.pop("PHOENIX_KNOWLEDGE_REMOTE_API_KEY", None)
         os.environ.pop("PHOENIX_KNOWLEDGE_REMOTE_URL", None)
         os.environ.pop("PHOENIX_KNOWLEDGE_REMOTE_MODEL_FAST", None)
@@ -302,6 +300,14 @@ class ComputeSettingsDialog(QDialog):
 
 
 def install(gui_module) -> None:
+    """Install only compute controls.
+
+    Release GUI hardening is deliberately *not* installed here. The canonical
+    gui_bootstrap installs all compatibility layers first and release guards
+    last. Keeping finalizers out of this component prevents later GUI modules
+    from silently overwriting the guarded methods.
+    """
+
     global _INSTALLED
     if _INSTALLED:
         return
@@ -356,15 +362,3 @@ def install(gui_module) -> None:
     cls._update_compute_label = _update_compute_label
     cls._open_compute_settings = _open_compute_settings
     cls.__init__ = _init
-
-    try:
-        from .release_gui_hardening import install as install_release_gui_hardening
-        install_release_gui_hardening(gui_module)
-    except Exception:
-        pass
-
-    try:
-        from .release_gui_truth import install as install_release_gui_truth
-        install_release_gui_truth(gui_module)
-    except Exception:
-        pass

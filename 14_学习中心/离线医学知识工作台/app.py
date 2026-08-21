@@ -247,35 +247,21 @@ def main() -> int:
             return 23
 
     from phoenix_knowledge import gui as gui_module
-    try:
-        from phoenix_knowledge.gui_enhancements import install as install_gui_enhancements
+    from phoenix_knowledge.gui_bootstrap import install_gui_stack
 
-        install_gui_enhancements(gui_module)
-    except Exception as exc:
-        print(f"GUI_ENHANCEMENT_WARNING={type(exc).__name__}: {exc}", flush=True)
     try:
-        from phoenix_knowledge.compute_gui import install as install_compute_gui
-
-        install_compute_gui(gui_module)
-    except Exception as exc:
-        print(f"COMPUTE_GUI_WARNING={type(exc).__name__}: {exc}", flush=True)
-    try:
-        from phoenix_knowledge.document_gui import install as install_document_gui
-
-        install_document_gui(gui_module)
-    except Exception as exc:
-        print(f"DOCUMENT_GUI_WARNING={type(exc).__name__}: {exc}", flush=True)
-    try:
-        from phoenix_knowledge.translation_storage_gui import (
-            install as install_translation_storage_gui,
+        install_gui_stack(
+            gui_module,
+            strict=True,
+            reporter=lambda message: print(message, flush=True),
         )
-
-        install_translation_storage_gui(gui_module)
     except Exception as exc:
         print(
-            f"TRANSLATION_STORAGE_GUI_WARNING={type(exc).__name__}: {exc}",
+            f"GUI_BOOTSTRAP_FATAL={type(exc).__name__}: {exc}",
             flush=True,
         )
+        return 31
+
     return int(gui_module.run_gui())
 
 
