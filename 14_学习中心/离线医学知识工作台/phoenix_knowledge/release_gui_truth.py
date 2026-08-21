@@ -6,6 +6,17 @@ import time
 _INSTALLED = False
 
 
+def _deep_profile(profile: str) -> bool:
+    return profile in {
+        "deep",
+        "4b",
+        "deep4b",
+        "quality",
+        "max",
+        "smart2",
+    }
+
+
 def install(gui_module) -> None:
     """Keep visible status/result labels aligned with actual execution."""
 
@@ -16,12 +27,29 @@ def install(gui_module) -> None:
 
     cls = gui_module.WorkbenchWindow
     ask_worker_cls = gui_module.AskWorker
-    original_status_text = cls._status_text
+    original_refresh_translation_models = cls.refresh_translation_models
 
     def _status_text(self) -> str:
-        text = original_status_text(self)
         try:
             status = self.workbench.status()
+            semantic = str(
+                status.get("semantic_label") or "语义状态未知"
+            )
+            smart1 = (
+                "READY"
+                if status.get("generator_fast_ready")
+                else "未就绪"
+            )
+            smart2 = (
+                "READY"
+                if status.get("generator_deep_ready")
+                else "未就绪"
+            )
+            text = (
+                f"资料 {status['documents']} 本 | "
+                f"知识块 {status['chunks']} | {semantic} | "
+                f"智能1={smart1} | 智能2={smart2}"
+            )
             unresolved = int(
                 status.get("document_paths_unresolved", 0) or 0
             )
@@ -32,9 +60,43 @@ def install(gui_module) -> None:
                 text += f" | ⚠资料路径待恢复={unresolved}"
             elif rebased:
                 text += f" | SSD路径已自动重定位={rebased}"
+            return text
         except Exception:
-            pass
-        return text
+            return "Phoenix 状态读取失败"
+
+    def refresh_translation_models(self):
+        try:
+            status = self.workbench.status()
+            smart1 = (
+                "可用"
+                if status.get("generator_fast_ready")
+                else "未就绪"
+            )
+            smart2 = (
+                "可用"
+                if status.get("generator_deep_ready")
+                else "未就绪"
+            )
+            names = list(
+                self.workbench.translator.engine.available_backends()
+            )
+            fallback_names = [
+                name
+                for name in names
+                if "qwen" not in name.lower()
+            ]
+            fallback = "可用" if fallback_names else "未就绪"
+            suffix = (
+                " | 商业版已禁用非商业模型"
+                if status.get("commercial_release")
+                else ""
+            )
+            self.translation_models_label.setText(
+                f"翻译能力：智能1={smart1} | "
+                f"智能2={smart2} | 自动兜底={fallback}{suffix}"
+            )
+        except Exception:
+            return original_refresh_translation_models(self)
 
     def run(self):
         try:
@@ -62,38 +124,33 @@ def install(gui_module) -> None:
                 "PHOENIX_KNOWLEDGE_LLM_PROFILE",
                 "fast",
             ).strip().lower()
+            requested = "智能2" if _deep_profile(profile) else "智能1"
+            active_model = ""
+            try:
+                active_model = str(
+                    self.workbench.llm.active_model_name(profile)
+                )
+            except Exception:
+                active_model = ""
 
             if full.mode == "grounded_generation":
-                requested = (
-                    "智能2"
-                    if profile
-                    in {
-                        "deep",
-                        "4b",
-                        "deep4b",
-                        "quality",
-                        "max",
-                        "smart2",
-                    }
-                    else "智能1"
-                )
                 label = requested
+                if active_model:
+                    if (
+                        requested == "智能2"
+                        and active_model == "Qwen3.5-2B"
+                    ):
+                        label = "智能2请求→Qwen3.5-2B降级执行"
+                    elif (
+                        requested == "智能1"
+                        and active_model == "Qwen3.5-4B"
+                    ):
+                        label = "智能1请求→Qwen3.5-4B替代执行"
+                    else:
+                        label = f"{requested} · {active_model}"
             elif full.mode == "grounding_blocked":
                 label = "智能结果已被引用安全门拦截，已回退资料证据"
             elif deep_enabled:
-                requested = (
-                    "智能2"
-                    if profile
-                    in {
-                        "deep",
-                        "4b",
-                        "deep4b",
-                        "quality",
-                        "max",
-                        "smart2",
-                    }
-                    else "智能1"
-                )
                 label = f"{requested}未实际生成，已回退资料证据"
             else:
                 label = "快速证据"
@@ -106,4 +163,5 @@ def install(gui_module) -> None:
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
     cls._status_text = _status_text
+    cls.refresh_translation_models = refresh_translation_models
     ask_worker_cls.run = run

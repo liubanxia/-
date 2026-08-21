@@ -34,6 +34,22 @@ def local_seq2seq_runtime_ready() -> bool:
     return _modules_ready(_SEQ2SEQ_MODULES)
 
 
+def _native_generator_ready(llm, profile: str) -> bool:
+    backend = llm.backend(profile)
+    if backend in {"remote_server", "local_server"}:
+        return llm.available(profile)
+    if backend != "transformers_local":
+        return False
+    if not local_generation_runtime_ready():
+        return False
+    path = (
+        llm.deep_model_path
+        if profile == "deep"
+        else llm.fast_model_path
+    )
+    return model_dir_ready(path)
+
+
 def _embedding_count(engine) -> int:
     try:
         with engine.db._lock:
@@ -52,11 +68,7 @@ def _embedding_readiness(engine) -> dict:
     missing = max(0, chunks - vectors)
     model_ready = model_dir_ready(engine.model_path)
     runtime_ready = _module_importable("sentence_transformers")
-    ready = bool(
-        model_ready
-        and runtime_ready
-        and missing == 0
-    )
+    ready = bool(model_ready and runtime_ready and missing == 0)
     if not model_ready:
         state = "model_missing"
         label = "语义模型未下载或文件不完整"
@@ -175,8 +187,20 @@ def install() -> None:
                 "translation_seq2seq_runtime_available": (
                     local_seq2seq_runtime_ready()
                 ),
-                "generator_fast_ready": self.llm.available("fast"),
-                "generator_deep_ready": self.llm.available("deep"),
+                "generator_fast_ready": _native_generator_ready(
+                    self.llm,
+                    "fast",
+                ),
+                "generator_deep_ready": _native_generator_ready(
+                    self.llm,
+                    "deep",
+                ),
+                "generator_fast_active_model": (
+                    self.llm.active_model_name("fast")
+                ),
+                "generator_deep_active_model": (
+                    self.llm.active_model_name("deep")
+                ),
             }
         )
         return payload
