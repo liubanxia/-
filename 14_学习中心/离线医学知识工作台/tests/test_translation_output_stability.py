@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -124,6 +125,58 @@ class TranslationOutputStabilityTests(unittest.TestCase):
                     signature=signature,
                     current_structure_sha256="b" * 64,
                 )
+
+    def test_newer_page_than_audit_is_invalidated_as_interrupted_checkpoint(self):
+        from phoenix_knowledge.translation_stability_core import (
+            _invalidate_unstable_resume_pages,
+        )
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.pdf"
+            pages_root = root / "pages"
+            audit_root = root / "audit"
+            pages_root.mkdir()
+            audit_root.mkdir()
+            self._make_source(source, pages=1)
+
+            audit_file = audit_root / "000001.json"
+            audit_file.write_text(
+                json.dumps(
+                    {
+                        "warning_count": 0,
+                        "parts": [{"backend": "storage_test"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            page_file = pages_root / "000001.txt"
+            page_file.write_text("半截但仍是合法UTF-8的译文", encoding="utf-8")
+            os.utime(audit_file, ns=(1_000_000_000, 1_000_000_000))
+            os.utime(page_file, ns=(2_000_000_000, 2_000_000_000))
+
+            class _Translator:
+                def _book_paths(self, *_args, **_kwargs):
+                    return (
+                        root,
+                        pages_root,
+                        audit_root,
+                        root / "checkpoint.json",
+                        root / "完整译文.txt",
+                    )
+
+                @staticmethod
+                def _read_json(path):
+                    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+            removed = _invalidate_unstable_resume_pages(
+                _Translator(),
+                source,
+                "中文",
+                retry_warning_pages=False,
+            )
+            self.assertEqual(removed, 1)
+            self.assertFalse(page_file.exists())
 
     def test_low_disk_space_fails_before_staging_or_overwriting_output(self):
         with tempfile.TemporaryDirectory() as temp:

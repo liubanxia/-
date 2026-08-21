@@ -330,9 +330,25 @@ def _invalidate_unstable_resume_pages(
                 for part in parts
             )
             has_warning = int(payload.get("warning_count", 0) or 0) > 0
-            if not hard_failure and not (retry_warning_pages and has_warning):
-                continue
             page_file = pages_root / f"{int(audit_file.stem):06d}.txt"
+            interrupted_page_write = False
+            if page_file.is_file():
+                try:
+                    # The core writes page text first and the audit JSON second.
+                    # If the text file is newer, the process likely stopped
+                    # between those writes, so never trust that page on resume.
+                    interrupted_page_write = (
+                        int(page_file.stat().st_mtime_ns)
+                        > int(audit_file.stat().st_mtime_ns)
+                    )
+                except OSError:
+                    interrupted_page_write = True
+            if (
+                not hard_failure
+                and not (retry_warning_pages and has_warning)
+                and not interrupted_page_write
+            ):
+                continue
             if page_file.is_file():
                 page_file.unlink(missing_ok=True)
                 removed += 1

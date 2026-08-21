@@ -1,0 +1,64 @@
+name: Translation Release Gate
+
+on:
+  push:
+    branches:
+      - refactor/minimal-phoenix
+      - 'fix/**'
+    paths:
+      - '14_学习中心/离线医学知识工作台/phoenix_knowledge/translation_*.py'
+      - '14_学习中心/离线医学知识工作台/tests/test_translation_*.py'
+      - '.github/workflows/translation-release-gate.yml'
+  pull_request:
+    paths:
+      - '14_学习中心/离线医学知识工作台/phoenix_knowledge/translation_*.py'
+      - '14_学习中心/离线医学知识工作台/tests/test_translation_*.py'
+      - '.github/workflows/translation-release-gate.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: translation-release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  translation-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: '1'
+      QT_QPA_PLATFORM: offscreen
+    defaults:
+      run:
+        working-directory: '14_学习中心/离线医学知识工作台'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install translation test runtime
+        run: >-
+          python -m pip install --disable-pip-version-check --prefer-binary
+          PyMuPDF pypdf python-docx Pillow cryptography numpy PySide6
+
+      - name: Compile translation stability core
+        run: >-
+          python -m py_compile
+          phoenix_knowledge/translation_pdf.py
+          phoenix_knowledge/translation_output_validation.py
+          phoenix_knowledge/translation_stability_core.py
+
+      - name: Run translation release regression suite
+        run: >-
+          python -m unittest -v
+          tests.test_translation_output_stability
+          tests.test_translation_storage_budget
+          tests.test_compact_translation_layout
+          tests.test_translation_storage_gui
