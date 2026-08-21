@@ -4,6 +4,8 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QLabel
 
+from .translation_layout_compact import LAYOUT_SOURCE_TRANSLATED
+from .translation_pdf import LAYOUT_ORIGINAL_BILINGUAL
 from .translator import EXPORT_PDF, EXPORT_PDF_RICH
 
 _INSTALLED = False
@@ -31,6 +33,28 @@ def install(gui_module) -> None:
     def _translation_tab(self):
         widget = original_translation_tab(self)
 
+        if hasattr(self, "translation_layout_combo"):
+            combo = self.translation_layout_combo
+            if combo.findData(LAYOUT_SOURCE_TRANSLATED) < 0:
+                combo.insertItem(
+                    0,
+                    "原版图文中文译本（推荐，体积接近原PDF）",
+                    LAYOUT_SOURCE_TRANSLATED,
+                )
+            legacy_index = combo.findData(LAYOUT_ORIGINAL_BILINGUAL)
+            if legacy_index >= 0:
+                combo.setItemText(
+                    legacy_index,
+                    "上下双语版：原PDF页 + 中文译文（页面更长）",
+                )
+            compact_index = combo.findData(LAYOUT_SOURCE_TRANSLATED)
+            if compact_index >= 0:
+                combo.setCurrentIndex(compact_index)
+            combo.setToolTip(
+                "推荐模式直接复用原PDF图片、矢量图和页面尺寸，只替换可识别文字层；"
+                "扫描页或极复杂页面才使用紧凑页尾译文区。"
+            )
+
         if hasattr(self, "translation_export_combo"):
             combo = self.translation_export_combo
             for index in range(combo.count()):
@@ -53,14 +77,16 @@ def install(gui_module) -> None:
                 "生成分册会额外占用接近一整本PDF的磁盘空间。"
             )
 
-        # Replace the old product hint that advertised duplicate split PDFs as
-        # the recommended output.
         for label in widget.findChildren(QLabel):
             text = label.text()
-            if "同时生成一份完整PDF和按页数拆开的多册PDF" in text:
+            if (
+                "同时生成一份完整PDF和按页数拆开的多册PDF" in text
+                or "复用原PDF页面对象并追加中文文字层" in text
+            ):
                 label.setText(
-                    "默认只生成一个紧凑完整PDF：复用原PDF页面对象并追加中文文字层，"
-                    "不重新渲染原图。分册默认关闭；只有手动设置分册页数时才额外生成。"
+                    "推荐“原版图文中文译本”：直接保留原PDF图片、矢量图、表格和页面尺寸，"
+                    "删除原文字层后在相同文字区域写入中文；不复制整页、不重新渲染原图。"
+                    "默认不生成分册，所以成品通常只比原PDF增加很少的文字/字体数据。"
                 )
                 label.setWordWrap(True)
 
@@ -74,7 +100,11 @@ def install(gui_module) -> None:
         try:
             source = Path(result.source_path)
             outputs = tuple(getattr(result, "output_paths", ()) or ())
-            pdfs = [Path(path) for path in outputs if Path(path).suffix.lower() == ".pdf"]
+            pdfs = [
+                Path(path)
+                for path in outputs
+                if Path(path).suffix.lower() == ".pdf"
+            ]
             if not pdfs or not source.is_file():
                 return
 
@@ -98,6 +128,12 @@ def install(gui_module) -> None:
                 f"- 完整译本：{_human_size(complete_size)}"
                 + (f"（{ratio:.2f}×）" if source_size else ""),
             ]
+            if source_size and ratio <= 1.18:
+                lines.append("- 体积目标：PASS（≤1.18×）")
+            elif source_size and complete_size <= source_size + int(2.5 * 1024 * 1024):
+                lines.append("- 体积目标：PASS（仅增加少量字体/文字数据）")
+            elif source_size:
+                lines.append("- 体积目标：需复核特殊页面/字体；已保留无损成品")
             if extra_parts:
                 lines.append(
                     f"- 分册额外占用：{_human_size(extra_parts)}"
