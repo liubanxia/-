@@ -109,6 +109,45 @@ def _promote_auxiliary_reports(staged_root: Path, real_root: Path, real_complete
         os.replace(staged, target)
 
 
+def _required_staging_bytes(
+    *,
+    source_size: int,
+    layout: str,
+    part_pages: int,
+) -> int:
+    # Transactional publishing intentionally keeps the last known-good output
+    # until the new file passes validation, so reserve the expected new output
+    # plus a safety margin. Explicit split volumes roughly duplicate that peak.
+    bilingual = str(layout) in {"original_bilingual", "text_bilingual"}
+    ratio = 1.70 if bilingual else 1.45
+    required = int(max(0, int(source_size)) * ratio) + 32 * 1024 * 1024
+    if int(part_pages or 0) > 0:
+        required += int(max(0, int(source_size)) * ratio)
+    return max(32 * 1024 * 1024, required)
+
+
+def _assert_staging_space(
+    root: Path,
+    *,
+    source_size: int,
+    layout: str,
+    part_pages: int,
+) -> None:
+    required = _required_staging_bytes(
+        source_size=source_size,
+        layout=layout,
+        part_pages=part_pages,
+    )
+    free = int(shutil.disk_usage(Path(root)).free)
+    if free < required:
+        raise TranslationOutputError(
+            "PDF发布前磁盘空间预检失败："
+            f"当前可用 {free / (1024 ** 3):.2f}GB，"
+            f"本次安全构建至少需要约 {required / (1024 ** 3):.2f}GB。"
+            "Phoenix未开始生成临时PDF，上一份稳定成品保持不变。"
+        )
+
+
 def _stable_pdf_build(
     self,
     *,
@@ -131,6 +170,12 @@ def _stable_pdf_build(
     selected_total = total_pages - start_page + 1
     real_root = Path(self.output_root)
     real_root.mkdir(parents=True, exist_ok=True)
+    _assert_staging_space(
+        real_root,
+        source_size=int(Path(self.source_pdf).stat().st_size),
+        layout=str(layout),
+        part_pages=part_pages,
+    )
     stage_root = real_root.parent / f".pxpdf-{uuid.uuid4().hex[:10]}"
     _remove_tree(stage_root)
     stage_root.mkdir(parents=True, exist_ok=True)
@@ -422,6 +467,9 @@ def _stable_translate_book(self, pdf_path: Path, **kwargs):
         )
 
     if no_split:
+        # Core translator historically clamps this value to >=1. The final
+        # deliverable hook below converts it back to zero without adding a
+        # second translate_book wrapper.
         kwargs["part_pages"] = 1
         kwargs["progress"] = _rewrite_progress_for_no_split(original_progress)
 

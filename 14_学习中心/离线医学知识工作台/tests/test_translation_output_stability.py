@@ -125,6 +125,34 @@ class TranslationOutputStabilityTests(unittest.TestCase):
                     current_structure_sha256="b" * 64,
                 )
 
+    def test_low_disk_space_fails_before_staging_or_overwriting_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.pdf"
+            pages_root = root / "pages"
+            output_root = root / "output"
+            self._make_source(source, pages=2)
+            self._write_pages(pages_root, pages=2)
+            builder = TranslationPDFBuilder(source, pages_root, output_root)
+
+            class _Usage:
+                free = 1
+
+            with patch(
+                "phoenix_knowledge.translation_stability_core.shutil.disk_usage",
+                return_value=_Usage(),
+            ):
+                with self.assertRaises(TranslationOutputError):
+                    builder.build(
+                        start_page=1,
+                        total_pages=2,
+                        layout=LAYOUT_SOURCE_TRANSLATED,
+                        part_pages=0,
+                    )
+
+            self.assertEqual(list(output_root.parent.glob(".pxpdf-*")), [])
+            self.assertFalse(any(output_root.glob("*.pdf")))
+
     def test_failed_stage_is_cleaned_without_publishing_partial_output(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
