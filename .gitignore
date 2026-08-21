@@ -78,3 +78,9 @@ desktop.ini
 01_开发源码/ai_models/model_manager_stage2_backup.py
 07_测试/AI小人按钮_UI接入候选.txt
 07_测试/DICOM/
+
+# Phoenix local caches / temporary files
+_cache/
+workbench_start_debug.txt
+workbench_start_error.txt
+*.bak_20260820
