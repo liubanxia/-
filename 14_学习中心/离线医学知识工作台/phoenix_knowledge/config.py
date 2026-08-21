@@ -95,7 +95,10 @@ def _rebase_modelscope_pointer(model_root: Path, stale: Path) -> Path | None:
             continue
 
     # Only search the Phoenix-owned cache, and only when the old absolute
-    # pointer is already broken. This keeps normal startup cheap.
+    # pointer is already broken. This keeps normal startup cheap. Recovery of a
+    # stale path is stricter than following a live pointer: a searched candidate
+    # must be a genuinely ready model so Phoenix never silently rebinds to an
+    # unrelated or partial directory with the same name.
     if cache_root.is_dir() and stale.name:
         try:
             for candidate in cache_root.rglob(stale.name):
@@ -109,10 +112,11 @@ def _rebase_modelscope_pointer(model_root: Path, stale: Path) -> Path | None:
 def resolve_model_dir(model_root: Path, folder: str) -> Path:
     """Resolve a direct model folder or portable ModelScope cache pointer.
 
-    Older Phoenix/ModelScope combinations stored an absolute snapshot path in
-    ``MODELSCOPE_CACHE_PATH.txt``. The same physical SSD can be D: on a
-    development PC and G: at the hospital, so a stale drive letter is rebased
-    onto the current Phoenix-owned cache before the model is declared missing.
+    Pointer resolution and readiness are deliberately separate concerns. If a
+    live pointer names an existing directory, return that directory even when a
+    download is incomplete; ``model_dir_ready`` will then report NOT READY with
+    the correct physical location. Only stale-pointer *search recovery* requires
+    a fully ready candidate before rebinding the pointer.
     """
 
     model_root = Path(model_root)
@@ -124,7 +128,7 @@ def resolve_model_dir(model_root: Path, folder: str) -> Path:
             raw = pointer.read_text(encoding="utf-8").strip()
             if raw:
                 stale = Path(raw).expanduser()
-                if stale.is_dir() and model_dir_ready(stale):
+                if stale.is_dir():
                     return stale.resolve()
                 recovered = _rebase_modelscope_pointer(model_root, stale)
                 if recovered is not None:

@@ -56,8 +56,14 @@ class TranslationStorageGuiTests(unittest.TestCase):
             install_gui_enhancements(gui_module)
             install_storage_gui(gui_module)
             workbench = MedicalKnowledgeWorkbench(_paths(Path(temp)))
-            window = gui_module.WorkbenchWindow(workbench)
+            with patch.object(
+                gui_module,
+                "MedicalKnowledgeWorkbench",
+                return_value=workbench,
+            ):
+                window = gui_module.WorkbenchWindow()
             try:
+                self.assertIs(window.workbench, workbench)
                 self.assertTrue(hasattr(window, "translation_part_pages"))
                 self.assertEqual(window.translation_part_pages.minimum(), 0)
                 self.assertEqual(window.translation_part_pages.value(), 0)

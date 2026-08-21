@@ -13,6 +13,7 @@ from unittest.mock import patch
 from phoenix_knowledge.config import WorkbenchPaths
 from phoenix_knowledge.db import KnowledgeDB
 from phoenix_knowledge.llm_safe import LocalLLM
+from phoenix_knowledge.output_contracts import OutputContractError
 from phoenix_knowledge.pdf_assets import PDFAssetStore
 from phoenix_knowledge.pdf_parser import iter_pdf_pages
 from phoenix_knowledge.product_document_ingest import ProductDocumentIngestor
@@ -36,25 +37,19 @@ def _paths(root: Path) -> WorkbenchPaths:
 def _png_bytes() -> bytes:
     def chunk(kind: bytes, data: bytes) -> bytes:
         return (
-            struct.pack(">I", len(data))
-            + kind
-            + data
+            struct.pack(">I", len(data)) + kind + data
             + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
         )
-
     header = struct.pack(">IIBBBBB", 4, 4, 8, 2, 0, 0, 0)
     raw = b"".join([b"\x00" + b"\xff\x00\x00" * 4 for _ in range(4)])
     return (
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", header)
-        + chunk(b"IDAT", zlib.compress(raw))
-        + chunk(b"IEND", b"")
+        b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
     )
 
 
 def _scan_pdf(path: Path) -> None:
     import fitz
-
     doc = fitz.open()
     page = doc.new_page(width=300, height=300)
     page.insert_image(fitz.Rect(20, 20, 280, 280), stream=_png_bytes())
@@ -64,7 +59,6 @@ def _scan_pdf(path: Path) -> None:
 
 def _text_pdf(path: Path, text: str) -> None:
     import fitz
-
     doc = fitz.open()
     page = doc.new_page()
     page.insert_text((72, 72), text)
@@ -75,7 +69,6 @@ def _text_pdf(path: Path, text: str) -> None:
 class ProductIntegrityRegressionTests(unittest.TestCase):
     def test_translation_validator_rejects_changed_sign_and_unit(self):
         validator = TranslationValidator()
-
         sign = validator.validate(
             "CT attenuation measured -20 HU in the lesion.",
             "病灶CT衰减值为20 HU。",
@@ -84,7 +77,6 @@ class ProductIntegrityRegressionTests(unittest.TestCase):
             "The pulmonary nodule measured 12 mm.",
             "肺结节大小为12 cm。",
         )
-
         self.assertFalse(sign.ok)
         self.assertFalse(unit.ok)
         self.assertTrue(any("正负号" in reason for reason in sign.reasons))
@@ -101,12 +93,8 @@ class ProductIntegrityRegressionTests(unittest.TestCase):
             second = second_dir / "Oncology.pdf"
             _text_pdf(first, "first")
             _text_pdf(second, "second")
-
             store = PDFAssetStore(root / "runtime")
-            self.assertNotEqual(
-                store.document_root(first),
-                store.document_root(second),
-            )
+            self.assertNotEqual(store.document_root(first), store.document_root(second))
 
     def test_pdf_asset_manifest_invalidates_when_source_changes(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -114,14 +102,11 @@ class ProductIntegrityRegressionTests(unittest.TestCase):
             pdf = root / "Oncology.pdf"
             _text_pdf(pdf, "version one")
             store = PDFAssetStore(root / "runtime")
-
             first = store.extract(pdf)
             old_sha = first["source_sha256"]
-
             pdf.unlink()
             _text_pdf(pdf, "version two changed")
             second = store.extract(pdf)
-
             self.assertNotEqual(old_sha, second["source_sha256"])
             self.assertEqual(second["source_path"], str(pdf.resolve()))
 
@@ -139,7 +124,6 @@ class ProductIntegrityRegressionTests(unittest.TestCase):
 
     def test_parenthesized_image_path_and_chinese_pdf_caption_survive_export(self):
         import fitz
-
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             assets = root / "topic_assets"
@@ -147,21 +131,17 @@ class ProductIntegrityRegressionTests(unittest.TestCase):
             (assets / "Lung (CT).png").write_bytes(_png_bytes())
             source = root / "topic.md"
             source.write_text(
-                "# 肺结节\n\n"
-                "![肺结节 第12页](topic_assets/Lung (CT).png)\n",
+                "# 肺结节\n\n![肺结节 第12页](topic_assets/Lung (CT).png)\n",
                 encoding="utf-8",
             )
-
             bundle = MultiFormatExporter(root / "out").export_path(
                 source,
                 title="测试专题",
             )
-
             with zipfile.ZipFile(bundle.docx) as zf:
                 self.assertTrue(
                     any(name.startswith("word/media/") for name in zf.namelist())
                 )
-
             pdf = fitz.open(bundle.pdf)
             try:
                 self.assertTrue(any(page.get_images(full=True) for page in pdf))
@@ -180,49 +160,45 @@ class ProductIntegrityRegressionTests(unittest.TestCase):
                 external = root / "external"
                 external.mkdir()
                 source = external / "book.txt"
-
                 source.write_text("version one", encoding="utf-8")
                 first = ingestor._library_copy(source)
                 self.assertEqual(first.name, "book.txt")
-
                 source.write_text("version two", encoding="utf-8")
                 second = ingestor._library_copy(source)
                 self.assertEqual(second.name, "book_2.txt")
-
                 third = ingestor._library_copy(source)
                 self.assertEqual(third, second)
                 self.assertFalse((paths.source_root / "book_3.txt").exists())
             finally:
                 db.close()
 
-    def test_export_failure_is_recorded_instead_of_silent(self):
+    def test_export_failure_blocks_completion_instead_of_silent_success(self):
         with tempfile.TemporaryDirectory() as temp:
-            source = Path(temp) / "organized.md"
-            source.write_text("# result\n", encoding="utf-8")
-
-            workbench = MedicalKnowledgeWorkbench.__new__(MedicalKnowledgeWorkbench)
-            workbench.organizer = SimpleNamespace(
-                organize=lambda title, instruction, **kwargs: (source, 41)
-            )
-
-            class _BrokenExporter:
-                def export_path(self, *args, **kwargs):
-                    raise RuntimeError("simulated export failure")
-
-            workbench.exporter = _BrokenExporter()
-            workbench.last_export_bundle = None
-            workbench.last_export_error = ""
-
-            output, task_id = MedicalKnowledgeWorkbench.organize(
-                workbench,
-                "topic",
-                "instruction",
-            )
-
-            self.assertEqual(Path(output), source)
-            self.assertEqual(task_id, 41)
-            self.assertIn("simulated export failure", workbench.last_export_error)
-            self.assertIsNone(workbench.last_export_bundle)
+            root = Path(temp)
+            workbench = MedicalKnowledgeWorkbench(_paths(root))
+            try:
+                source = root / "organized.md"
+                source.write_text("# result\n", encoding="utf-8")
+                task_id = workbench.db.create_task(
+                    "deep_organize",
+                    {"title": "topic", "instruction": "instruction", "chunk_ids": []},
+                    total=1,
+                )
+                workbench.organizer = SimpleNamespace(
+                    organize=lambda title, instruction, **kwargs: (source, task_id)
+                )
+                with patch(
+                    "phoenix_knowledge.workbench_stability_core.transactional_export_path",
+                    side_effect=RuntimeError("simulated export failure"),
+                ):
+                    with self.assertRaises(OutputContractError):
+                        workbench.organize("topic", "instruction")
+                self.assertIn("simulated export failure", workbench.last_export_error)
+                self.assertIsNone(workbench.last_export_bundle)
+                task = workbench.db.get_task(task_id)
+                self.assertEqual(str(task["status"]), "failed")
+            finally:
+                workbench.close()
 
     def test_http_waits_are_bounded_and_configurable(self):
         with patch.dict(
@@ -233,8 +209,14 @@ class ProductIntegrityRegressionTests(unittest.TestCase):
             },
             clear=False,
         ):
-            self.assertEqual(LocalLLM._timeout("PHOENIX_KNOWLEDGE_LOCAL_TIMEOUT", 180), 600)
-            self.assertEqual(LocalLLM._timeout("PHOENIX_KNOWLEDGE_REMOTE_TIMEOUT", 180), 30)
+            self.assertEqual(
+                LocalLLM._timeout("PHOENIX_KNOWLEDGE_LOCAL_TIMEOUT", 180),
+                600,
+            )
+            self.assertEqual(
+                LocalLLM._timeout("PHOENIX_KNOWLEDGE_REMOTE_TIMEOUT", 180),
+                30,
+            )
 
 
 if __name__ == "__main__":

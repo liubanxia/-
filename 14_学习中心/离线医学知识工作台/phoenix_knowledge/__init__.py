@@ -3,10 +3,15 @@ from .translation_stability_core import (
     capture_core as _capture_translation_core,
     install_final as _install_translation_stability_core,
 )
+from .workbench_stability_core import (
+    capture_core as _capture_workbench_core,
+    install_final as _install_workbench_stability_core,
+)
 
-# Capture the unwrapped core before any legacy hardening installer can wrap the
-# translation entry points. The final stability install below replaces the
-# historical wrapper chain with one deterministic runtime contract.
+# Capture the unwrapped public cores before historical compatibility installers
+# can wrap them. Final installers below deliberately replace those wrapper
+# chains with one deterministic release contract.
+_capture_workbench_core()
 _capture_translation_core()
 
 from .translation_recovery import install as _install_translation_recovery
@@ -38,6 +43,11 @@ _install_translation_layout_compact()
 _install_provider_hub()
 _install_provider_hub_compat()
 _install_provider_hub_v2()
+
+# Translation owns its lower-level PDF contract first. Workbench installs last
+# so every user-facing public operation sees the final translation/runtime
+# topology rather than a partially patched class.
 _install_translation_stability_core()
+_install_workbench_stability_core()
 
 __all__ = ["MedicalKnowledgeWorkbench"]

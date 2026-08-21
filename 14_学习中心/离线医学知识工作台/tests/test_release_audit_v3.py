@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from phoenix_knowledge.release_gui_truth import install as install_gui_truth
@@ -42,7 +41,15 @@ class _AskWorker:
         self.failed = _Emitter()
 
 
+class _WorkbenchWindow:
+    """Minimal fixture matching release_gui_truth.install's GUI contract."""
+
+    def refresh_translation_models(self):
+        return None
+
+
 class _Module:
+    WorkbenchWindow = _WorkbenchWindow
     AskWorker = _AskWorker
 
 

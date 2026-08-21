@@ -24,6 +24,15 @@ def _paths(root: Path) -> WorkbenchPaths:
     ).ensure()
 
 
+def _ready_model(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "config.json").write_text("{}", encoding="utf-8")
+    # READY intentionally requires a non-empty real-weight-shaped file. Tests
+    # must model the current product contract instead of reviving the old
+    # folder-only readiness rule.
+    (path / "model.safetensors").write_bytes(b"test-weight")
+
+
 class _VectorDB:
     def __init__(self):
         self.calls = 0
@@ -53,10 +62,8 @@ class ResponsivenessTests(unittest.TestCase):
             paths = _paths(Path(temp))
             fast = paths.model_root / "Qwen3.5-2B"
             deep = paths.model_root / "Qwen3.5-4B"
-            fast.mkdir(parents=True)
-            deep.mkdir(parents=True)
-            (fast / "config.json").write_text("{}", encoding="utf-8")
-            (deep / "config.json").write_text("{}", encoding="utf-8")
+            _ready_model(fast)
+            _ready_model(deep)
 
             llm = LocalLLM(paths)
             self.assertEqual(llm.selected_model("fast")[0], "Qwen3.5-2B")
@@ -66,8 +73,7 @@ class ResponsivenessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             paths = _paths(Path(temp))
             deep = paths.model_root / "Qwen3.5-4B"
-            deep.mkdir(parents=True)
-            (deep / "config.json").write_text("{}", encoding="utf-8")
+            _ready_model(deep)
 
             llm = LocalLLM(paths)
             self.assertEqual(llm.selected_model("fast")[0], "Qwen3.5-4B")

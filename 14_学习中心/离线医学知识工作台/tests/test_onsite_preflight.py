@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
 
@@ -10,6 +11,7 @@ MODULE_PATH = ROOT / "onsite_preflight.py"
 SPEC = importlib.util.spec_from_file_location("phoenix_onsite_preflight", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
+sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
 
@@ -21,7 +23,7 @@ class OnsitePreflightTests(unittest.TestCase):
         ]
         state, causes = MODULE._classify(checks, {})
         self.assertEqual(state, "BLOCKED")
-        self.assertTrue(any("基础运行环境" in item for item in causes))
+        self.assertTrue(any("核心运行" in item or "共同根因" in item for item in causes))
 
     def test_missing_models_is_degraded_not_false_ready(self):
         checks = [
@@ -31,6 +33,9 @@ class OnsitePreflightTests(unittest.TestCase):
             MODULE.Check("SSD空间", "PASS", "ok"),
             MODULE.Check("数据库", "PASS", "ok"),
             MODULE.Check("PDF输出引擎", "PASS", "ok"),
+            MODULE.Check("多格式输出契约", "PASS", "ok"),
+            MODULE.Check("公共功能实跑", "PASS", "ok"),
+            MODULE.Check("工作台能力", "PASS", "ok"),
             MODULE.Check("GUI框架", "PASS", "ok"),
         ]
         capabilities = {
@@ -38,6 +43,7 @@ class OnsitePreflightTests(unittest.TestCase):
             "smart1": False,
             "smart2": False,
             "semantic_ready": False,
+            "architecture_ready": True,
         }
         state, causes = MODULE._classify(checks, capabilities)
         self.assertEqual(state, "DEGRADED")
@@ -51,6 +57,8 @@ class OnsitePreflightTests(unittest.TestCase):
             MODULE.Check("SSD空间", "PASS", "ok"),
             MODULE.Check("数据库", "PASS", "ok"),
             MODULE.Check("PDF输出引擎", "PASS", "ok"),
+            MODULE.Check("多格式输出契约", "PASS", "ok"),
+            MODULE.Check("公共功能实跑", "PASS", "ok"),
             MODULE.Check("GUI框架", "PASS", "ok"),
             MODULE.Check("工作台能力", "PASS", "ok"),
         ]
@@ -59,10 +67,28 @@ class OnsitePreflightTests(unittest.TestCase):
             "smart1": True,
             "smart2": False,
             "semantic_ready": True,
+            "architecture_ready": True,
         }
         state, causes = MODULE._classify(checks, capabilities)
         self.assertEqual(state, "READY")
         self.assertEqual(causes, [])
+
+    def test_architecture_failure_is_hard_block(self):
+        checks = [
+            MODULE.Check("工作台能力", "FAIL", "architecture contract broken"),
+        ]
+        state, causes = MODULE._classify(
+            checks,
+            {
+                "translation_backends": ["local"],
+                "smart1": True,
+                "smart2": False,
+                "semantic_ready": True,
+                "architecture_ready": False,
+            },
+        )
+        self.assertEqual(state, "BLOCKED")
+        self.assertTrue(any("架构" in item or "共同根因" in item for item in causes))
 
 
 if __name__ == "__main__":

@@ -88,7 +88,11 @@ class TranslationStorageTruthTests(unittest.TestCase):
 
             self.assertEqual(result.part_pages, 0)
             self.assertFalse(any("PDF分册已完成" in item for item in messages))
-            self.assertTrue(any("紧凑PDF" in item for item in messages))
+            # No-split applies to more than one PDF layout, so the stable public
+            # wording is deliberately layout-neutral: one complete PDF is built
+            # and validated, rather than falsely promising every layout is the
+            # compact in-place layout.
+            self.assertTrue(any("完整PDF" in item for item in messages))
 
             checkpoint = next(
                 translator.output_root.rglob("checkpoint.json")

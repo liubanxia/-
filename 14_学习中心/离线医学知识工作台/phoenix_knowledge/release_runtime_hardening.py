@@ -142,14 +142,28 @@ def install() -> None:
     )
     original_active_backends = MultiModelTranslationEngine.active_backends
 
+    def _blocked_real_seq2seq_names(self) -> set[str]:
+        """Filter only Phoenix's real Seq2Seq implementations.
+
+        Tests, plugins and future adapters may deliberately replace ``marian``
+        or ``nllb`` with another backend that happens to reuse the same public
+        name. Runtime hardening must not identify a backend by name alone: that
+        would let this compatibility layer silently delete an explicitly
+        injected implementation from the cascade.
+        """
+
+        blocked: set[str] = set()
+        for backend in (self.marian, self.nllb):
+            if isinstance(backend, _Seq2SeqBackend):
+                blocked.add(str(getattr(backend, "name", "")))
+        return blocked
+
     def available_backends(self):
         names = list(original_available_backends(self))
         if local_seq2seq_runtime_ready():
             return names
-        local_seq2seq = {self.marian.name, self.nllb.name}
-        return [
-            name for name in names if name not in local_seq2seq
-        ]
+        blocked = _blocked_real_seq2seq_names(self)
+        return [name for name in names if name not in blocked]
 
     def active_backends(
         self,
@@ -165,11 +179,10 @@ def install() -> None:
         )
         if local_seq2seq_runtime_ready():
             return backends
-        local_seq2seq = {self.marian.name, self.nllb.name}
         return [
             backend
             for backend in backends
-            if getattr(backend, "name", "") not in local_seq2seq
+            if not isinstance(backend, _Seq2SeqBackend)
         ]
 
     MultiModelTranslationEngine.available_backends = available_backends
