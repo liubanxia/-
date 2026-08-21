@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from phoenix_knowledge.translation_output_validation import (
     TranslationOutputError,
@@ -123,6 +124,37 @@ class TranslationOutputStabilityTests(unittest.TestCase):
                     signature=signature,
                     current_structure_sha256="b" * 64,
                 )
+
+    def test_failed_stage_is_cleaned_without_publishing_partial_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.pdf"
+            pages_root = root / "pages"
+            output_root = root / "output"
+            self._make_source(source, pages=2)
+            self._write_pages(pages_root, pages=2)
+            builder = TranslationPDFBuilder(source, pages_root, output_root)
+
+            def explode(staged_builder, **kwargs):
+                staged_builder.output_root.mkdir(parents=True, exist_ok=True)
+                (staged_builder.output_root / "partial.bin").write_bytes(b"x" * 4096)
+                raise RuntimeError("synthetic build failure")
+
+            with patch(
+                "phoenix_knowledge.translation_layout_compact._build_source_translated",
+                side_effect=explode,
+            ):
+                with self.assertRaises(RuntimeError):
+                    builder.build(
+                        start_page=1,
+                        total_pages=2,
+                        layout=LAYOUT_SOURCE_TRANSLATED,
+                        part_pages=0,
+                    )
+
+            leftovers = list(output_root.parent.glob(".pxpdf-*"))
+            self.assertEqual(leftovers, [])
+            self.assertFalse(any(output_root.glob("*.pdf")))
 
     def test_failed_rebuild_does_not_overwrite_last_good_pdf(self):
         with tempfile.TemporaryDirectory() as temp:

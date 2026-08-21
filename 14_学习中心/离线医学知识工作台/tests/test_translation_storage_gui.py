@@ -9,6 +9,12 @@ from unittest.mock import patch
 from PySide6.QtWidgets import QApplication
 
 from phoenix_knowledge.config import WorkbenchPaths
+from phoenix_knowledge.translation_layout_compact import LAYOUT_SOURCE_TRANSLATED
+from phoenix_knowledge.translation_pdf import (
+    LAYOUT_ORIGINAL_BILINGUAL,
+    LAYOUT_TRANSLATED_ONLY,
+)
+from phoenix_knowledge.translation_storage_gui import _release_ratio_target
 from phoenix_knowledge.workbench import MedicalKnowledgeWorkbench
 
 
@@ -36,7 +42,7 @@ def _paths(root: Path) -> WorkbenchPaths:
 
 
 class TranslationStorageGuiTests(unittest.TestCase):
-    def test_gui_defaults_to_one_complete_pdf_without_split_volumes(self):
+    def test_gui_defaults_to_compact_one_pdf_without_split_volumes(self):
         _app()
         with tempfile.TemporaryDirectory() as temp, patch.dict(
             os.environ,
@@ -59,9 +65,18 @@ class TranslationStorageGuiTests(unittest.TestCase):
                     window.translation_part_pages.specialValueText(),
                     "不生成分册",
                 )
+                self.assertEqual(
+                    window.translation_layout_combo.currentData(),
+                    LAYOUT_SOURCE_TRANSLATED,
+                )
             finally:
                 window.close()
                 workbench.close()
+
+    def test_release_ratio_targets_match_product_contract(self):
+        self.assertEqual(_release_ratio_target(LAYOUT_SOURCE_TRANSLATED), 1.30)
+        self.assertEqual(_release_ratio_target(LAYOUT_TRANSLATED_ONLY), 1.30)
+        self.assertEqual(_release_ratio_target(LAYOUT_ORIGINAL_BILINGUAL), 1.50)
 
 
 if __name__ == "__main__":

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from PySide6.QtWidgets import QLabel
 
 from .translation_layout_compact import LAYOUT_SOURCE_TRANSLATED
-from .translation_pdf import LAYOUT_ORIGINAL_BILINGUAL
+from .translation_pdf import (
+    LAYOUT_ORIGINAL_BILINGUAL,
+    LAYOUT_TEXT_BILINGUAL,
+    LAYOUT_TRANSLATED_ONLY,
+)
 from .translator import EXPORT_PDF, EXPORT_PDF_RICH
 
 _INSTALLED = False
@@ -18,6 +23,36 @@ def _human_size(value: int) -> str:
             return f"{size:.1f}{unit}" if unit != "B" else f"{int(size)}B"
         size /= 1024.0
     return f"{size:.1f}GB"
+
+
+def _release_ratio_target(layout: str) -> float:
+    if str(layout) in {
+        LAYOUT_ORIGINAL_BILINGUAL,
+        LAYOUT_TEXT_BILINGUAL,
+    }:
+        return 1.50
+    return 1.30
+
+
+def _integrity_summary(complete: Path) -> str | None:
+    report_path = Path(complete).parent / "PDF完整性报告.json"
+    if not report_path.is_file():
+        return None
+    try:
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+    except Exception:
+        return "- 完整性验收：报告无法读取（成品不会因此被标记为PASS）"
+    if not bool(payload.get("passed", False)):
+        return "- 完整性验收：FAIL"
+    pdf = payload.get("pdf") or {}
+    min_coverage = pdf.get("translation_coverage_min")
+    text = "- 完整性验收：PASS（可打开、页数、文字层、原图资源）"
+    if min_coverage is not None:
+        try:
+            text += f"；最低译文覆盖率 {float(min_coverage):.0%}"
+        except Exception:
+            pass
+    return text
 
 
 def install(gui_module) -> None:
@@ -86,7 +121,7 @@ def install(gui_module) -> None:
                 label.setText(
                     "推荐“原版图文中文译本”：直接保留原PDF图片、矢量图、表格和页面尺寸，"
                     "删除原文字层后在相同文字区域写入中文；不复制整页、不重新渲染原图。"
-                    "默认不生成分册，所以成品通常只比原PDF增加很少的文字/字体数据。"
+                    "默认不生成分册。发布体积目标：中文译本通常≤1.30×；保留原页双语版≤1.50×。"
                 )
                 label.setWordWrap(True)
 
@@ -119,21 +154,36 @@ def install(gui_module) -> None:
                 for path in pdfs[1:]
                 if path.is_file()
             )
+            target_ratio = _release_ratio_target(
+                str(getattr(result, "output_layout", LAYOUT_SOURCE_TRANSLATED))
+            )
 
             current = self.translation_result.toPlainText().rstrip()
             lines = [
                 "",
-                "体积检查：",
+                "成品验收：",
                 f"- 原PDF：{_human_size(source_size)}",
                 f"- 完整译本：{_human_size(complete_size)}"
                 + (f"（{ratio:.2f}×）" if source_size else ""),
             ]
-            if source_size and ratio <= 1.18:
-                lines.append("- 体积目标：PASS（≤1.18×）")
-            elif source_size and complete_size <= source_size + int(2.5 * 1024 * 1024):
-                lines.append("- 体积目标：PASS（仅增加少量字体/文字数据）")
+            if source_size and ratio <= target_ratio:
+                lines.append(
+                    f"- 发布体积目标：PASS（≤{target_ratio:.2f}×）"
+                )
             elif source_size:
-                lines.append("- 体积目标：需复核特殊页面/字体；已保留无损成品")
+                lines.append(
+                    f"- 发布体积目标：FAIL（目标≤{target_ratio:.2f}×，"
+                    "请检查特殊字体/新增资源/复杂页面）"
+                )
+
+            integrity = _integrity_summary(complete)
+            if integrity:
+                lines.append(integrity)
+            else:
+                lines.append(
+                    "- 完整性验收：未找到报告；不应把该PDF视为稳定发布成品"
+                )
+
             if extra_parts:
                 lines.append(
                     f"- 分册额外占用：{_human_size(extra_parts)}"

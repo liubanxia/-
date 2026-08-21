@@ -136,33 +136,33 @@ def _stable_pdf_build(
     stage_root.mkdir(parents=True, exist_ok=True)
 
     original_output_root = self.output_root
-    self.output_root = stage_root
     try:
-        if str(layout) == LAYOUT_SOURCE_TRANSLATED:
-            from .translation_layout_compact import _build_source_translated
+        self.output_root = stage_root
+        try:
+            if str(layout) == LAYOUT_SOURCE_TRANSLATED:
+                from .translation_layout_compact import _build_source_translated
 
-            staged_complete, staged_parts = _build_source_translated(
-                self,
-                start_page=start_page,
-                total_pages=total_pages,
-                part_pages=part_pages,
-                progress=progress,
-            )
-        else:
-            staged_complete, staged_parts = _CORE_PDF_BUILD(
-                self,
-                start_page=start_page,
-                total_pages=total_pages,
-                layout=layout,
-                part_pages=part_pages,
-                progress=progress,
-            )
-    finally:
-        self.output_root = original_output_root
+                staged_complete, staged_parts = _build_source_translated(
+                    self,
+                    start_page=start_page,
+                    total_pages=total_pages,
+                    part_pages=part_pages,
+                    progress=progress,
+                )
+            else:
+                staged_complete, staged_parts = _CORE_PDF_BUILD(
+                    self,
+                    start_page=start_page,
+                    total_pages=total_pages,
+                    layout=layout,
+                    part_pages=part_pages,
+                    progress=progress,
+                )
+        finally:
+            self.output_root = original_output_root
 
-    staged_complete = Path(staged_complete)
-    staged_parts = tuple(Path(path) for path in staged_parts)
-    try:
+        staged_complete = Path(staged_complete)
+        staged_parts = tuple(Path(path) for path in staged_parts)
         preserve_images = str(layout) in {
             LAYOUT_SOURCE_TRANSLATED,
             LAYOUT_ORIGINAL_BILINGUAL,
@@ -221,6 +221,7 @@ def _stable_pdf_build(
         )
         return real_complete, real_part_paths
     finally:
+        self.output_root = original_output_root
         _remove_tree(stage_root)
 
 
