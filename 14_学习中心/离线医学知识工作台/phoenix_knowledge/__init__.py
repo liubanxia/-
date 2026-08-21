@@ -8,6 +8,7 @@ from .release_hardening import install as _install_release_hardening
 from .release_memory_hardening import install as _install_release_memory_hardening
 from .release_runtime_hardening import install as _install_release_runtime_hardening
 from .release_portability import install as _install_release_portability
+from .translation_storage_hardening import install as _install_translation_storage_hardening
 from .provider_hub import install as _install_provider_hub
 from .provider_hub_compat import install as _install_provider_hub_compat
 from .provider_hub_v2 import install as _install_provider_hub_v2
@@ -21,6 +22,7 @@ _install_release_hardening()
 _install_release_memory_hardening()
 _install_release_runtime_hardening()
 _install_release_portability()
+_install_translation_storage_hardening()
 _install_provider_hub()
 _install_provider_hub_compat()
 _install_provider_hub_v2()

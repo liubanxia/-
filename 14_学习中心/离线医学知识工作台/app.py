@@ -265,6 +265,17 @@ def main() -> int:
         install_document_gui(gui_module)
     except Exception as exc:
         print(f"DOCUMENT_GUI_WARNING={type(exc).__name__}: {exc}", flush=True)
+    try:
+        from phoenix_knowledge.translation_storage_gui import (
+            install as install_translation_storage_gui,
+        )
+
+        install_translation_storage_gui(gui_module)
+    except Exception as exc:
+        print(
+            f"TRANSLATION_STORAGE_GUI_WARNING={type(exc).__name__}: {exc}",
+            flush=True,
+        )
     return int(gui_module.run_gui())
 
 
