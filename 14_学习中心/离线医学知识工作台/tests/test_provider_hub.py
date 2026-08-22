@@ -355,6 +355,42 @@ class ProviderHubTests(unittest.TestCase):
                 {"effort": "none"},
             )
 
+    def test_deepseek_translation_uses_quality_model_with_thinking_disabled(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ,
+            {
+                "PHOENIX_KNOWLEDGE_ACCELERATOR": "remote",
+                "PHOENIX_KNOWLEDGE_ALLOW_REMOTE": "1",
+                "PHOENIX_KNOWLEDGE_PROVIDER": "deepseek",
+            },
+            clear=False,
+        ):
+            llm = LocalLLM(_paths(Path(temp)))
+            llm.compute.set_provider_api_key("deepseek", "deepseek-secret")
+            llm.compute.select_provider("deepseek")
+            captured = {}
+
+            def fake_urlopen(request, timeout=None):
+                captured["request"] = request
+                return _FakeResponse(
+                    {"choices": [{"message": {"content": "医学译文"}}]}
+                )
+
+            with patch(
+                "phoenix_knowledge.provider_hub.urllib.request.urlopen",
+                side_effect=fake_urlopen,
+            ):
+                text = llm._remote_generate(
+                    "翻译测试",
+                    512,
+                    "translation",
+                )
+
+            self.assertEqual(text, "医学译文")
+            body = json.loads(captured["request"].data.decode("utf-8"))
+            self.assertEqual(body["model"], "deepseek-v4-pro")
+            self.assertEqual(body["thinking"], {"type": "disabled"})
+
     def test_anthropic_native_request_and_response(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(
             os.environ,

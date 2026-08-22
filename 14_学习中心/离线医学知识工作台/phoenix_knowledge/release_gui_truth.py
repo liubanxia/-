@@ -69,7 +69,7 @@ def install(gui_module) -> None:
             status = self.workbench.status()
             quality = (
                 "可用"
-                if status.get("generator_deep_ready")
+                if status.get("translation_backends")
                 else "未就绪"
             )
             suffix = (

@@ -110,7 +110,7 @@ class ReleaseCandidateHardeningTests(unittest.TestCase):
             gateway = ComputeGateway(_paths(Path(temp)))
             self.assertTrue(gateway.remote_allowed())
 
-    def test_failed_smart_translation_really_falls_back(self):
+    def test_failed_smart2_translation_never_falls_back_to_preview_model(self):
         with tempfile.TemporaryDirectory() as temp:
             engine = MultiModelTranslationEngine(_paths(Path(temp)), _SmartLLM())
             engine.marian = _GoodFallback()
@@ -120,8 +120,10 @@ class ReleaseCandidateHardeningTests(unittest.TestCase):
                 "中文",
                 smart_level="smart2",
             )
-            self.assertEqual(result.backend, "fallback_good")
-            self.assertTrue(result.quality.ok)
+            self.assertNotEqual(result.backend, "fallback_good")
+            self.assertEqual(result.backend, "qwen35_medical_translation")
+            self.assertFalse(result.quality.ok)
+            self.assertTrue(result.needs_review)
             self.assertEqual(len(result.attempts), 2)
             self.assertFalse(result.attempts[0].quality.ok)
 

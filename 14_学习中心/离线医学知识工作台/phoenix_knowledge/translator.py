@@ -98,12 +98,12 @@ class PDFTranslator:
     """Whole-book offline medical translator.
 
     Product behavior:
-    - intelligent medical translation is preferred over raw seq2seq output;
+    - formal medical documents always use the Smart2 quality route;
     - every completed page is checkpointed independently;
     - pause occurs safely at a page boundary and resume skips completed pages;
-    - default PDF output preserves the exact original PDF page on top and
-      places the Chinese translation below it;
-    - a complete PDF and split PDF volumes are produced together.
+    - the default PDF output preserves images/layout and replaces the source
+      text layer in place;
+    - one complete PDF is produced by default; split volumes are opt-in.
     """
 
     def __init__(self, paths: WorkbenchPaths, llm: LocalLLM):
@@ -623,9 +623,10 @@ class PDFTranslator:
         if pdf_path.suffix.lower() != '.pdf':
             raise ValueError(f'仅支持PDF整本翻译: {pdf_path}')
 
-        smart_level = _normalize_smart_level(smart_level)
-        if medical_quality_required:
-            smart_level = "smart2"
+        # Formal PDF translation never permits opting out of medical quality.
+        # Keep the legacy argument only for source compatibility.
+        del medical_quality_required
+        smart_level = "smart2"
         output_layout = _normalize_layout(output_layout)
         export_format = _normalize_export_format(export_format)
         part_pages = max(1, int(part_pages))
@@ -635,13 +636,9 @@ class PDFTranslator:
             smart_level,
         )
         if not active_backends:
-            if medical_quality_required:
-                raise RuntimeError(
-                    '医学精译质量模型未就绪；已禁止使用 Marian/NLLB '
-                    '生成正式医学译文。请先配置智能2质量模型。'
-                )
             raise RuntimeError(
-                f'目标语言“{target_language}”当前没有可用翻译能力。'
+                '医学精译质量模型未就绪；旧Smart1预览模型不允许生成'
+                '正式医学译文。请先配置智能2质量模型。'
             )
 
         total_pages = int(pdf_page_count(pdf_path))
@@ -715,7 +712,15 @@ class PDFTranslator:
             )
             progress(0, total_pages - start_page + 1, message)
 
-        all_backends = self.engine.available_backends()
+        formal_names = getattr(self.engine, 'formal_backend_names', None)
+        all_backends = (
+            list(formal_names(target_language))
+            if callable(formal_names)
+            else [
+                str(getattr(backend, 'name', 'medical_translation'))
+                for backend in active_backends
+            ]
+        )
         state = {
             'source_path': str(pdf_path),
             'source_sha256': digest,
@@ -726,7 +731,7 @@ class PDFTranslator:
             'status': 'running',
             'available_backends': all_backends,
             'smart_level': smart_level,
-            'medical_quality_required': bool(medical_quality_required),
+            'medical_quality_required': True,
             'output_layout': output_layout,
             'export_format': export_format,
             'part_pages': part_pages,
@@ -878,6 +883,28 @@ class PDFTranslator:
                         export_format=export_format,
                         part_pages=part_pages,
                     )
+
+            audited_parts = 0
+            accepted_parts = 0
+            for page_number in range(start_page, total_pages + 1):
+                page_audit = self._read_json(
+                    audit_root / f'{page_number:06d}.json'
+                )
+                for part in page_audit.get('parts') or ():
+                    if not isinstance(part, dict):
+                        continue
+                    backend = str(part.get('backend', '') or '')
+                    audited_parts += 1
+                    if (
+                        backend != 'failed_all'
+                        and bool(part.get('quality_ok', False))
+                    ):
+                        accepted_parts += 1
+            if audited_parts and accepted_parts == 0:
+                raise RuntimeError(
+                    '所有可翻译内容均未通过医学质量校验；Phoenix已保留逐页'
+                    'checkpoint供查看/重试，但拒绝发布未翻译的正式PDF。'
+                )
 
             output_paths, image_count = self._build_deliverables(
                 pdf_path,

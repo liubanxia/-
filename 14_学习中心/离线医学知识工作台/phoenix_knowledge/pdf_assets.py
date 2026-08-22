@@ -213,9 +213,19 @@ class PDFAssetStore:
 
 def markdown_images(paths: list[Path], *, relative_to: Path, label: str) -> str:
     lines: list[str] = []
+    safe_label = (
+        str(label or "图像")
+        .replace("[", "（")
+        .replace("]", "）")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
     for index, path in enumerate(paths, start=1):
         rel = Path(path).relative_to(relative_to).as_posix()
-        lines.extend(['', f'![{label} 图{index}]({rel})', ''])
+        # Angle-bracket destinations are CommonMark-safe when an asset folder
+        # or filename contains spaces or parentheses. Qt's Markdown renderer
+        # and the PDF/DOCX exporters all resolve this form consistently.
+        lines.extend(['', f'![{safe_label} 图{index}](<{rel}>)', ''])
     return '\n'.join(lines)
 
 

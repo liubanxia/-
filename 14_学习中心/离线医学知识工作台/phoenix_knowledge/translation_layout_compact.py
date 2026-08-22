@@ -6,6 +6,8 @@ import os
 import re
 from pathlib import Path
 
+from .translation_pdf import pdf_size_target
+
 LAYOUT_SOURCE_TRANSLATED = "source_translated"
 _INSTALLED = False
 
@@ -304,9 +306,9 @@ def _atomic_save(doc, path: Path, source_size: int) -> tuple[int, bool]:
         except TypeError:
             doc.save(str(temp), garbage=2, deflate=True)
 
-        budget = max(
-            int(source_size * 1.18),
-            int(source_size + 2.5 * 1024 * 1024),
+        _target_ratio, budget = pdf_size_target(
+            LAYOUT_SOURCE_TRANSLATED,
+            source_size,
         )
         optimized_pass = False
         if source_size > 0 and temp.stat().st_size > budget:
@@ -459,6 +461,10 @@ def _build_source_translated(
     source_size = int(source.stat().st_size)
     output_size = int(complete_path.stat().st_size)
     ratio = output_size / source_size if source_size else 0.0
+    target_ratio, allowed_bytes = pdf_size_target(
+        LAYOUT_SOURCE_TRANSLATED,
+        source_size,
+    )
     report = {
         "mode": LAYOUT_SOURCE_TRANSLATED,
         "source": str(source),
@@ -466,6 +472,12 @@ def _build_source_translated(
         "source_bytes": source_size,
         "output_bytes": output_size,
         "ratio": round(ratio, 4),
+        "target_ratio": target_ratio,
+        "allowed_bytes": allowed_bytes,
+        "target_bytes": allowed_bytes,
+        "storage_target_passed": bool(
+            source_size <= 0 or output_size <= allowed_bytes
+        ),
         "pages": selected_total,
         "pages_replaced_in_place": native_pages,
         "pages_with_footer_overflow_or_scan_fallback": overflow_pages,

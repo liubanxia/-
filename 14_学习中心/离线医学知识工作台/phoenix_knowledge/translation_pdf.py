@@ -11,7 +11,26 @@ from pathlib import Path
 LAYOUT_ORIGINAL_BILINGUAL = "original_bilingual"
 LAYOUT_TEXT_BILINGUAL = "text_bilingual"
 LAYOUT_TRANSLATED_ONLY = "translated_only"
+LAYOUT_SOURCE_TRANSLATED = "source_translated"
+PDF_SIZE_SLACK_BYTES = int(2.5 * 1024 * 1024)
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+
+
+def pdf_size_target(layout: str, source_size: int) -> tuple[float, int]:
+    """Return the release ratio and hard byte ceiling for one complete PDF."""
+
+    source_size = max(0, int(source_size))
+    if str(layout) == LAYOUT_SOURCE_TRANSLATED:
+        ratio = 1.18
+    elif str(layout) == LAYOUT_TRANSLATED_ONLY:
+        ratio = 1.30
+    else:
+        ratio = 1.50
+    allowed = max(
+        int(source_size * ratio),
+        source_size + PDF_SIZE_SLACK_BYTES,
+    )
+    return ratio, allowed
 
 
 class TranslationPDFBuilder:
@@ -514,12 +533,7 @@ class TranslationPDFBuilder:
 
     @staticmethod
     def _size_target(layout: str, source_size: int) -> tuple[float, int]:
-        ratio = (
-            1.50
-            if layout in {LAYOUT_ORIGINAL_BILINGUAL, LAYOUT_TEXT_BILINGUAL}
-            else 1.30
-        )
-        return ratio, int(source_size * ratio)
+        return pdf_size_target(layout, source_size)
 
     def _write_size_report(
         self,
@@ -544,6 +558,8 @@ class TranslationPDFBuilder:
             "output_bytes": output_size,
             "ratio": round(actual_ratio, 4),
             "target_ratio": target_ratio,
+            "allowed_bytes": target_bytes,
+            # Compatibility alias retained for existing report consumers.
             "target_bytes": target_bytes,
             "storage_target_passed": bool(
                 source_size <= 0 or output_size <= target_bytes

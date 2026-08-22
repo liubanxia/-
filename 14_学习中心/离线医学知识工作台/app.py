@@ -28,10 +28,23 @@ def _build_parser():
     parser.add_argument("--organize", help="多资料深度整理专题名称")
     parser.add_argument("--instruction", help="整理要求")
     parser.add_argument("--resume-task", type=int, help="继续一个未完成的多资料整理任务ID")
-    parser.add_argument("--translate-book", metavar="PDF", help="整本PDF离线翻译")
-    parser.add_argument("--start-page", type=int, default=1, help="整本翻译从第几页开始，默认1")
+    parser.add_argument(
+        "--translate-book",
+        metavar="DOCUMENT",
+        help="同格式医学翻译：PDF→PDF、PPTX→PPTX、DOCX→DOCX",
+    )
+    parser.add_argument(
+        "--start-page",
+        type=int,
+        default=1,
+        help="从第几页/幻灯片/论文单元开始，默认1",
+    )
     parser.add_argument("--target-language", default="中文", help="翻译目标语言，默认中文")
-    parser.add_argument("--retry-warning-pages", action="store_true", help="整本翻译时重新处理带警告的页面")
+    parser.add_argument(
+        "--retry-warning-pages",
+        action="store_true",
+        help="重新处理带警告的页面/幻灯片/论文单元",
+    )
     parser.add_argument("--organize-txt", metavar="TXT", help="整理一个TXT/MD医学笔记")
     parser.add_argument("--note-title", help="TXT整理后的笔记标题")
     parser.add_argument("--build-embeddings", action="store_true", help="为已导入知识块建立本地向量索引")
@@ -173,7 +186,10 @@ def main() -> int:
             if args.organize:
                 if not args.instruction:
                     raise SystemExit("--organize 必须同时提供 --instruction")
-                os.environ.setdefault("PHOENIX_KNOWLEDGE_LLM_PROFILE", "fast")
+                os.environ.setdefault(
+                    "PHOENIX_KNOWLEDGE_LLM_PROFILE",
+                    "fast",
+                )
                 output, task_id = workbench.organize(
                     args.organize,
                     args.instruction,
@@ -196,7 +212,10 @@ def main() -> int:
                 _print_export_bundle(workbench)
 
             if args.translate_book:
-                os.environ.setdefault("PHOENIX_KNOWLEDGE_LLM_PROFILE", "fast")
+                os.environ.setdefault(
+                    "PHOENIX_KNOWLEDGE_LLM_PROFILE",
+                    "translation",
+                )
                 result = workbench.translate_book(
                     Path(args.translate_book),
                     start_page=max(1, int(args.start_page)),

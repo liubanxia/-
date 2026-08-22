@@ -3,13 +3,13 @@
     "repo_id": "Qwen/Qwen3.5-2B",
     "folder": "Qwen3.5-2B",
     "required": false,
-    "purpose": "responsive grounded synthesis, long-form organization, TXT organization, and optional medical translation review"
+    "purpose": "responsive grounded synthesis, long-form organization, and TXT organization; never formal medical translation"
   },
   "generator": {
     "repo_id": "Qwen/Qwen3.5-4B",
     "folder": "Qwen3.5-4B",
     "required": false,
-    "purpose": "deep-quality grounded PDF synthesis and complex review; not the default responsiveness path"
+    "purpose": "Smart2 quality model for formal PDF/PPTX/DOCX medical translation with reasoning disabled, plus deep-quality synthesis"
   },
   "embedding": {
     "repo_id": "Qwen/Qwen3-Embedding-0.6B",
@@ -22,20 +22,5 @@
     "folder": "Qwen3-Reranker-0.6B",
     "required": false,
     "purpose": "reserved for optional second-stage evidence reranking; not used on the latency-critical default path"
-  },
-  "translation_fast": {
-    "repo_id": "Helsinki-NLP/opus-mt-en-zh",
-    "folder": "opus-mt-en-zh",
-    "required": false,
-    "purpose": "fast dedicated English-to-Chinese whole-book translation; first translation backend",
-    "license": "Apache-2.0"
-  },
-  "translation_backup": {
-    "repo_id": "facebook/nllb-200-distilled-600M",
-    "folder": "NLLB-200-distilled-600M",
-    "required": false,
-    "purpose": "multilingual emergency translation fallback when the primary translation fails validation",
-    "license": "CC-BY-NC-4.0",
-    "note": "research/non-commercial fallback only; not the primary medical-domain translator"
   }
 }

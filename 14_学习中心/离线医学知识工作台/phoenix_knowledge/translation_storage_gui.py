@@ -10,6 +10,7 @@ from .translation_pdf import (
     LAYOUT_ORIGINAL_BILINGUAL,
     LAYOUT_TEXT_BILINGUAL,
     LAYOUT_TRANSLATED_ONLY,
+    pdf_size_target,
 )
 from .translator import EXPORT_PDF, EXPORT_PDF_RICH
 from .office_translation import (
@@ -30,6 +31,8 @@ def _human_size(value: int) -> str:
 
 
 def _release_ratio_target(layout: str) -> float:
+    if str(layout) == LAYOUT_SOURCE_TRANSLATED:
+        return 1.18
     if str(layout) in {
         LAYOUT_ORIGINAL_BILINGUAL,
         LAYOUT_TEXT_BILINGUAL,
@@ -222,6 +225,10 @@ def install(gui_module) -> None:
             target_ratio = _release_ratio_target(
                 str(getattr(result, "output_layout", LAYOUT_SOURCE_TRANSLATED))
             )
+            _ratio, allowed_bytes = pdf_size_target(
+                str(getattr(result, "output_layout", LAYOUT_SOURCE_TRANSLATED)),
+                source_size,
+            )
 
             current = self.translation_result.toPlainText().rstrip()
             lines = [
@@ -231,9 +238,10 @@ def install(gui_module) -> None:
                 f"- 完整译本：{_human_size(complete_size)}"
                 + (f"（{ratio:.2f}×）" if source_size else ""),
             ]
-            if source_size and ratio <= target_ratio:
+            if source_size and complete_size <= allowed_bytes:
                 lines.append(
-                    f"- 发布体积目标：PASS（≤{target_ratio:.2f}×）"
+                    f"- 发布体积目标：PASS（≤{target_ratio:.2f}×；"
+                    "小文件含2.5MiB固定余量）"
                 )
             elif source_size:
                 lines.append(

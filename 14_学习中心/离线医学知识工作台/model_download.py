@@ -36,7 +36,7 @@ MODELS = {
         "repo_id": "Qwen/Qwen3.5-2B",
         "modelscope_id": "Qwen/Qwen3.5-2B",
         "folder": "Qwen3.5-2B",
-        "role": "快速智能归纳、知识整理、TXT整理、可选翻译复核",
+        "role": "快速智能归纳、知识整理和TXT整理；不生成正式医学译文",
         "required_any": [
             ["config.json"],
             ["model.safetensors", "model.safetensors.index.json", "pytorch_model.bin"],
@@ -46,45 +46,21 @@ MODELS = {
         "repo_id": "Qwen/Qwen3.5-4B",
         "modelscope_id": "Qwen/Qwen3.5-4B",
         "folder": "Qwen3.5-4B",
-        "role": "4B深度质量模式；复杂PDF归纳和高质量复核，不作为默认响应路径",
+        "role": "Smart2质量模型；正式PDF/PPTX/DOCX医学翻译使用低推理translation档",
         "required_any": [
             ["config.json"],
             ["model.safetensors", "model.safetensors.index.json", "pytorch_model.bin"],
         ],
     },
-    "translation_fast": {
-        "repo_id": "Helsinki-NLP/opus-mt-en-zh",
-        "modelscope_id": "Helsinki-NLP/opus-mt-en-zh",
-        "folder": "opus-mt-en-zh",
-        "role": "快速英译中专用模型；整本翻译第一模型",
-        "ignore_patterns": ["*.h5", "*.msgpack", "*.ot"],
-        "required_any": [
-            ["config.json"],
-            ["source.spm"],
-            ["target.spm"],
-            ["model.safetensors", "pytorch_model.bin"],
-        ],
-    },
-    "translation_backup": {
-        "repo_id": "facebook/nllb-200-distilled-600M",
-        "modelscope_id": "facebook/nllb-200-distilled-600M",
-        "folder": "NLLB-200-distilled-600M",
-        "role": "整本翻译第二兜底模型；研究/非商业用途",
-        "ignore_patterns": ["*.h5", "*.msgpack", "*.ot", "onnx/*"],
-        "required_any": [
-            ["config.json"],
-            ["sentencepiece.bpe.model"],
-            ["model.safetensors", "pytorch_model.bin"],
-        ],
-    },
 }
 
 GROUPS = {
-    "translation": ["translation_fast", "translation_backup", "generator_fast"],
-    "translation_light": ["translation_fast"],
+    "translation": ["generator"],
+    # Compatibility alias: formal translation has no lower-quality model tier.
+    "translation_light": ["generator"],
     "knowledge": ["embedding", "generator_fast", "reranker"],
     "deep_quality": ["generator"],
-    "hospital_recommended": ["translation_fast", "embedding", "generator_fast"],
+    "hospital_recommended": ["embedding", "generator_fast", "generator"],
     "all": list(MODELS),
 }
 

@@ -47,30 +47,26 @@ if errorlevel 1 goto :fatal
 
 :menu
 echo.
-echo [1] 医院推荐：Marian + Embedding + Qwen3.5-2B 快速生成
-echo [2] 完整翻译：Marian + NLLB + Qwen3.5-2B
-echo [3] 轻量翻译：只下载 Marian
-echo [4] 知识整理：Embedding + Qwen3.5-2B + Reranker
-echo [5] 全部模型（含2B快速 + 4B深度）
-echo [6] 仅 Qwen3.5-2B 快速生成
-echo [7] 仅 Qwen3.5-4B 深度质量
-echo [8] 仅 NLLB-600M
-echo [9] 仅 Embedding-0.6B
-echo [10] 查看自动下载线路
+echo [1] 医院推荐：Embedding + Qwen3.5-2B + Smart2 Qwen3.5-4B
+echo [2] 医学同格式翻译：仅 Smart2 Qwen3.5-4B
+echo [3] 知识整理：Embedding + Qwen3.5-2B + Reranker
+echo [4] 全部正式模型（不含旧Smart1翻译模型）
+echo [5] 仅 Qwen3.5-2B 快速生成
+echo [6] 仅 Smart2 Qwen3.5-4B 质量模型
+echo [7] 仅 Embedding-0.6B
+echo [8] 查看自动下载线路
 echo [0] 退出
 echo.
 set /p "CHOICE=请输入编号："
 
 if "%CHOICE%"=="1" set "TARGET=hospital_recommended"& goto :download
 if "%CHOICE%"=="2" set "TARGET=translation"& goto :download
-if "%CHOICE%"=="3" set "TARGET=translation_light"& goto :download
-if "%CHOICE%"=="4" set "TARGET=knowledge"& goto :download
-if "%CHOICE%"=="5" set "TARGET=all"& goto :download
-if "%CHOICE%"=="6" set "TARGET=generator_fast"& goto :download
-if "%CHOICE%"=="7" set "TARGET=generator"& goto :download
-if "%CHOICE%"=="8" set "TARGET=translation_backup"& goto :download
-if "%CHOICE%"=="9" set "TARGET=embedding"& goto :download
-if "%CHOICE%"=="10" goto :routes
+if "%CHOICE%"=="3" set "TARGET=knowledge"& goto :download
+if "%CHOICE%"=="4" set "TARGET=all"& goto :download
+if "%CHOICE%"=="5" set "TARGET=generator_fast"& goto :download
+if "%CHOICE%"=="6" set "TARGET=generator"& goto :download
+if "%CHOICE%"=="7" set "TARGET=embedding"& goto :download
+if "%CHOICE%"=="8" goto :routes
 if "%CHOICE%"=="0" exit /b 0
 
 echo 输入无效。
@@ -96,7 +92,7 @@ pause
 goto :menu
 
 :routes
-call %PY% "%WORKBENCH%model_download.py" translation_light --source auto --list-routes
+call %PY% "%WORKBENCH%model_download.py" translation --source auto --list-routes
 pause
 goto :menu
 

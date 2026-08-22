@@ -118,6 +118,12 @@ def _rebuild_result(
         )
 
     selected_total = total_pages - start_page + 1
+    formal_names = getattr(translator.engine, "formal_backend_names", None)
+    backends = (
+        formal_names(target_language)
+        if callable(formal_names)
+        else translator.engine.available_backends()
+    )
     return TranslationResult(
         output_path=output_paths[0],
         source_path=pdf_path,
@@ -127,11 +133,11 @@ def _rebuild_result(
         pages_done=selected_total,
         resumed_pages=selected_total,
         warning_pages=warning_pages,
-        available_backends=tuple(translator.engine.available_backends()),
+        available_backends=tuple(backends),
         output_paths=tuple(output_paths),
         image_count=int(image_count),
         paused=False,
-        smart_level=str(state.get("smart_level", "smart1")),
+        smart_level="smart2",
         output_layout=output_layout,
         export_format=export_format,
         part_pages=part_pages,

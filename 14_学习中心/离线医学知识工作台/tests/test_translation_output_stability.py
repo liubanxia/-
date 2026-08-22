@@ -18,6 +18,7 @@ from phoenix_knowledge.translation_output_validation import (
 from phoenix_knowledge.translation_pdf import TranslationPDFBuilder
 from phoenix_knowledge.translation_stability_core import (
     LAYOUT_SOURCE_TRANSLATED,
+    _assert_pdf_size_budget,
 )
 from phoenix_knowledge.translator import PDFTranslator
 
@@ -274,6 +275,86 @@ class TranslationOutputStabilityTests(unittest.TestCase):
 
             after = hashlib.sha256(complete.read_bytes()).hexdigest()
             self.assertEqual(after, before)
+
+    def test_size_budget_is_a_hard_pre_publish_gate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.pdf"
+            oversized = root / "oversized.pdf"
+            source.write_bytes(b"%PDF-1.4\n" + b"x" * 128)
+            oversized.write_bytes(b"%PDF-1.4\n" + b"y" * (3 * 1024 * 1024))
+            with self.assertRaises(TranslationOutputError):
+                _assert_pdf_size_budget(
+                    source,
+                    oversized,
+                    LAYOUT_SOURCE_TRANSLATED,
+                )
+
+    def test_post_publish_validation_failure_restores_complete_parts_and_reports(self):
+        import phoenix_knowledge.translation_stability_core as stability
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.pdf"
+            pages_root = root / "pages"
+            output_root = root / "output"
+            self._make_source(source, pages=2)
+            self._write_pages(pages_root, pages=2)
+            builder = TranslationPDFBuilder(source, pages_root, output_root)
+            complete, parts = builder.build(
+                start_page=1,
+                total_pages=2,
+                layout=LAYOUT_SOURCE_TRANSLATED,
+                part_pages=1,
+            )
+            old_complete = complete.read_bytes()
+            old_parts = {path.name: path.read_bytes() for path in parts}
+            old_size_report = (output_root / "PDF体积报告.json").read_bytes()
+            old_integrity = (output_root / "PDF完整性报告.json").read_bytes()
+            real_validate = stability.validate_pdf
+            calls = {"count": 0}
+
+            def fail_after_publish(*args, **kwargs):
+                calls["count"] += 1
+                report = real_validate(*args, **kwargs)
+                if calls["count"] == 2:
+                    raise TranslationOutputError(
+                        "simulated post-publish reopen failure"
+                    )
+                return report
+
+            with patch.object(
+                stability,
+                "validate_pdf",
+                side_effect=fail_after_publish,
+            ):
+                with self.assertRaises(TranslationOutputError):
+                    builder.build(
+                        start_page=1,
+                        total_pages=2,
+                        layout=LAYOUT_SOURCE_TRANSLATED,
+                        part_pages=1,
+                    )
+
+            self.assertEqual(calls["count"], 2)
+            self.assertEqual(complete.read_bytes(), old_complete)
+            restored_parts = output_root / "PDF分册"
+            self.assertEqual(
+                {
+                    path.name: path.read_bytes()
+                    for path in restored_parts.glob("第*.pdf")
+                },
+                old_parts,
+            )
+            self.assertEqual(
+                (output_root / "PDF体积报告.json").read_bytes(),
+                old_size_report,
+            )
+            self.assertEqual(
+                (output_root / "PDF完整性报告.json").read_bytes(),
+                old_integrity,
+            )
+            self.assertFalse((output_root / ".PDF发布备份").exists())
 
 
 if __name__ == "__main__":

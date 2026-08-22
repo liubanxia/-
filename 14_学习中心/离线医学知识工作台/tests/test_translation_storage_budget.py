@@ -200,8 +200,11 @@ class TranslationStorageBudgetTests(unittest.TestCase):
             source = root / "book.pdf"
             self._make_source(source, pages=2)
             translator = PDFTranslator(_paths(root), _UnavailableLLM())
+            requested_levels = []
             translator.engine.active_backends = (
-                lambda target_language="中文", smart_level="smart1": [object()]
+                lambda target_language="中文", smart_level="smart1": (
+                    requested_levels.append(smart_level) or [object()]
+                )
             )
             translator.engine.available_backends = lambda: ["storage_test"]
             translator.engine.unload = lambda: None
@@ -214,9 +217,14 @@ class TranslationStorageBudgetTests(unittest.TestCase):
                 target_language="中文",
                 export_format=EXPORT_PDF,
                 part_pages=0,
+                smart_level="smart1",
+                medical_quality_required=False,
             )
 
             self.assertFalse(result.paused)
+            self.assertEqual(result.smart_level, "smart2")
+            self.assertTrue(requested_levels)
+            self.assertEqual(set(requested_levels), {"smart2"})
             self.assertEqual(result.part_pages, 0)
             pdfs = [
                 Path(path)

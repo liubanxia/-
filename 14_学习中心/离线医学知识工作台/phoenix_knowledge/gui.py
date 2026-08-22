@@ -251,7 +251,7 @@ class WorkbenchWindow(QMainWindow):
         add_button = QPushButton("导入PDF")
         refresh_button = QPushButton("刷新")
         embedding_button = QPushButton("生成向量索引")
-        use_translation_button = QPushButton("选中书→整本翻译")
+        use_translation_button = QPushButton("选中文档→同格式翻译")
         buttons.addWidget(add_button)
         buttons.addWidget(refresh_button)
         buttons.addWidget(embedding_button)
@@ -399,7 +399,7 @@ class WorkbenchWindow(QMainWindow):
         layout.addWidget(self.translation_models_label)
 
         buttons = QHBoxLayout()
-        start_button = QPushButton("开始/继续整本翻译")
+        start_button = QPushButton("开始/继续同格式翻译")
         retry_button = QPushButton("重试警告页")
         preview_button = QPushButton("译本打印预览")
         print_button = QPushButton("打印译本")
@@ -643,7 +643,15 @@ class WorkbenchWindow(QMainWindow):
         self.organize_progress.setValue(100)
         self.organize_status.setText(f"整理完成：{output}")
         path = Path(output)
-        markdown = self._preview_path(path)
+        # Multi-material results keep figures near their citations. A head/tail
+        # text preview can omit every middle image reference, so Markdown uses
+        # the complete generated file while other formats retain the bounded
+        # text preview behavior.
+        markdown = (
+            path.read_text(encoding="utf-8", errors="replace")
+            if path.is_file() and path.suffix.lower() in {".md", ".markdown"}
+            else self._preview_path(path)
+        )
         try:
             self.organize_result.document().setBaseUrl(
                 QUrl.fromLocalFile(str(path.parent.resolve()) + "/")
@@ -673,9 +681,16 @@ class WorkbenchWindow(QMainWindow):
     def refresh_translation_models(self):
         if not hasattr(self, "translation_models_label"):
             return
-        models = self.workbench.translator.engine.available_backends()
+        engine = self.workbench.translator.engine
+        formal_names = getattr(engine, "formal_backend_names", None)
+        models = (
+            formal_names("中文")
+            if callable(formal_names)
+            else engine.available_backends()
+        )
         self.translation_models_label.setText(
-            "当前翻译模型：" + (" → ".join(models) if models else "未下载")
+            "正式翻译模型（Smart2）："
+            + (" → ".join(models) if models else "未就绪")
         )
 
     def start_translation(self, retry_warning_pages: bool):
@@ -722,7 +737,7 @@ class WorkbenchWindow(QMainWindow):
         self.last_translation_path = Path(result.output_path)
         self.translation_progress.setValue(100)
         self.translation_status.setText(
-            f"整本翻译完成 | 警告页={result.warning_pages} | "
+            f"同格式翻译完成 | 待复核单元={result.warning_pages} | "
             f"模型={','.join(result.available_backends)}"
         )
         preview = (
@@ -732,14 +747,17 @@ class WorkbenchWindow(QMainWindow):
         )
         self.translation_result.setPlainText(
             f"完整译本：{self.last_translation_path}\n"
-            f"起始页：{result.start_page}\n总页数：{result.total_pages}\n"
-            f"续翻跳过页：{result.resumed_pages}\n警告页：{result.warning_pages}\n"
-            f"可用模型：{', '.join(result.available_backends)}\n\n{preview}"
+            f"起始单元：{result.start_page}\n总单元：{result.total_pages}\n"
+            f"续翻跳过单元：{result.resumed_pages}\n"
+            f"待复核单元：{result.warning_pages}\n"
+            f"正式模型：{', '.join(result.available_backends)}\n\n{preview}"
         )
         self.refresh_translation_models()
 
     def _translation_failed(self, error: str):
-        self.translation_status.setText("整本翻译失败；已经完成的页面仍保存在checkpoint，可再次继续。")
+        self.translation_status.setText(
+            "同格式翻译失败；已完成单元仍保存在checkpoint，可再次继续。"
+        )
         self._failed(error)
 
     def _print_translation(self, preview: bool):

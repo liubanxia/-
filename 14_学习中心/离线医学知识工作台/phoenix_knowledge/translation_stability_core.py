@@ -56,57 +56,111 @@ def _remove_tree(path: Path) -> None:
         pass
 
 
-def _swap_parts_directory(staged_root: Path, real_root: Path) -> tuple[Path, ...]:
-    staged_parts = staged_root / "PDF分册"
-    real_parts = real_root / "PDF分册"
-    incoming = real_root / ".PDF分册.new"
-    backup = real_root / ".PDF分册.old"
-    _remove_tree(incoming)
-    _remove_tree(backup)
+def _remove_path(path: Path) -> None:
+    path = Path(path)
+    if path.is_dir() and not path.is_symlink():
+        _remove_tree(path)
+    else:
+        path.unlink(missing_ok=True)
 
-    if not staged_parts.exists():
-        _remove_tree(real_parts)
-        return ()
 
-    os.replace(staged_parts, incoming)
+def _pdf_publish_backup(real_root: Path) -> Path:
+    return Path(real_root) / ".PDF发布备份"
+
+
+def _recover_pdf_publish(real_root: Path) -> None:
+    """Restore the last known-good set after an interrupted publish."""
+
+    real_root = Path(real_root)
+    backup_root = _pdf_publish_backup(real_root)
+    manifest_path = backup_root / "manifest.json"
+    if not backup_root.exists():
+        return
+    if not manifest_path.is_file():
+        # The commit marker is removed only after every validation succeeds.
+        # A backup directory without it is therefore an already committed
+        # transaction whose cleanup was interrupted.
+        _remove_tree(backup_root)
+        return
+    restored = False
     try:
-        if real_parts.exists():
-            os.replace(real_parts, backup)
-        os.replace(incoming, real_parts)
-        _remove_tree(backup)
-    except Exception:
-        if backup.exists() and not real_parts.exists():
-            try:
-                os.replace(backup, real_parts)
-            except Exception:
-                pass
-        raise
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        items = manifest.get("items") if isinstance(manifest, dict) else None
+        if not isinstance(items, list):
+            raise ValueError("PDF发布备份清单格式错误")
+        for row in items:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name", "") or "")
+            if not name or Path(name).name != name:
+                continue
+            target = real_root / name
+            backup = backup_root / name
+            had_previous = bool(row.get("had_previous", False))
+            if had_previous and backup.exists():
+                _remove_path(target)
+                os.replace(backup, target)
+            elif not had_previous:
+                _remove_path(target)
+        restored = True
+    finally:
+        if restored:
+            _remove_tree(backup_root)
 
-    return tuple(sorted(real_parts.glob("第*.pdf")))
+
+def _prepare_staged_size_report(
+    staged_root: Path,
+    real_complete: Path,
+) -> Path:
+    path = Path(staged_root) / "PDF体积报告.json"
+    if not path.is_file():
+        raise TranslationOutputError("PDF构建未生成体积报告，已拒绝发布。")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise TranslationOutputError(
+            f"PDF体积报告无法读取：{type(exc).__name__}: {exc}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise TranslationOutputError("PDF体积报告结构无效，已拒绝发布。")
+    payload["output"] = str(real_complete)
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temp, path)
+    return path
 
 
-def _promote_auxiliary_reports(staged_root: Path, real_root: Path, real_complete: Path) -> None:
-    for name in ("PDF体积报告.json",):
-        staged = staged_root / name
-        if not staged.is_file():
-            continue
-        target = real_root / name
-        if name == "PDF体积报告.json":
-            try:
-                payload = json.loads(staged.read_text(encoding="utf-8"))
-                if isinstance(payload, dict):
-                    if "output" in payload:
-                        payload["output"] = str(real_complete)
-                    temp = target.with_name(target.name + ".tmp")
-                    temp.write_text(
-                        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-                        encoding="utf-8",
-                    )
-                    os.replace(temp, target)
-                    continue
-            except Exception:
-                pass
-        os.replace(staged, target)
+def _assert_pdf_size_budget(
+    source_pdf: Path,
+    output_pdf: Path,
+    layout: str,
+) -> dict:
+    from .translation_pdf import pdf_size_target
+
+    source_size = int(Path(source_pdf).stat().st_size)
+    output_size = int(Path(output_pdf).stat().st_size)
+    target_ratio, allowed_bytes = pdf_size_target(layout, source_size)
+    report = {
+        "source_bytes": source_size,
+        "output_bytes": output_size,
+        "target_ratio": target_ratio,
+        "allowed_bytes": allowed_bytes,
+        "storage_target_passed": bool(
+            source_size <= 0 or output_size <= allowed_bytes
+        ),
+    }
+    if not report["storage_target_passed"]:
+        raise TranslationOutputError(
+            "PDF体积超过正式发布上限："
+            f"输出 {output_size / (1024 * 1024):.2f}MiB，"
+            f"允许 {allowed_bytes / (1024 * 1024):.2f}MiB "
+            f"(≤{target_ratio:.2f}×并含小文件固定余量)。"
+            "Phoenix未覆盖上一份稳定成品。"
+        )
+    return report
 
 
 def _required_staging_bytes(
@@ -170,6 +224,7 @@ def _stable_pdf_build(
     selected_total = total_pages - start_page + 1
     real_root = Path(self.output_root)
     real_root.mkdir(parents=True, exist_ok=True)
+    _recover_pdf_publish(real_root)
     _assert_staging_space(
         real_root,
         source_size=int(Path(self.source_pdf).stat().st_size),
@@ -208,6 +263,16 @@ def _stable_pdf_build(
 
         staged_complete = Path(staged_complete)
         staged_parts = tuple(Path(path) for path in staged_parts)
+        real_complete = real_root / staged_complete.name
+        _assert_pdf_size_budget(
+            Path(self.source_pdf),
+            staged_complete,
+            str(layout),
+        )
+        staged_size_report = _prepare_staged_size_report(
+            stage_root,
+            real_complete,
+        )
         preserve_images = str(layout) in {
             LAYOUT_SOURCE_TRANSLATED,
             LAYOUT_ORIGINAL_BILINGUAL,
@@ -239,31 +304,74 @@ def _stable_pdf_build(
             current_structure_sha256=str(pdf_report["structure_sha256"]),
         )
 
-        real_part_paths = _swap_parts_directory(stage_root, real_root)
-        real_complete = real_root / staged_complete.name
-        os.replace(staged_complete, real_complete)
-        _promote_auxiliary_reports(stage_root, real_root, real_complete)
-
-        final_pdf_report = validate_pdf(
+        staged_parts_root = stage_root / "PDF分册"
+        real_parts_root = real_root / "PDF分册"
+        real_size_report = real_root / "PDF体积报告.json"
+        publish_targets = (
             real_complete,
-            expected_pages=selected_total,
-            pages_root=Path(self.pages_root),
-            start_page=start_page,
-            source_pdf=Path(self.source_pdf) if preserve_images else None,
-            preserve_source_images=preserve_images,
-            minimum_translation_coverage=0.62,
-        )
-        final_delivery_report = validate_deliverables(
-            (real_complete, *real_part_paths),
-            expected_complete_pages=selected_total,
-        )
-        final_pdf_report["path"] = str(real_complete)
-        write_integrity_report(
+            real_parts_root,
+            real_size_report,
             integrity_path,
-            signature=signature,
-            pdf_report=final_pdf_report,
-            delivery_report=final_delivery_report,
         )
+        backup_root = _pdf_publish_backup(real_root)
+        _remove_tree(backup_root)
+        backup_root.mkdir(parents=True, exist_ok=True)
+        manifest_path = backup_root / "manifest.json"
+        manifest = {
+            "contract": CONTRACT_VERSION,
+            "items": [
+                {
+                    "name": target.name,
+                    "had_previous": target.exists(),
+                }
+                for target in publish_targets
+            ],
+        }
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        try:
+            for target in publish_targets:
+                if target.exists():
+                    os.replace(target, backup_root / target.name)
+
+            os.replace(staged_complete, real_complete)
+            if staged_parts_root.exists():
+                os.replace(staged_parts_root, real_parts_root)
+            os.replace(staged_size_report, real_size_report)
+            real_part_paths = tuple(sorted(real_parts_root.glob("第*.pdf")))
+
+            final_pdf_report = validate_pdf(
+                real_complete,
+                expected_pages=selected_total,
+                pages_root=Path(self.pages_root),
+                start_page=start_page,
+                source_pdf=Path(self.source_pdf) if preserve_images else None,
+                preserve_source_images=preserve_images,
+                minimum_translation_coverage=0.62,
+            )
+            final_delivery_report = validate_deliverables(
+                (real_complete, *real_part_paths),
+                expected_complete_pages=selected_total,
+            )
+            final_pdf_report["path"] = str(real_complete)
+            write_integrity_report(
+                integrity_path,
+                signature=signature,
+                pdf_report=final_pdf_report,
+                delivery_report=final_delivery_report,
+            )
+        except Exception:
+            _recover_pdf_publish(real_root)
+            raise
+
+        # Removing the manifest is the commit point. If cleanup is interrupted
+        # afterwards, recovery keeps the validated new set and drops only the
+        # obsolete backup directory.
+        manifest_path.unlink(missing_ok=True)
+        _remove_tree(backup_root)
         return real_complete, real_part_paths
     finally:
         self.output_root = original_output_root

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 """医学资料翻译策略补丁。
 
-用于避免医学 PDF 默认消耗低质量 Smart1 翻译链。
+历史请求分类兼容层。正式 PDF/PPTX/DOCX 入口会无条件使用 Smart2；
+本模块不再有权把正式文档降级到旧 Smart1 翻译链。
 """
 
 MEDICAL_KEYWORDS = {

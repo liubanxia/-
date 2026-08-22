@@ -30,23 +30,26 @@ class ModelDownloadRouteTest(unittest.TestCase):
 
     def test_validation_rejects_incomplete_model(self):
         with tempfile.TemporaryDirectory() as td:
-            target = Path(td) / "opus-mt-en-zh"
+            target = Path(td) / "Qwen3.5-4B"
             target.mkdir()
             (target / "config.json").write_text("{}", encoding="utf-8")
-            ok, missing = model_download.validate_download("translation_fast", target)
+            ok, missing = model_download.validate_download("generator", target)
             self.assertFalse(ok)
             self.assertTrue(missing)
 
-    def test_validation_accepts_minimal_marian_layout(self):
+    def test_validation_accepts_minimal_smart2_layout(self):
         with tempfile.TemporaryDirectory() as td:
-            target = Path(td) / "opus-mt-en-zh"
+            target = Path(td) / "Qwen3.5-4B"
             target.mkdir()
             (target / "config.json").write_text("{}", encoding="utf-8")
-            (target / "source.spm").write_bytes(b"source")
-            (target / "target.spm").write_bytes(b"target")
-            (target / "pytorch_model.bin").write_bytes(b"weights")
-            ok, missing = model_download.validate_download("translation_fast", target)
+            (target / "model.safetensors").write_bytes(b"weights")
+            ok, missing = model_download.validate_download("generator", target)
             self.assertTrue(ok, missing)
+
+    def test_formal_translation_groups_exclude_legacy_smart1_models(self):
+        self.assertEqual(model_download.GROUPS["translation"], ["generator"])
+        self.assertNotIn("translation_fast", model_download.MODELS)
+        self.assertNotIn("translation_backup", model_download.MODELS)
 
 
 if __name__ == "__main__":

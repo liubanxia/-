@@ -40,7 +40,19 @@ class WorkbenchStabilityContractTests(unittest.TestCase):
                 self.assertTrue(state["ready"], state["broken"])
                 self.assertEqual(state["workbench_wrapper_depth"], 1)
                 self.assertEqual(state["translation_wrapper_depth"], 1)
-                self.assertEqual(wb.status()["workbench_contract"], 2)
+                self.assertEqual(state["formal_translation_contract"], 1)
+                status = wb.status()
+                self.assertEqual(status["workbench_contract"], 3)
+                self.assertEqual(status["office_translation_contract"], 2)
+                self.assertIs(
+                    wb.translator.engine,
+                    wb.office_translator.engine,
+                )
+                self.assertTrue(
+                    set(status["translation_backends"]).isdisjoint(
+                        {"marian_en_zh", "nllb_600m_en_zh"}
+                    )
+                )
             finally:
                 wb.close()
 

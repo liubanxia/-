@@ -8,7 +8,7 @@ from typing import Callable
 
 from .db import KnowledgeDB
 from .llm import LocalLLM
-from .pdf_assets import PDFAssetStore
+from .pdf_assets import PDFAssetStore, markdown_images
 from .retrieval import Evidence, Retriever
 
 
@@ -314,12 +314,13 @@ class DeepOrganizer:
                     f"> 图像来源：{item.title} · 第{item.page}页",
                     "",
                 ])
-                for image_index, image_path in enumerate(copied, start=1):
-                    rel = f"{asset_dir.name}/{image_path.name}"
-                    rendered.extend([
-                        f"![{item.title} 第{item.page}页 图{image_index}]({rel})",
-                        "",
-                    ])
+                rendered.extend(
+                    markdown_images(
+                        copied,
+                        relative_to=output.parent,
+                        label=f"{item.title} 第{item.page}页",
+                    ).splitlines()
+                )
                 image_count += len(copied)
                 if image_count >= max_images:
                     rendered.extend([
@@ -357,12 +358,13 @@ class DeepOrganizer:
                     f"### {item.title} · 第{item.page}页",
                     "",
                 ])
-                for image_index, image_path in enumerate(copied, start=1):
-                    rel = f"{asset_dir.name}/{image_path.name}"
-                    rendered.extend([
-                        f"![{item.title} 第{item.page}页 图{image_index}]({rel})",
-                        "",
-                    ])
+                rendered.extend(
+                    markdown_images(
+                        copied,
+                        relative_to=output.parent,
+                        label=f"{item.title} 第{item.page}页",
+                    ).splitlines()
+                )
                 image_count += len(copied)
                 if image_count >= max_images:
                     break

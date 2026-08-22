@@ -80,7 +80,7 @@ class TranslationStorageGuiTests(unittest.TestCase):
                 workbench.close()
 
     def test_release_ratio_targets_match_product_contract(self):
-        self.assertEqual(_release_ratio_target(LAYOUT_SOURCE_TRANSLATED), 1.30)
+        self.assertEqual(_release_ratio_target(LAYOUT_SOURCE_TRANSLATED), 1.18)
         self.assertEqual(_release_ratio_target(LAYOUT_TRANSLATED_ONLY), 1.30)
         self.assertEqual(_release_ratio_target(LAYOUT_ORIGINAL_BILINGUAL), 1.50)
 

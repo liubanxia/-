@@ -9,6 +9,10 @@ Phoenix 医院电脑模型下载说明
 3. 双击：医院电脑_一键下载模型.bat
 4. 优先选择 [1] 医院推荐。
 
+正式医学翻译只使用 Smart2 Qwen3.5-4B，并关闭通用深度推理以降低
+token/T 消耗和等待时间。旧 Marian/NLLB（原 Smart1 翻译链）已从正式
+下载入口、就绪判断和文档翻译中剔除；Qwen3.5-2B 仅用于快速问答/整理。
+
 自动下载线路：
 1. ModelScope
 2. hf-mirror.com 社区 Hugging Face 镜像

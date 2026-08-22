@@ -29,6 +29,12 @@ _CHINESE_VALIDATION_TARGETS = _SIMPLIFIED_TARGETS | {
     "zh-HK",
 }
 
+FORMAL_TRANSLATION_CONTRACT_VERSION = 1
+LEGACY_PREVIEW_BACKEND_NAMES = frozenset({
+    "marian_en_zh",
+    "nllb_600m_en_zh",
+})
+
 
 def _cuda_is_usable() -> bool:
     try:
@@ -430,19 +436,25 @@ class QwenMedicalTranslationBackend:
         return self.llm.generate(
             prompt,
             max_new_tokens=translation_output_budget(source, "smart2"),
-            profile="deep",
+            # Keep the quality-model route, but never enable general-purpose
+            # chain-of-thought for a deterministic translation correction.
+            # Provider Hub maps ``translation`` to the Smart2 model while
+            # explicitly disabling billable reasoning/thinking tokens.
+            profile="translation",
         ).strip()
 
 
 class MultiModelTranslationEngine:
     """Translation with an explicit preview/medical-quality boundary.
 
-    Smart1 is retained only for ordinary-document quick preview through the
-    dedicated Marian/NLLB backends. Smart2 is the formal medical route and uses
-    only the quality model; it never silently falls back to the inaccurate
-    preview models. Every candidate remains subject to numeric, unit, acronym,
-    and medical-semantic validation before automatic acceptance.
+    Marian/NLLB remain as dormant compatibility backends for old preview
+    checkpoints only. Smart2 is the sole formal medical route and uses only the
+    quality model; it never silently falls back to those inaccurate preview
+    models. Every candidate remains subject to numeric, unit, acronym, and
+    medical-semantic validation before automatic acceptance.
     """
+
+    _phoenix_formal_translation_contract = FORMAL_TRANSLATION_CONTRACT_VERSION
 
     def __init__(self, paths: WorkbenchPaths, llm: LocalLLM):
         self.paths = paths
@@ -467,6 +479,8 @@ class MultiModelTranslationEngine:
         return isinstance(self.qwen, QwenMedicalTranslationBackend)
 
     def available_backends(self) -> list[str]:
+        """Return installed backend inventory, including dormant legacy models."""
+
         result: list[str] = []
         if self._backend_available(self.marian):
             result.append(self.marian.name)
@@ -481,6 +495,45 @@ class MultiModelTranslationEngine:
         elif self._backend_available(self.qwen):
             result.append(self.qwen.name)
         return result
+
+    def formal_backend_names(self, target_language: str = "中文") -> list[str]:
+        """Return only backends permitted to create a formal medical document."""
+
+        try:
+            active = list(self.active_backends(target_language, "smart2"))
+        except Exception:
+            active = []
+        names = [
+            str(getattr(backend, "name", "") or "").strip()
+            for backend in active
+        ]
+        names = [
+            name for name in names
+            if name and name not in LEGACY_PREVIEW_BACKEND_NAMES
+        ]
+        if not names and active:
+            # Test/provider adapters may expose anonymous active objects. Keep
+            # their declared inventory while applying the same legacy denylist.
+            names = [
+                str(name)
+                for name in self.available_backends()
+                if str(name) not in LEGACY_PREVIEW_BACKEND_NAMES
+            ]
+        return list(dict.fromkeys(names))
+
+    def preview_backend_names(self, target_language: str = "中文") -> list[str]:
+        """Expose legacy preview inventory separately from formal readiness."""
+
+        try:
+            active = self.active_backends(target_language, "smart1")
+        except Exception:
+            active = []
+        return list(dict.fromkeys(
+            str(getattr(backend, "name", "") or "").strip()
+            for backend in active
+            if str(getattr(backend, "name", "") or "").strip()
+            in LEGACY_PREVIEW_BACKEND_NAMES
+        ))
 
     def active_backends(
         self,
@@ -561,7 +614,7 @@ class MultiModelTranslationEngine:
                             target_language,
                         )
                         corrected_attempt = TranslationAttempt(
-                            backend=f"{backend.name}_deep_retry",
+                            backend=f"{backend.name}_quality_retry",
                             text=corrected,
                             quality=corrected_quality,
                         )
@@ -578,7 +631,7 @@ class MultiModelTranslationEngine:
                             )
                     except Exception as exc:
                         backend_errors.append(
-                            f"{backend.name}_deep_retry: {type(exc).__name__}: {exc}"
+                            f"{backend.name}_quality_retry: {type(exc).__name__}: {exc}"
                         )
             except Exception as exc:
                 backend_errors.append(f"{backend.name}: {type(exc).__name__}: {exc}")
@@ -610,8 +663,9 @@ class MultiModelTranslationEngine:
         """Translate one slide/paragraph unit in one normal model call.
 
         The quality model handles the common batch. Only missing or
-        semantically invalid rows are retried individually with the deep
-        profile, keeping reasoning-token use proportional to actual failures.
+        semantically invalid rows are retried individually with the same
+        no-reasoning translation profile, keeping token use proportional to
+        actual failures.
         """
 
         values = [str(source or "").strip() for source in sources]
@@ -669,7 +723,7 @@ class MultiModelTranslationEngine:
                     target_language,
                 )
                 retry = TranslationAttempt(
-                    backend=f"{self.qwen.name}_deep_retry",
+                    backend=f"{self.qwen.name}_quality_retry",
                     text=corrected,
                     quality=corrected_quality,
                 )

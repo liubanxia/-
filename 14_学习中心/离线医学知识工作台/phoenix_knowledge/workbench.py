@@ -63,6 +63,23 @@ class MedicalKnowledgeWorkbench:
     def status(self) -> dict:
         docs = self.db.list_documents()
         tasks = self.db.list_tasks(limit=20)
+        installed_translation = self.translator.engine.available_backends()
+        formal_names = getattr(
+            self.translator.engine,
+            "formal_backend_names",
+            None,
+        )
+        preview_names = getattr(
+            self.translator.engine,
+            "preview_backend_names",
+            None,
+        )
+        formal_translation = (
+            list(formal_names("中文")) if callable(formal_names) else []
+        )
+        preview_translation = (
+            list(preview_names("中文")) if callable(preview_names) else []
+        )
         return {
             "project_root": str(self.paths.project_root),
             "source_root": str(self.paths.source_root),
@@ -79,7 +96,12 @@ class MedicalKnowledgeWorkbench:
             "generator_deep": self.llm.active_model_name("deep"),
             "embedding_available": self.retriever.embeddings.available(),
             "embedding_device": self.retriever.embeddings.device,
-            "translation_backends": self.translator.engine.available_backends(),
+            # Formal readiness is Smart2-only. Keep installed and legacy
+            # preview inventory separate so old Marian/NLLB folders cannot make
+            # a machine falsely report formal medical translation as READY.
+            "translation_backends": formal_translation,
+            "translation_installed_backends": installed_translation,
+            "translation_preview_backends": preview_translation,
             "translation_input_formats": [".pdf", ".pptx", ".docx"],
             "translation_output_policy": {
                 "pdf": "pdf",

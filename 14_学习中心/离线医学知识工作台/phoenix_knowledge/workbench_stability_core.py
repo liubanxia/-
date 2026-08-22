@@ -19,7 +19,7 @@ from .output_contracts import (
     validate_text_file,
 )
 
-WORKBENCH_CONTRACT_VERSION = 2
+WORKBENCH_CONTRACT_VERSION = 3
 
 _CAPTURED = False
 _INSTALLED = False
@@ -201,7 +201,12 @@ def _method_contract(method) -> int:
 
 def architecture_status(workbench=None) -> dict:
     from .office_translation import OFFICE_TRANSLATION_CONTRACT_VERSION
+    from .translation_models import (
+        FORMAL_TRANSLATION_CONTRACT_VERSION,
+        LEGACY_PREVIEW_BACKEND_NAMES,
+    )
     from .translation_pdf import TranslationPDFBuilder
+    from .translation_runtime_adapter import TranslationRuntimeAdapter
     from .translator import PDFTranslator
     from .workbench import MedicalKnowledgeWorkbench
 
@@ -246,6 +251,39 @@ def architecture_status(workbench=None) -> dict:
             != OFFICE_TRANSLATION_CONTRACT_VERSION
         ):
             broken.append("office_translation_contract_missing")
+        translator = getattr(workbench, "translator", None)
+        engine = getattr(translator, "engine", None)
+        if (
+            getattr(
+                type(engine),
+                "_phoenix_formal_translation_contract",
+                0,
+            )
+            != FORMAL_TRANSLATION_CONTRACT_VERSION
+        ):
+            broken.append("formal_translation_contract_missing")
+        runtime_adapter = getattr(translator, "translation_runtime", None)
+        if not isinstance(runtime_adapter, TranslationRuntimeAdapter):
+            broken.append("translation_runtime_adapter_missing")
+        if getattr(office_translator, "engine", None) is not engine:
+            broken.append("translation_engine_not_shared")
+        formal_names = getattr(engine, "formal_backend_names", None)
+        if not callable(formal_names):
+            broken.append("formal_backend_inventory_missing")
+        else:
+            try:
+                forbidden = set(formal_names("中文")) & set(
+                    LEGACY_PREVIEW_BACKEND_NAMES
+                )
+            except Exception as exc:
+                broken.append(
+                    f"formal_backend_inventory_error={type(exc).__name__}"
+                )
+            else:
+                if forbidden:
+                    broken.append(
+                        "legacy_preview_in_formal=" + ",".join(sorted(forbidden))
+                    )
 
     fingerprint_payload = {
         "workbench_contract": WORKBENCH_CONTRACT_VERSION,
@@ -253,6 +291,7 @@ def architecture_status(workbench=None) -> dict:
         "workbench_depth": wb_depth,
         "translation_depth": tr_depth,
         "office_translation_contract": OFFICE_TRANSLATION_CONTRACT_VERSION,
+        "formal_translation_contract": FORMAL_TRANSLATION_CONTRACT_VERSION,
         "methods": method_modules,
     }
     fingerprint = hashlib.sha256(
@@ -265,6 +304,7 @@ def architecture_status(workbench=None) -> dict:
         "workbench_wrapper_depth": wb_depth,
         "translation_wrapper_depth": tr_depth,
         "office_translation_contract": OFFICE_TRANSLATION_CONTRACT_VERSION,
+        "formal_translation_contract": FORMAL_TRANSLATION_CONTRACT_VERSION,
         "method_modules": method_modules,
     }
 
@@ -330,6 +370,7 @@ def _stable_status(self) -> dict:
         "workbench_wrapper_depth": architecture["workbench_wrapper_depth"],
         "translation_wrapper_depth": architecture["translation_wrapper_depth"],
         "office_translation_contract": architecture["office_translation_contract"],
+        "formal_translation_contract": architecture["formal_translation_contract"],
     })
     return payload
 

@@ -11,6 +11,7 @@ from pathlib import Path
 from phoenix_knowledge.config import WorkbenchPaths
 from phoenix_knowledge.office_translation import (
     OfficeDocumentTranslator,
+    OfficeTranslationError,
     validate_office_package,
 )
 from phoenix_knowledge.translation_models import (
@@ -156,7 +157,7 @@ class _BatchLLM:
 
     def generate(self, prompt, max_new_tokens=1200, *, profile=None):
         self.profiles.append(profile)
-        if profile == "deep":
+        if "医学翻译纠错器" in prompt:
             return "未见胸腔积液。"
         return json.dumps(
             [
@@ -165,6 +166,23 @@ class _BatchLLM:
             ],
             ensure_ascii=False,
         )
+
+
+class _FailEngine:
+    def active_backends(self, target_language="中文", smart_level="smart2"):
+        return [self]
+
+    def formal_backend_names(self, target_language="中文"):
+        return ["quality_test"]
+
+    def translate_segments(self, *args, **kwargs):
+        raise RuntimeError("batch unavailable")
+
+    def translate(self, *args, **kwargs):
+        raise RuntimeError("item unavailable")
+
+    def unload(self):
+        pass
 
 
 class OfficeTranslationTests(unittest.TestCase):
@@ -180,10 +198,13 @@ class OfficeTranslationTests(unittest.TestCase):
             result = translator.translate_document(
                 source,
                 page_preview=lambda unit, text, path: previews.append((unit, text)),
+                smart_level="smart1",
+                medical_quality_required=False,
             )
 
             self.assertEqual(result.output_path.suffix, ".pptx")
             self.assertEqual(result.output_paths, (result.output_path,))
+            self.assertEqual(result.smart_level, "smart2")
             self.assertEqual(len(previews), 2)
             self.assertEqual(len(engine.calls), 2)
             report = validate_office_package(source, result.output_path)
@@ -231,11 +252,11 @@ class OfficeTranslationTests(unittest.TestCase):
                 result = workbench.translate_book(source)
                 self.assertEqual(result.output_path.suffix, ".docx")
                 self.assertTrue(result.output_path.is_file())
-                self.assertEqual(workbench.status()["office_translation_contract"], 1)
+                self.assertEqual(workbench.status()["office_translation_contract"], 2)
             finally:
                 workbench.close()
 
-    def test_batch_quality_model_only_deep_retries_failed_segment(self):
+    def test_batch_quality_model_retries_only_failed_segment_without_reasoning(self):
         with tempfile.TemporaryDirectory() as temp:
             llm = _BatchLLM()
             engine = MultiModelTranslationEngine(_paths(Path(temp)), llm)
@@ -247,8 +268,47 @@ class OfficeTranslationTests(unittest.TestCase):
                 "中文",
             )
             self.assertTrue(all(item.quality.ok for item in decisions))
-            self.assertEqual(llm.profiles, ["translation", "deep"])
+            self.assertEqual(llm.profiles, ["translation", "translation"])
             self.assertIn("未见", decisions[1].text)
+
+    def test_office_resume_keeps_original_requested_start_unit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "lecture.pptx"
+            _write_pptx(source)
+            engine = _Engine()
+            translator = OfficeDocumentTranslator(_paths(root), engine)
+            pause_checks = iter((False, True))
+
+            paused = translator.translate_document(
+                source,
+                start_page=2,
+                should_pause=lambda: next(pause_checks, True),
+            )
+            self.assertTrue(paused.paused)
+            self.assertEqual(paused.start_page, 2)
+
+            resumed = translator.translate_document(source)
+            self.assertFalse(resumed.paused)
+            self.assertEqual(resumed.start_page, 2)
+            self.assertEqual(resumed.resumed_pages, 1)
+            self.assertEqual(len(engine.calls), 1)
+            with zipfile.ZipFile(resumed.output_path) as archive:
+                slide1 = archive.read("ppt/slides/slide1.xml").decode("utf-8")
+                slide2 = archive.read("ppt/slides/slide2.xml").decode("utf-8")
+            self.assertIn("Pulmonary nodule", slide1)
+            self.assertIn("右肺病灶 12 mm", slide2)
+
+    def test_all_failed_office_translation_keeps_checkpoints_but_blocks_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "paper.docx"
+            _write_docx(source)
+            translator = OfficeDocumentTranslator(_paths(root), _FailEngine())
+            with self.assertRaises(OfficeTranslationError):
+                translator.translate_document(source)
+            self.assertFalse(any(translator.output_root.rglob("*译本.docx")))
+            self.assertTrue(any(translator.output_root.rglob("checkpoint.json")))
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Iterable
 
 
-CONTRACT_VERSION = "translation-output-v1"
+CONTRACT_VERSION = "translation-output-v2"
 _CJK_RUN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
 _LATIN_TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:[.%+\-/][A-Za-z0-9]+)*")
 

@@ -93,9 +93,9 @@ class ResponsivenessTests(unittest.TestCase):
             self.assertEqual(matrix1.shape, (3, 3))
             self.assertEqual(ids1.tolist(), [11, 12, 13])
 
-    def test_hospital_group_prefers_fast_generator(self):
+    def test_hospital_group_includes_fast_qa_and_formal_translation_models(self):
         self.assertIn("generator_fast", GROUPS["hospital_recommended"])
-        self.assertNotIn("generator", GROUPS["hospital_recommended"])
+        self.assertIn("generator", GROUPS["hospital_recommended"])
         self.assertEqual(GROUPS["deep_quality"], ["generator"])
 
 

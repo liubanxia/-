@@ -22,7 +22,7 @@ PauseCallback = Callable[[], bool]
 PreviewCallback = Callable[[int, str, Path], None]
 
 SUPPORTED_OFFICE_TRANSLATION_EXTENSIONS = {".pptx", ".docx"}
-OFFICE_TRANSLATION_CONTRACT_VERSION = 1
+OFFICE_TRANSLATION_CONTRACT_VERSION = 2
 OFFICE_OUTPUT_LAYOUT = "source_format"
 OFFICE_SIZE_RATIO_DEFAULT = 1.25
 OFFICE_SIZE_SLACK_BYTES = 1024 * 1024
@@ -563,6 +563,22 @@ class OfficeDocumentTranslator:
                     path.unlink(missing_ok=True)
         Path(checkpoint).unlink(missing_ok=True)
 
+    @staticmethod
+    def _resolve_resume_start_unit(
+        state: dict,
+        requested_start_unit: int,
+        *,
+        force_restart: bool = False,
+    ) -> int:
+        requested = max(1, int(requested_start_unit))
+        if force_restart or not state:
+            return requested
+        try:
+            existing = int(state.get("start_page", requested))
+        except (TypeError, ValueError):
+            return requested
+        return max(1, existing)
+
     def _active_backends(self, target_language: str) -> tuple[str, ...]:
         try:
             active = self.engine.active_backends(target_language, "smart2")
@@ -572,8 +588,18 @@ class OfficeDocumentTranslator:
             raise RuntimeError(
                 "医学精译质量模型未就绪；PPTX/DOCX正式译文不允许降级到Smart1。"
             )
+        formal_names = getattr(self.engine, "formal_backend_names", None)
+        if callable(formal_names):
+            names = tuple(formal_names(target_language))
+            if names:
+                return names
         try:
-            return tuple(self.engine.available_backends())
+            legacy = {"marian_en_zh", "nllb_600m_en_zh"}
+            names = tuple(
+                str(name) for name in self.engine.available_backends()
+                if str(name) not in legacy
+            )
+            return names or ("medical_translation",)
         except AttributeError:
             return ("medical_translation",)
 
@@ -687,8 +713,20 @@ class OfficeDocumentTranslator:
         backup = final_output.with_name(
             f".{final_output.stem}.old{final_output.suffix}"
         )
+        publish_marker = final_output.with_name(
+            f".{final_output.stem}.publish.json"
+        )
         temp.unlink(missing_ok=True)
-        if backup.is_file() and not final_output.is_file():
+        if publish_marker.is_file():
+            interrupted = _read_json(publish_marker)
+            had_previous = bool(interrupted.get("had_previous", False))
+            if had_previous and backup.is_file():
+                final_output.unlink(missing_ok=True)
+                os.replace(backup, final_output)
+            elif not had_previous:
+                final_output.unlink(missing_ok=True)
+            publish_marker.unlink(missing_ok=True)
+        elif backup.is_file() and not final_output.is_file():
             os.replace(backup, final_output)
         else:
             backup.unlink(missing_ok=True)
@@ -714,6 +752,10 @@ class OfficeDocumentTranslator:
                 expected_replacements=replacements,
             )
             had_previous = final_output.is_file()
+            _write_json(
+                publish_marker,
+                {"had_previous": had_previous, "output": str(final_output)},
+            )
             if had_previous:
                 os.replace(final_output, backup)
             try:
@@ -727,7 +769,9 @@ class OfficeDocumentTranslator:
                 final_output.unlink(missing_ok=True)
                 if had_previous and backup.is_file():
                     os.replace(backup, final_output)
+                publish_marker.unlink(missing_ok=True)
                 raise
+            publish_marker.unlink(missing_ok=True)
             backup.unlink(missing_ok=True)
             return report
         finally:
@@ -759,8 +803,10 @@ class OfficeDocumentTranslator:
         suffix = source.suffix.lower()
         if suffix not in SUPPORTED_OFFICE_TRANSLATION_EXTENSIONS:
             raise ValueError(f"仅支持PPTX/DOCX同格式翻译：{source}")
-        if medical_quality_required or str(smart_level).lower() != "smart2":
-            smart_level = "smart2"
+        # PPTX/DOCX are formal same-format deliverables. Legacy callers may
+        # still pass these arguments, but neither can downgrade the route.
+        del medical_quality_required, smart_level
+        smart_level = "smart2"
         available_backends = self._active_backends(target_language)
         digest = _sha256_file(source)
         root, units_root, previews_root, checkpoint, final_output = self._task_paths(
@@ -792,7 +838,11 @@ class OfficeDocumentTranslator:
             image_count = len(_media_names(archive.namelist(), suffix))
 
         total_units = len(units)
-        start_page = max(1, int(start_page))
+        start_page = self._resolve_resume_start_unit(
+            previous,
+            start_page,
+            force_restart=force_restart,
+        )
         if start_page > total_units:
             raise ValueError(
                 f"开始单元 {start_page} 超出总单元数 {total_units}。"
@@ -922,21 +972,45 @@ class OfficeDocumentTranslator:
                             decision_by_source = dict(
                                 zip((segment.source for segment in pending), decisions)
                             )
-                        except Exception as exc:
+                        except Exception as batch_exc:
+                            # A malformed/failed batch should not throw away an
+                            # entire slide or paragraph group. Retry only those
+                            # pending rows individually through the same Smart2
+                            # no-reasoning translation profile.
                             decision_by_source = {}
                             for segment in pending:
-                                warning_count += 1
-                                translated_by_id[segment.segment_id] = segment.source
-                                audits.append({
-                                    "id": segment.segment_id,
-                                    "source": segment.source,
-                                    "translated": segment.source,
-                                    "backend": "failed_preserve_source",
-                                    "quality_ok": False,
-                                    "quality_score": 0.0,
-                                    "reasons": [f"{type(exc).__name__}: {exc}"],
-                                    "needs_review": True,
-                                })
+                                try:
+                                    decision = self.engine.translate(
+                                        segment.source,
+                                        target_language,
+                                        smart_level="smart2",
+                                    )
+                                    row = self._decision_audit(segment, decision)
+                                    value = str(
+                                        row["translated"] or segment.source
+                                    ).strip()
+                                    translated_by_id[segment.segment_id] = value
+                                    audits.append(row)
+                                    if row["needs_review"]:
+                                        warning_count += 1
+                                    else:
+                                        translation_cache[segment.source] = value
+                                except Exception as item_exc:
+                                    warning_count += 1
+                                    translated_by_id[segment.segment_id] = segment.source
+                                    audits.append({
+                                        "id": segment.segment_id,
+                                        "source": segment.source,
+                                        "translated": segment.source,
+                                        "backend": "failed_preserve_source",
+                                        "quality_ok": False,
+                                        "quality_score": 0.0,
+                                        "reasons": [
+                                            f"batch={type(batch_exc).__name__}: {batch_exc}",
+                                            f"item={type(item_exc).__name__}: {item_exc}",
+                                        ],
+                                        "needs_review": True,
+                                    })
                         else:
                             for segment in pending:
                                 decision = decision_by_source[segment.source]
@@ -956,16 +1030,33 @@ class OfficeDocumentTranslator:
                         if primary is not None and primary.segment_id in translated_by_id:
                             value = translated_by_id[primary.segment_id]
                             translated_by_id[segment.segment_id] = value
-                            translation_cache.setdefault(segment.source, value)
+                            primary_row = next(
+                                (
+                                    row for row in reversed(audits)
+                                    if row.get("id") == primary.segment_id
+                                ),
+                                {},
+                            )
+                            accepted = bool(primary_row.get("quality_ok", False)) and not bool(
+                                primary_row.get("needs_review", True)
+                            )
+                            if accepted:
+                                translation_cache.setdefault(segment.source, value)
                             audits.append({
                                 "id": segment.segment_id,
                                 "source": segment.source,
                                 "translated": value,
-                                "backend": "unit_deduplicated",
-                                "quality_ok": True,
-                                "quality_score": 1.0,
-                                "reasons": [],
-                                "needs_review": False,
+                                "backend": (
+                                    "unit_deduplicated"
+                                    if accepted
+                                    else "unit_deduplicated_needs_review"
+                                ),
+                                "quality_ok": accepted,
+                                "quality_score": float(
+                                    primary_row.get("quality_score", 0.0) or 0.0
+                                ),
+                                "reasons": list(primary_row.get("reasons") or ()),
+                                "needs_review": not accepted,
                             })
 
                 for segment in unit.segments:
@@ -1023,6 +1114,28 @@ class OfficeDocumentTranslator:
                         export_format=suffix.lstrip("."),
                         part_pages=0,
                     )
+
+            audited_segments = 0
+            accepted_segments = 0
+            for unit in units:
+                if unit.number < start_page:
+                    continue
+                payload = _read_json(units_root / f"{unit.number:06d}.json")
+                for row in payload.get("translations") or ():
+                    if not isinstance(row, dict):
+                        continue
+                    audited_segments += 1
+                    if (
+                        bool(row.get("quality_ok", False))
+                        and not bool(row.get("needs_review", True))
+                        and str(row.get("backend", "")) != "failed_preserve_source"
+                    ):
+                        accepted_segments += 1
+            if audited_segments and accepted_segments == 0:
+                raise OfficeTranslationError(
+                    "所有待翻译文字均未通过医学质量校验；Phoenix已保留逐单元"
+                    "checkpoint供查看/重试，但拒绝发布未翻译的正式Office文件。"
+                )
 
             report = self._build_output(source, final_output, replacements)
             report.update({

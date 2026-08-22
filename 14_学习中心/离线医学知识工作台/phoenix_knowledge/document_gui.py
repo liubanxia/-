@@ -107,7 +107,10 @@ def install(gui_module) -> None:
         for button in widget.findChildren(QPushButton):
             if button.text() == "导入PDF":
                 button.setText("导入资料/论文")
-            elif button.text() == "选中书→整本翻译":
+            elif button.text() in {
+                "选中书→整本翻译",
+                "选中文档→同格式翻译",
+            }:
                 button.setText("选中文档→同格式翻译")
         return widget
 

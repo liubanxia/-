@@ -96,6 +96,18 @@ class TranslationBackendPriorityTests(unittest.TestCase):
                 ],
             )
 
+    def test_formal_inventory_excludes_legacy_preview_models(self):
+        with tempfile.TemporaryDirectory() as td:
+            engine = self._engine(Path(td))
+            self.assertEqual(
+                engine.formal_backend_names("中文"),
+                ["qwen35_medical_translation"],
+            )
+            self.assertEqual(
+                engine.preview_backend_names("中文"),
+                ["marian_en_zh", "nllb_600m_en_zh"],
+            )
+
     def test_translation_output_budget_scales_and_caps(self):
         self.assertEqual(translation_output_budget("short"), 512)
         self.assertGreater(

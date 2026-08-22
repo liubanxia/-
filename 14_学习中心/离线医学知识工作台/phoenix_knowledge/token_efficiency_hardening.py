@@ -38,9 +38,8 @@ def _install_translation_smart1_offline() -> None:
         if level == "smart2":
             return backends
 
-        # Smart1 is the low-cost/default translator. Preserve the existing
-        # product/licensing/backend-selection rules, but remove the general LLM
-        # backend so a normal whole-book translation cannot consume cloud tokens.
+        # Smart1 survives only as a dormant legacy preview/checkpoint route.
+        # It must never gain a general LLM backend or become formal translation.
         return [backend for backend in backends if backend is not self.qwen]
 
     active_backends._phoenix_token_hardened = True

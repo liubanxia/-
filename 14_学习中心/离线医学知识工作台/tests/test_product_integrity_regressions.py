@@ -14,7 +14,7 @@ from phoenix_knowledge.config import WorkbenchPaths
 from phoenix_knowledge.db import KnowledgeDB
 from phoenix_knowledge.llm_safe import LocalLLM
 from phoenix_knowledge.output_contracts import OutputContractError
-from phoenix_knowledge.pdf_assets import PDFAssetStore
+from phoenix_knowledge.pdf_assets import PDFAssetStore, markdown_images
 from phoenix_knowledge.pdf_parser import iter_pdf_pages
 from phoenix_knowledge.product_document_ingest import ProductDocumentIngestor
 from phoenix_knowledge.rich_export import MultiFormatExporter
@@ -128,10 +128,17 @@ class ProductIntegrityRegressionTests(unittest.TestCase):
             root = Path(temp)
             assets = root / "topic_assets"
             assets.mkdir()
-            (assets / "Lung (CT).png").write_bytes(_png_bytes())
+            image = assets / "Lung (CT).png"
+            image.write_bytes(_png_bytes())
             source = root / "topic.md"
+            generated = markdown_images(
+                [image],
+                relative_to=root,
+                label="肺结节 第12页",
+            )
+            self.assertIn("(<topic_assets/Lung (CT).png>)", generated)
             source.write_text(
-                "# 肺结节\n\n![肺结节 第12页](topic_assets/Lung (CT).png)\n",
+                "# 肺结节\n\n" + generated + "\n",
                 encoding="utf-8",
             )
             bundle = MultiFormatExporter(root / "out").export_path(
