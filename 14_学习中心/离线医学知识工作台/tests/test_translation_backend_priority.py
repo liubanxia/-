@@ -5,7 +5,10 @@ import unittest
 from pathlib import Path
 
 from phoenix_knowledge.config import WorkbenchPaths
-from phoenix_knowledge.translation_models import MultiModelTranslationEngine
+from phoenix_knowledge.translation_models import (
+    MultiModelTranslationEngine,
+    translation_output_budget,
+)
 
 
 class _LLM:
@@ -52,7 +55,7 @@ class TranslationBackendPriorityTests(unittest.TestCase):
         engine.nllb = _Backend("nllb_600m_en_zh")
         return engine
 
-    def test_smart1_uses_dedicated_translation_before_qwen(self):
+    def test_smart1_is_preview_only_and_never_uses_qwen(self):
         with tempfile.TemporaryDirectory() as td:
             engine = self._engine(Path(td))
             names = [
@@ -64,11 +67,10 @@ class TranslationBackendPriorityTests(unittest.TestCase):
                 [
                     "marian_en_zh",
                     "nllb_600m_en_zh",
-                    "qwen35_medical_translation",
                 ],
             )
 
-    def test_smart2_is_explicit_quality_first_route(self):
+    def test_smart2_is_quality_only_without_preview_fallback(self):
         with tempfile.TemporaryDirectory() as td:
             engine = self._engine(Path(td))
             names = [
@@ -79,12 +81,10 @@ class TranslationBackendPriorityTests(unittest.TestCase):
                 names,
                 [
                     "qwen35_medical_translation",
-                    "marian_en_zh",
-                    "nllb_600m_en_zh",
                 ],
             )
 
-    def test_visible_backend_order_matches_default_whole_book_route(self):
+    def test_visible_backend_inventory_reports_all_installed_models(self):
         with tempfile.TemporaryDirectory() as td:
             engine = self._engine(Path(td))
             self.assertEqual(
@@ -95,6 +95,17 @@ class TranslationBackendPriorityTests(unittest.TestCase):
                     "qwen35_medical_translation",
                 ],
             )
+
+    def test_translation_output_budget_scales_and_caps(self):
+        self.assertEqual(translation_output_budget("short"), 512)
+        self.assertGreater(
+            translation_output_budget("x" * 2000),
+            translation_output_budget("short"),
+        )
+        self.assertEqual(
+            translation_output_budget("x" * 10000),
+            2600,
+        )
 
 
 if __name__ == "__main__":

@@ -71,7 +71,10 @@ jobs:
           real_acceptance_final.py
           phoenix_knowledge/gui_bootstrap.py
           phoenix_knowledge/release_gui_hardening.py
+          phoenix_knowledge/translator.py
           phoenix_knowledge/translation_models.py
+          phoenix_knowledge/translation_semantics.py
+          phoenix_knowledge/provider_hub_v2.py
           phoenix_knowledge/output_contracts.py
           phoenix_knowledge/workbench_stability_core.py
           phoenix_knowledge/translation_output_validation.py
@@ -90,4 +93,7 @@ jobs:
           tests.test_translation_storage_gui
           tests.test_gui_bootstrap_contract
           tests.test_translation_backend_priority
+          tests.test_translation_medical_semantics
+          tests.test_translation_product_v2
+          tests.test_provider_hub
           tests.test_final_gui_runtime_contract

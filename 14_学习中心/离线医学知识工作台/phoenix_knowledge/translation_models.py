@@ -57,6 +57,21 @@ def _normalize_smart_level(level: str | None) -> str:
     return "smart1"
 
 
+def translation_output_budget(
+    text: str,
+    smart_level: str = "smart2",
+) -> int:
+    """Bound output tokens to the source size instead of always reserving 2600."""
+
+    chars = len(str(text or "").strip())
+    ceiling = (
+        2600
+        if _normalize_smart_level(smart_level) == "smart2"
+        else 1800
+    )
+    return max(512, min(ceiling, int(chars * 0.72) + 384))
+
+
 @dataclass(frozen=True)
 class QualityReport:
     ok: bool
@@ -265,7 +280,11 @@ class QwenMedicalTranslationBackend:
         self.llm = llm
 
     def available(self, smart_level: str = "smart1") -> bool:
-        profile = "deep" if _normalize_smart_level(smart_level) == "smart2" else "fast"
+        profile = (
+            "translation"
+            if _normalize_smart_level(smart_level) == "smart2"
+            else "fast"
+        )
         return self.llm.available(profile)
 
     def translate(
@@ -276,8 +295,8 @@ class QwenMedicalTranslationBackend:
         smart_level: str = "smart1",
     ) -> str:
         level = _normalize_smart_level(smart_level)
-        profile = "deep" if level == "smart2" else "fast"
-        max_tokens = 2600 if level == "smart2" else 2100
+        profile = "translation" if level == "smart2" else "fast"
+        max_tokens = translation_output_budget(text, level)
         prompt = f"""你是 Phoenix 医学教材精译器。把下面英文医学原文完整、准确地翻译成{target_language}。
 
 这是医学教材正文，不是摘要任务。必须做到：
@@ -302,14 +321,13 @@ class QwenMedicalTranslationBackend:
 
 
 class MultiModelTranslationEngine:
-    """Offline medical translation with deterministic quality routing.
+    """Translation with an explicit preview/medical-quality boundary.
 
-    Smart1/default whole-book English-to-Chinese translation uses the dedicated
-    Marian backend first, then NLLB, and only invokes the much heavier Qwen
-    generator when deterministic translation is unavailable or fails the
-    medical safety validator. Smart2 deliberately reverses that priority for a
-    user-requested quality-first pass. Every candidate is still subject to the
-    same numeric/unit/acronym validation before automatic acceptance.
+    Smart1 is retained only for ordinary-document quick preview through the
+    dedicated Marian/NLLB backends. Smart2 is the formal medical route and uses
+    only the quality model; it never silently falls back to the inaccurate
+    preview models. Every candidate remains subject to numeric, unit, acronym,
+    and medical-semantic validation before automatic acceptance.
     """
 
     def __init__(self, paths: WorkbenchPaths, llm: LocalLLM):
@@ -370,16 +388,9 @@ class MultiModelTranslationEngine:
                 dedicated.append(self.nllb)
 
         if level == "smart2":
-            result: list[object] = []
-            if smart_backend_available:
-                result.append(self.qwen)
-            result.extend(dedicated)
-            return result
+            return [self.qwen] if smart_backend_available else []
 
-        result = list(dedicated)
-        if smart_backend_available:
-            result.append(self.qwen)
-        return result
+        return dedicated
 
     def translate(
         self,

@@ -368,7 +368,7 @@ def main() -> int:
                 decision = workbench.translator.engine.translate(
                     "CT demonstrates no pleural effusion and a 12 mm lesion in the right kidney.",
                     "中文",
-                    smart_level="smart1",
+                    smart_level="smart2",
                 )
                 if not decision.quality.ok:
                     raise RuntimeError(
@@ -406,7 +406,7 @@ def main() -> int:
                     synthetic,
                     start_page=1,
                     target_language="中文",
-                    smart_level="smart1",
+                    smart_level="smart2",
                     output_layout=LAYOUT_TRANSLATED_ONLY,
                     export_format=EXPORT_PDF,
                     part_pages=50,

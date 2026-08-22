@@ -400,8 +400,10 @@ def install(gui_module) -> None:
         quality_row = QHBoxLayout()
         quality_row.addWidget(QLabel("翻译方式："))
         self.translation_smart_combo = QComboBox()
-        self.translation_smart_combo.addItem("智能1（推荐）", "smart1")
-        self.translation_smart_combo.addItem("智能2（更精细）", "smart2")
+        self.translation_smart_combo.addItem(
+            "医学精译（质量模型，低推理）",
+            "smart2",
+        )
         quality_row.addWidget(self.translation_smart_combo)
         quality_row.addStretch(1)
 
@@ -478,16 +480,20 @@ def install(gui_module) -> None:
     def refresh_translation_models(self):
         if not hasattr(self, "translation_models_label"):
             return
-        smart1 = "可用" if self.workbench.llm.available("fast") else "未就绪"
-        smart2 = "可用" if self.workbench.llm.available("deep") else "未就绪"
+        quality = (
+            "可用"
+            if self.workbench.llm.available("translation")
+            else "未就绪"
+        )
         engine = self.workbench.translator.engine
-        fallback = (
+        preview = (
             "可用"
             if engine.marian.available() or engine.nllb.available()
             else "未就绪"
         )
         self.translation_models_label.setText(
-            f"翻译能力：智能1={smart1} | 智能2={smart2} | 自动兜底={fallback}"
+            f"医学精译={quality}（仅质量模型） | "
+            f"普通资料快速预览={preview}"
         )
 
     def start_translation(self, retry_warning_pages: bool):
@@ -508,7 +514,7 @@ def install(gui_module) -> None:
         smart_level = (
             self.translation_smart_combo.currentData()
             if hasattr(self, "translation_smart_combo")
-            else "smart1"
+            else "smart2"
         )
         output_layout = (
             self.translation_layout_combo.currentData()
@@ -526,7 +532,7 @@ def install(gui_module) -> None:
             else 50
         )
         os.environ["PHOENIX_KNOWLEDGE_LLM_PROFILE"] = (
-            "deep" if smart_level == "smart2" else "fast"
+            "translation" if smart_level == "smart2" else "fast"
         )
 
         # Release unrelated resident weights before the translation engine loads
@@ -582,9 +588,9 @@ def install(gui_module) -> None:
         self.last_translation_path = primary
         self.translation_progress.setValue(100)
         smart_label = (
-            "智能2"
-            if str(getattr(result, "smart_level", "smart1")) == "smart2"
-            else "智能1"
+            "医学精译"
+            if str(getattr(result, "smart_level", "smart2")) == "smart2"
+            else "普通资料快速预览"
         )
         self.translation_status.setText(
             f"整本翻译完成 | {smart_label} | 待复核页={result.warning_pages}"

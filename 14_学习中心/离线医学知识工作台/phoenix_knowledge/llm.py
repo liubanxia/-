@@ -82,6 +82,12 @@ class LocalLLM:
             or "fast"
         ).strip().lower()
         if raw in {
+            "translation",
+            "medical_translation",
+            "translate",
+        }:
+            return "translation"
+        if raw in {
             "deep",
             "4b",
             "deep4b",
@@ -128,7 +134,7 @@ class LocalLLM:
 
     def _local_candidates(self, profile: str | None = None):
         normalized = self._normalize_profile(profile)
-        if normalized == "deep":
+        if normalized in {"deep", "translation"}:
             return (
                 (self.deep_model_name, self.deep_model_path),
                 (self.fast_model_name, self.fast_model_path),

@@ -7,11 +7,15 @@ on:
       - 'fix/**'
     paths:
       - '14_学习中心/离线医学知识工作台/phoenix_knowledge/translation_*.py'
+      - '14_学习中心/离线医学知识工作台/phoenix_knowledge/provider_hub*.py'
+      - '14_学习中心/离线医学知识工作台/phoenix_knowledge/llm*.py'
       - '14_学习中心/离线医学知识工作台/tests/test_translation_*.py'
       - '.github/workflows/translation-release-gate.yml'
   pull_request:
     paths:
       - '14_学习中心/离线医学知识工作台/phoenix_knowledge/translation_*.py'
+      - '14_学习中心/离线医学知识工作台/phoenix_knowledge/provider_hub*.py'
+      - '14_学习中心/离线医学知识工作台/phoenix_knowledge/llm*.py'
       - '14_学习中心/离线医学知识工作台/tests/test_translation_*.py'
       - '.github/workflows/translation-release-gate.yml'
 
@@ -56,9 +60,15 @@ jobs:
       - name: Compile translation stability core
         run: >-
           python -m py_compile
+          phoenix_knowledge/translator.py
+          phoenix_knowledge/translation_models.py
+          phoenix_knowledge/translation_semantics.py
           phoenix_knowledge/translation_pdf.py
           phoenix_knowledge/translation_output_validation.py
           phoenix_knowledge/translation_stability_core.py
+          phoenix_knowledge/llm.py
+          phoenix_knowledge/provider_hub.py
+          phoenix_knowledge/provider_hub_v2.py
 
       - name: Run translation release regression suite
         run: >-
@@ -67,3 +77,7 @@ jobs:
           tests.test_translation_storage_budget
           tests.test_compact_translation_layout
           tests.test_translation_storage_gui
+          tests.test_translation_backend_priority
+          tests.test_translation_medical_semantics
+          tests.test_translation_product_v2
+          tests.test_provider_hub

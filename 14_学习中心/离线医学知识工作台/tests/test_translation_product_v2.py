@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from phoenix_knowledge.config import WorkbenchPaths
 from phoenix_knowledge.translation_models import (
@@ -15,18 +17,24 @@ from phoenix_knowledge.translation_pdf import (
     LAYOUT_ORIGINAL_BILINGUAL,
     TranslationPDFBuilder,
 )
-from phoenix_knowledge.translator import EXPORT_TXT, PDFTranslator
+from phoenix_knowledge.translator import (
+    EXPORT_TXT,
+    PDFTranslator,
+    _translation_chunk_chars,
+)
 
 
 class _SmartLLM:
     def __init__(self):
         self.profiles: list[str | None] = []
+        self.max_tokens: list[int] = []
 
     def available(self, profile=None):
         return True
 
     def generate(self, prompt, max_new_tokens=1200, *, profile=None):
         self.profiles.append(profile)
+        self.max_tokens.append(int(max_new_tokens))
         return "CT显示5 mm肺结节，边缘清楚。"
 
 
@@ -72,18 +80,31 @@ class TranslationProductV2Tests(unittest.TestCase):
             decision = engine.translate(
                 "CT showed a 5 mm pulmonary nodule.",
                 "中文",
-                smart_level="smart1",
+                smart_level="smart2",
             )
             self.assertEqual(decision.text, "CT显示5 mm肺结节，边缘清楚。")
             self.assertIn("qwen35", decision.backend)
-            self.assertEqual(llm.profiles[-1], "fast")
+            self.assertEqual(llm.profiles[-1], "translation")
+            self.assertEqual(llm.max_tokens[-1], 512)
 
-            engine.translate(
-                "CT showed a 5 mm pulmonary nodule.",
-                "中文",
-                smart_level="smart2",
-            )
-            self.assertEqual(llm.profiles[-1], "deep")
+            with self.assertRaises(RuntimeError):
+                engine.translate(
+                    "CT showed a 5 mm pulmonary nodule.",
+                    "中文",
+                    smart_level="smart1",
+                )
+
+    def test_translation_chunk_size_is_bounded_and_configurable(self):
+        with patch.dict(
+            os.environ,
+            {"PHOENIX_TRANSLATION_CHUNK_CHARS": "100"},
+        ):
+            self.assertEqual(_translation_chunk_chars(), 1600)
+        with patch.dict(
+            os.environ,
+            {"PHOENIX_TRANSLATION_CHUNK_CHARS": "999999"},
+        ):
+            self.assertEqual(_translation_chunk_chars(), 6000)
 
     def test_original_page_above_translation_pdf_and_split_volumes(self):
         import fitz
@@ -177,6 +198,7 @@ class TranslationProductV2Tests(unittest.TestCase):
             )
             self.assertTrue(first.paused)
             self.assertEqual(first.pages_done, 1)
+            self.assertEqual(first.smart_level, "smart2")
 
             second = translator.translate_book(
                 source,

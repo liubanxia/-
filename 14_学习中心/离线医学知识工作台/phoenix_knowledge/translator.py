@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -42,6 +43,15 @@ def _normalize_smart_level(value: str | None) -> str:
     return "smart2" if raw in {"smart2", "2", "deep", "quality", "max"} else "smart1"
 
 
+def _translation_chunk_chars() -> int:
+    raw = os.environ.get("PHOENIX_TRANSLATION_CHUNK_CHARS", "").strip()
+    try:
+        value = int(raw) if raw else 3200
+    except (TypeError, ValueError):
+        value = 3200
+    return max(1600, min(6000, value))
+
+
 def _normalize_export_format(value: str | None) -> str:
     raw = (value or EXPORT_PDF).strip().lower()
     if raw in {EXPORT_PDF_RICH, "all", "full"}:
@@ -77,7 +87,7 @@ class TranslationResult:
     output_paths: tuple[Path, ...] = ()
     image_count: int = 0
     paused: bool = False
-    smart_level: str = "smart1"
+    smart_level: str = "smart2"
     output_layout: str = LAYOUT_ORIGINAL_BILINGUAL
     export_format: str = EXPORT_PDF
     part_pages: int = 50
@@ -193,7 +203,7 @@ class PDFTranslator:
 
         parts = chunk_text(
             source_text,
-            max_chars=1200,
+            max_chars=_translation_chunk_chars(),
             overlap_chars=0,
         ) or [source_text]
         translated_parts: list[str] = []
@@ -598,7 +608,8 @@ class PDFTranslator:
         progress: ProgressCallback | None = None,
         force_restart: bool = False,
         retry_warning_pages: bool = False,
-        smart_level: str = "smart1",
+        smart_level: str = "smart2",
+        medical_quality_required: bool = True,
         output_layout: str = LAYOUT_ORIGINAL_BILINGUAL,
         export_format: str = EXPORT_PDF,
         part_pages: int = 50,
@@ -611,6 +622,8 @@ class PDFTranslator:
             raise ValueError(f'仅支持PDF整本翻译: {pdf_path}')
 
         smart_level = _normalize_smart_level(smart_level)
+        if medical_quality_required:
+            smart_level = "smart2"
         output_layout = _normalize_layout(output_layout)
         export_format = _normalize_export_format(export_format)
         part_pages = max(1, int(part_pages))
@@ -620,8 +633,13 @@ class PDFTranslator:
             smart_level,
         )
         if not active_backends:
+            if medical_quality_required:
+                raise RuntimeError(
+                    '医学精译质量模型未就绪；已禁止使用 Marian/NLLB '
+                    '生成正式医学译文。请先配置智能2质量模型。'
+                )
             raise RuntimeError(
-                f'目标语言“{target_language}”当前没有可用本地翻译能力。'
+                f'目标语言“{target_language}”当前没有可用翻译能力。'
             )
 
         total_pages = int(pdf_page_count(pdf_path))
@@ -706,6 +724,7 @@ class PDFTranslator:
             'status': 'running',
             'available_backends': all_backends,
             'smart_level': smart_level,
+            'medical_quality_required': bool(medical_quality_required),
             'output_layout': output_layout,
             'export_format': export_format,
             'part_pages': part_pages,

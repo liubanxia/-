@@ -67,33 +67,25 @@ def install(gui_module) -> None:
     def refresh_translation_models(self):
         try:
             status = self.workbench.status()
-            smart1 = (
-                "可用"
-                if status.get("generator_fast_ready")
-                else "未就绪"
-            )
-            smart2 = (
+            quality = (
                 "可用"
                 if status.get("generator_deep_ready")
                 else "未就绪"
             )
-            names = list(
-                self.workbench.translator.engine.available_backends()
+            engine = self.workbench.translator.engine
+            preview = (
+                "可用"
+                if engine.marian.available() or engine.nllb.available()
+                else "未就绪"
             )
-            fallback_names = [
-                name
-                for name in names
-                if "qwen" not in name.lower()
-            ]
-            fallback = "可用" if fallback_names else "未就绪"
             suffix = (
                 " | 商业版已禁用非商业模型"
                 if status.get("commercial_release")
                 else ""
             )
             self.translation_models_label.setText(
-                f"翻译能力：智能1={smart1} | "
-                f"智能2={smart2} | 自动兜底={fallback}{suffix}"
+                f"医学精译={quality}（仅质量模型） | "
+                f"普通资料快速预览={preview}{suffix}"
             )
         except Exception:
             return original_refresh_translation_models(self)

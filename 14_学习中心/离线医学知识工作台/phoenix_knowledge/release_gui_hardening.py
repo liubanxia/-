@@ -257,17 +257,11 @@ def install(gui_module) -> None:
         self._embedding_last_msg = ""
 
         if hasattr(self, "translation_smart_combo"):
-            smart1 = self.translation_smart_combo.findData("smart1")
             smart2 = self.translation_smart_combo.findData("smart2")
-            if smart1 >= 0:
-                self.translation_smart_combo.setItemText(
-                    smart1,
-                    "快速翻译（专用模型优先，推荐）",
-                )
             if smart2 >= 0:
                 self.translation_smart_combo.setItemText(
                     smart2,
-                    "智能2（质量优先，可能较慢）",
+                    "医学精译（质量模型，低推理）",
                 )
 
         self._phoenix_heartbeat_timer = QTimer(self)
@@ -504,20 +498,20 @@ def install(gui_module) -> None:
     def refresh_translation_models(self):
         try:
             status = self.workbench.status()
-            smart1 = (
+            quality = (
                 "可用"
-                if status.get("generator_fast_ready", self.workbench.llm.available("fast"))
+                if status.get(
+                    "generator_deep_ready",
+                    self.workbench.llm.available("translation"),
+                )
                 else "未就绪"
             )
-            smart2 = (
+            engine = self.workbench.translator.engine
+            preview = (
                 "可用"
-                if status.get("generator_deep_ready", self.workbench.llm.available("deep"))
+                if engine.marian.available() or engine.nllb.available()
                 else "未就绪"
             )
-            names = list(
-                self.workbench.translator.engine.available_backends()
-            )
-            route = " → ".join(names) if names else "未就绪"
             commercial = bool(status.get("commercial_release"))
             suffix = (
                 " | 商业版已禁用非商业模型"
@@ -525,7 +519,8 @@ def install(gui_module) -> None:
                 else ""
             )
             self.translation_models_label.setText(
-                f"翻译路由：{route} | 智能1={smart1} | 智能2={smart2}{suffix}"
+                f"医学精译={quality}（仅质量模型） | "
+                f"普通资料快速预览={preview}{suffix}"
             )
         except Exception:
             return original_refresh_translation_models(self)

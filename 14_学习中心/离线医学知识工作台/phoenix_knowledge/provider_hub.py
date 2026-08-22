@@ -347,7 +347,17 @@ def install() -> None:
 
     def remote_model(self, profile=None) -> str:
         normalized = str(profile or "fast").strip().lower()
-        deep = normalized in {"deep", "4b", "deep4b", "quality", "max", "smart2"}
+        deep = normalized in {
+            "deep",
+            "4b",
+            "deep4b",
+            "quality",
+            "max",
+            "smart2",
+            "translation",
+            "medical_translation",
+            "translate",
+        }
         env_name = "PHOENIX_KNOWLEDGE_REMOTE_MODEL_DEEP" if deep else "PHOENIX_KNOWLEDGE_REMOTE_MODEL_FAST"
         env = os.environ.get(env_name, "").strip()
         if env:

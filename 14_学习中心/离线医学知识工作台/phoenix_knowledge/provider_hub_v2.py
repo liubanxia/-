@@ -134,9 +134,8 @@ def install() -> None:
         key = self.compute.remote_api_key()
         if not key:
             raise RuntimeError("OpenAI 需要 API Key")
-        model = self.compute.remote_model(
-            self._normalize_profile(profile)
-        )
+        normalized_profile = self._normalize_profile(profile)
+        model = self.compute.remote_model(normalized_profile)
         if not model:
             raise RuntimeError("OpenAI 当前智能档位未配置模型 ID")
         url = self.compute.remote_chat_url()
@@ -145,6 +144,8 @@ def install() -> None:
             "input": prompt,
             "max_output_tokens": int(max_new_tokens),
         }
+        if normalized_profile == "translation":
+            payload["reasoning"] = {"effort": "none"}
         request = urllib.request.Request(
             url,
             data=json.dumps(

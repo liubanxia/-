@@ -300,6 +300,61 @@ class ProviderHubTests(unittest.TestCase):
             self.assertEqual(body["max_output_tokens"], 64)
             self.assertNotIn("temperature", body)
 
+    def test_openai_translation_uses_quality_model_without_reasoning(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ,
+            {
+                "PHOENIX_KNOWLEDGE_ACCELERATOR": "remote",
+                "PHOENIX_KNOWLEDGE_ALLOW_REMOTE": "1",
+                "PHOENIX_KNOWLEDGE_PROVIDER": "openai",
+            },
+            clear=False,
+        ):
+            paths = _paths(Path(temp))
+            llm = LocalLLM(paths)
+            llm.compute.set_provider_api_key("openai", "openai-secret")
+            llm.compute.select_provider("openai")
+            captured = {}
+
+            def fake_urlopen(request, timeout=None):
+                captured["request"] = request
+                return _FakeResponse(
+                    {
+                        "output": [
+                            {
+                                "type": "message",
+                                "content": [
+                                    {
+                                        "type": "output_text",
+                                        "text": "医学译文",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                )
+
+            with patch(
+                "phoenix_knowledge.provider_hub_v2.urllib.request.urlopen",
+                side_effect=fake_urlopen,
+            ):
+                text = llm._remote_generate(
+                    "翻译测试",
+                    512,
+                    "translation",
+                )
+
+            self.assertEqual(text, "医学译文")
+            body = json.loads(
+                captured["request"].data.decode("utf-8")
+            )
+            self.assertEqual(body["model"], "gpt-5.6-sol")
+            self.assertEqual(body["max_output_tokens"], 512)
+            self.assertEqual(
+                body["reasoning"],
+                {"effort": "none"},
+            )
+
     def test_anthropic_native_request_and_response(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(
             os.environ,

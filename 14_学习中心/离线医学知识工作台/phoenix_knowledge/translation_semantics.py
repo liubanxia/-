@@ -178,8 +178,8 @@ def install() -> None:
 
     def translate(self, text: str, target_language: str = "中文", *, smart_level: str = "smart1") -> str:
         level = tm._normalize_smart_level(smart_level)
-        profile = "deep" if level == "smart2" else "fast"
-        max_tokens = 2600 if level == "smart2" else 2100
+        profile = "translation" if level == "smart2" else "fast"
+        max_tokens = tm.translation_output_budget(text, level)
         prompt = f"""你是 Phoenix 医学教材精译器。把下面英文医学原文完整、准确地翻译成{target_language}。
 
 这是医学教材正文，不是摘要任务。必须做到：
