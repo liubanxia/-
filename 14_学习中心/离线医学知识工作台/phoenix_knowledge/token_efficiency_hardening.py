@@ -77,6 +77,7 @@ def _install_qa_prompt_budget() -> None:
 
 def _install_organizer_prompt_budget() -> None:
     from .organizer import DeepOrganizer
+    from .document_organizer import MultiDocumentOrganizer, _locator
 
     old_batch = DeepOrganizer._batch_prompt
     if getattr(old_batch, "_phoenix_token_hardened", False):
@@ -84,8 +85,8 @@ def _install_organizer_prompt_budget() -> None:
 
     def batch_prompt(instruction: str, batch):
         max_items = _env_int("PHOENIX_ORGANIZE_MAX_EVIDENCE_PER_BATCH", 12, 4, 30)
-        per_item = _env_int("PHOENIX_ORGANIZE_MAX_CHARS_PER_EVIDENCE", 1100, 300, 2600)
-        total_budget = _env_int("PHOENIX_ORGANIZE_BATCH_INPUT_CHARS", 14000, 4000, 32000)
+        per_item = _env_int("PHOENIX_ORGANIZE_MAX_CHARS_PER_EVIDENCE", 800, 300, 2200)
+        total_budget = _env_int("PHOENIX_ORGANIZE_BATCH_INPUT_CHARS", 10000, 4000, 24000)
         evidence_parts: list[str] = []
         used = 0
         for item in list(batch)[:max_items]:
@@ -115,10 +116,43 @@ def _install_organizer_prompt_budget() -> None:
 {evidence}
 """
 
+    def multi_document_batch_prompt(instruction: str, batch):
+        max_items = _env_int("PHOENIX_ORGANIZE_MAX_EVIDENCE_PER_BATCH", 12, 4, 30)
+        per_item = _env_int("PHOENIX_ORGANIZE_MAX_CHARS_PER_EVIDENCE", 800, 300, 2200)
+        total_budget = _env_int("PHOENIX_ORGANIZE_BATCH_INPUT_CHARS", 10000, 4000, 24000)
+        parts: list[str] = []
+        used = 0
+        for item in list(batch)[:max_items]:
+            body = _clip(getattr(item, "text", ""), per_item)
+            part = f"{item.citation} 资料：{item.title}；{_locator(item)}\n{body}"
+            if parts and used + len(part) > total_budget:
+                break
+            if not parts and len(part) > total_budget:
+                part = _clip(part, total_budget)
+            parts.append(part)
+            used += len(part)
+        evidence = "\n\n".join(parts)
+        return f"""你正在处理 Phoenix 离线医学多资料精确整理任务。
+只能使用下面证据，不得调用外部知识。
+
+规则：
+1. 只保留直接相关内容，删除重复和空话。
+2. 每条医学事实、研究结果、数字、阈值和鉴别诊断必须保留 [S编号]。
+3. 同义事实合并并保留多来源；冲突并列，不自行裁决。
+4. 数字、单位、DOI/PMID、敏感度、特异度、AUC、置信区间和P值不得改变。
+5. 保留页码、幻灯片号、文档/论文单元等来源定位；不得制造引用。
+6. 输出紧凑，证据不足就明确说明。
+
+用户要求：{_clip(instruction, 1800)}
+
+本批证据：
+{evidence}
+"""
+
     def merge_prompt(title: str, instruction: str, partials: Iterable[str]):
-        max_partials = _env_int("PHOENIX_ORGANIZE_MAX_PARTIALS_PER_MERGE", 5, 2, 8)
-        per_partial = _env_int("PHOENIX_ORGANIZE_MAX_CHARS_PER_PARTIAL", 2200, 600, 5000)
-        total_budget = _env_int("PHOENIX_ORGANIZE_MERGE_INPUT_CHARS", 12000, 4000, 30000)
+        max_partials = _env_int("PHOENIX_ORGANIZE_MAX_PARTIALS_PER_MERGE", 6, 2, 8)
+        per_partial = _env_int("PHOENIX_ORGANIZE_MAX_CHARS_PER_PARTIAL", 1800, 600, 4200)
+        total_budget = _env_int("PHOENIX_ORGANIZE_MERGE_INPUT_CHARS", 10000, 4000, 24000)
         kept: list[str] = []
         used = 0
         for partial in list(partials)[:max_partials]:
@@ -147,8 +181,10 @@ def _install_organizer_prompt_budget() -> None:
 """
 
     batch_prompt._phoenix_token_hardened = True
+    multi_document_batch_prompt._phoenix_token_hardened = True
     merge_prompt._phoenix_token_hardened = True
     DeepOrganizer._batch_prompt = staticmethod(batch_prompt)
+    MultiDocumentOrganizer._batch_prompt = staticmethod(multi_document_batch_prompt)
     DeepOrganizer._merge_prompt = staticmethod(merge_prompt)
 
 

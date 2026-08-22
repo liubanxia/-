@@ -12,6 +12,10 @@ from .document_organizer import MultiDocumentOrganizer
 from .retrieval import Retriever
 from .rich_export import MultiFormatExporter
 from .translator import PDFTranslator
+from .office_translation import (
+    OfficeDocumentTranslator,
+    SUPPORTED_OFFICE_TRANSLATION_EXTENSIONS,
+)
 
 
 class MedicalKnowledgeWorkbench:
@@ -30,6 +34,10 @@ class MedicalKnowledgeWorkbench:
             self.paths.runtime_root,
         )
         self.translator = PDFTranslator(self.paths, self.llm)
+        self.office_translator = OfficeDocumentTranslator(
+            self.paths,
+            self.translator.engine,
+        )
         self.notes = TXTNotesOrganizer(self.paths, self.llm)
         self.exporter = MultiFormatExporter(
             self.paths.evidence_root / "多格式输出"
@@ -72,6 +80,12 @@ class MedicalKnowledgeWorkbench:
             "embedding_available": self.retriever.embeddings.available(),
             "embedding_device": self.retriever.embeddings.device,
             "translation_backends": self.translator.engine.available_backends(),
+            "translation_input_formats": [".pdf", ".pptx", ".docx"],
+            "translation_output_policy": {
+                "pdf": "pdf",
+                "pptx": "pptx",
+                "docx": "docx",
+            },
             "translation_qwen_review_default": False,
             "response_pipeline": [
                 "lexical_immediate",
@@ -121,7 +135,12 @@ class MedicalKnowledgeWorkbench:
         return output, resumed_id
 
     def translate_book(self, path: Path, **kwargs):
-        return self.translator.translate_book(Path(path), **kwargs)
+        source = Path(path)
+        if source.suffix.lower() == ".pdf":
+            return self.translator.translate_book(source, **kwargs)
+        if source.suffix.lower() in SUPPORTED_OFFICE_TRANSLATION_EXTENSIONS:
+            return self.office_translator.translate_document(source, **kwargs)
+        raise ValueError("翻译仅支持 PDF、PPTX、DOCX，且输出保持原格式。")
 
     def organize_txt(self, source_text: str, **kwargs):
         return self.notes.organize(source_text, **kwargs)

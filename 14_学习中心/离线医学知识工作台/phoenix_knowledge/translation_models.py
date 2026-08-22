@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 from collections import Counter
@@ -19,7 +20,14 @@ _MEASUREMENT_RE = re.compile(
 _ACRONYM_RE = re.compile(r"\b[A-Z][A-Z0-9-]{1,10}\b")
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
+_TRANSLATABLE_WORD_RE = re.compile(r"\b[A-Za-z][A-Za-z'-]{3,}\b")
 _SIMPLIFIED_TARGETS = {"中文", "简体中文", "Chinese", "zh", "zh-CN"}
+_CHINESE_VALIDATION_TARGETS = _SIMPLIFIED_TARGETS | {
+    "繁体中文",
+    "Traditional Chinese",
+    "zh-TW",
+    "zh-HK",
+}
 
 
 def _cuda_is_usable() -> bool:
@@ -145,10 +153,18 @@ class TranslationValidator:
                 reasons.append(f"医学缩写保留率偏低({coverage:.0%})")
                 score -= 0.2
 
-        if target_language in _SIMPLIFIED_TARGETS:
+        if target_language in _CHINESE_VALIDATION_TARGETS:
             cjk_count = len(_CJK_RE.findall(translated))
             latin_count = len(_LATIN_RE.findall(translated))
             source_latin = len(_LATIN_RE.findall(source))
+            translatable_words = [
+                word
+                for word in _TRANSLATABLE_WORD_RE.findall(source)
+                if not word.isupper()
+            ]
+            if translatable_words and cjk_count == 0:
+                reasons.append("短文本疑似未翻译")
+                score -= 0.55
             if source_latin >= 30 and cjk_count < 8:
                 reasons.append("中文字符过少，疑似未翻译")
                 score -= 0.55
@@ -319,6 +335,104 @@ class QwenMedicalTranslationBackend:
             profile=profile,
         ).strip()
 
+    @staticmethod
+    def _parse_segment_json(raw: str) -> dict[str, str]:
+        text = str(raw or "").strip()
+        start = text.find("[")
+        end = text.rfind("]")
+        if start < 0 or end < start:
+            raise ValueError("批量译文不是JSON数组")
+        payload = json.loads(text[start:end + 1])
+        if not isinstance(payload, list):
+            raise ValueError("批量译文JSON顶层必须为数组")
+        result: dict[str, str] = {}
+        for row in payload:
+            if not isinstance(row, dict):
+                continue
+            segment_id = str(row.get("id", "")).strip()
+            translated = row.get("translation")
+            if not segment_id or not isinstance(translated, str):
+                continue
+            result[segment_id] = translated.strip()
+        return result
+
+    def translate_segments(
+        self,
+        sources: list[str],
+        target_language: str = "中文",
+    ) -> dict[str, str]:
+        rows = [
+            {"id": f"S{index:04d}", "text": str(source)}
+            for index, source in enumerate(sources, start=1)
+        ]
+        joined = "\n".join(str(source) for source in sources)
+        max_tokens = max(
+            640,
+            min(
+                3200,
+                translation_output_budget(joined, "smart2") + 36 * len(rows),
+            ),
+        )
+        source_json = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+        prompt = f"""你是 Phoenix 医学课件和论文精译器。把JSON数组中每个 text 完整、准确地翻译成{target_language}。
+
+要求：
+- 保持每个 id 不变、条目数量和顺序不变；只翻译 text 的内容。
+- 使用规范医学术语，不总结、不删减、不扩写，不加入原文没有的知识。
+- 数字、单位、百分比、HU、剂量、图表编号、参考文献编号和医学缩写必须保留。
+- 否定/肯定、左右侧、可能/明确、增高/降低、增大/缩小、稳定/进展等关系必须保持。
+- 相邻条目属于同一页或同一论文段落组，可利用上下文消除歧义，但不得合并条目。
+- 只输出合法JSON数组，格式严格为 [{{"id":"S0001","translation":"译文"}}]；不得输出Markdown代码围栏或说明。
+
+输入JSON：
+{source_json}
+"""
+        raw = self.llm.generate(
+            prompt,
+            max_new_tokens=max_tokens,
+            profile="translation",
+        ).strip()
+        try:
+            return self._parse_segment_json(raw)
+        except Exception:
+            repair_prompt = f"""把下面批量医学译文修复为合法JSON数组。
+不得重新总结或添加内容；必须保留输入 id，字段只能是 id 和 translation。
+目标语言：{target_language}
+原始输入：{source_json}
+待修复输出：{raw}
+只输出JSON数组。"""
+            repaired = self.llm.generate(
+                repair_prompt,
+                max_new_tokens=max_tokens,
+                profile="translation",
+            ).strip()
+            return self._parse_segment_json(repaired)
+
+    def retry_translation(
+        self,
+        source: str,
+        draft: str,
+        reasons: tuple[str, ...],
+        target_language: str = "中文",
+    ) -> str:
+        reason_text = "；".join(reasons) or "批量结果缺失或结构校验失败"
+        prompt = f"""你是 Phoenix 医学翻译纠错器。只修正下面这一条译文，输出修正后的{target_language}译文，不要解释。
+
+硬性要求：完整翻译，不总结、不扩写；数字、单位、正负号、缩写、否定、侧别、诊断确定性和方向关系必须与原文一致。
+校验失败原因：{reason_text}
+
+原文：
+{source}
+
+上一版译文：
+{draft or '[缺失]'}
+"""
+        return self.llm.generate(
+            prompt,
+            max_new_tokens=translation_output_budget(source, "smart2"),
+            profile="deep",
+        ).strip()
+
 
 class MultiModelTranslationEngine:
     """Translation with an explicit preview/medical-quality boundary.
@@ -433,6 +547,39 @@ class MultiModelTranslationEngine:
                         needs_review=False,
                         attempts=tuple(attempts),
                     )
+                if isinstance(backend, QwenMedicalTranslationBackend) and level == "smart2":
+                    try:
+                        corrected = backend.retry_translation(
+                            source,
+                            text,
+                            quality.reasons,
+                            target_language,
+                        )
+                        corrected_quality = self.validator.validate(
+                            source,
+                            corrected,
+                            target_language,
+                        )
+                        corrected_attempt = TranslationAttempt(
+                            backend=f"{backend.name}_deep_retry",
+                            text=corrected,
+                            quality=corrected_quality,
+                        )
+                        attempts.append(corrected_attempt)
+                        if best is None or corrected_quality.score > best.quality.score:
+                            best = corrected_attempt
+                        if corrected_quality.ok:
+                            return TranslationDecision(
+                                text=corrected,
+                                backend=corrected_attempt.backend,
+                                quality=corrected_quality,
+                                needs_review=False,
+                                attempts=tuple(attempts),
+                            )
+                    except Exception as exc:
+                        backend_errors.append(
+                            f"{backend.name}_deep_retry: {type(exc).__name__}: {exc}"
+                        )
             except Exception as exc:
                 backend_errors.append(f"{backend.name}: {type(exc).__name__}: {exc}")
 
@@ -452,6 +599,105 @@ class MultiModelTranslationEngine:
                 f"目标语言“{target_language}”当前没有可用的本地智能翻译能力。"
             )
         raise RuntimeError("所有翻译后端均执行失败: " + " | ".join(backend_errors))
+
+    def translate_segments(
+        self,
+        sources: list[str],
+        target_language: str = "中文",
+        *,
+        smart_level: str = "smart2",
+    ) -> tuple[TranslationDecision, ...]:
+        """Translate one slide/paragraph unit in one normal model call.
+
+        The quality model handles the common batch. Only missing or
+        semantically invalid rows are retried individually with the deep
+        profile, keeping reasoning-token use proportional to actual failures.
+        """
+
+        values = [str(source or "").strip() for source in sources]
+        if not values:
+            return ()
+        level = _normalize_smart_level(smart_level)
+        if level != "smart2":
+            return tuple(
+                self.translate(
+                    source,
+                    target_language,
+                    smart_level=level,
+                )
+                for source in values
+            )
+        if not self._backend_available(self.qwen, "smart2"):
+            raise RuntimeError("医学精译质量模型未就绪。")
+
+        batch = self.qwen.translate_segments(values, target_language)
+        decisions: list[TranslationDecision] = []
+        for index, source in enumerate(values, start=1):
+            segment_id = f"S{index:04d}"
+            draft = str(batch.get(segment_id, "") or "").strip()
+            quality = self.validator.validate(source, draft, target_language)
+            first = TranslationAttempt(
+                backend=f"{self.qwen.name}_batch",
+                text=draft,
+                quality=quality,
+                errors=() if draft else ("批量译文缺失",),
+            )
+            if quality.ok:
+                decisions.append(
+                    TranslationDecision(
+                        text=draft,
+                        backend=first.backend,
+                        quality=quality,
+                        needs_review=False,
+                        attempts=(first,),
+                    )
+                )
+                continue
+
+            attempts = [first]
+            retry_error = ""
+            try:
+                corrected = self.qwen.retry_translation(
+                    source,
+                    draft,
+                    quality.reasons,
+                    target_language,
+                )
+                corrected_quality = self.validator.validate(
+                    source,
+                    corrected,
+                    target_language,
+                )
+                retry = TranslationAttempt(
+                    backend=f"{self.qwen.name}_deep_retry",
+                    text=corrected,
+                    quality=corrected_quality,
+                )
+                attempts.append(retry)
+            except Exception as exc:
+                retry_error = f"{type(exc).__name__}: {exc}"
+                retry = None
+
+            candidates = [attempt for attempt in attempts if attempt.text]
+            best = max(candidates, key=lambda item: item.quality.score) if candidates else first
+            if retry is None and retry_error:
+                best = TranslationAttempt(
+                    backend=best.backend,
+                    text=best.text,
+                    quality=best.quality,
+                    errors=tuple((*best.errors, retry_error)),
+                )
+                attempts[-1] = best
+            decisions.append(
+                TranslationDecision(
+                    text=best.text or source,
+                    backend=best.backend,
+                    quality=best.quality,
+                    needs_review=not best.quality.ok,
+                    attempts=tuple(attempts),
+                )
+            )
+        return tuple(decisions)
 
     def unload(self) -> None:
         self.marian.unload()

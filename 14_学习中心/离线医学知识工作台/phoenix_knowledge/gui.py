@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QTextDocument
 from PySide6.QtPrintSupport import QPrintDialog, QPrintPreviewDialog, QPrinter
 from PySide6.QtWidgets import (
@@ -116,6 +116,7 @@ class OrganizeWorker(QThread):
 
 class TranslationWorker(QThread):
     progress = Signal(int, int, str)
+    page_ready = Signal(int, str, str)
     completed = Signal(object)
     failed = Signal(str)
 
@@ -141,6 +142,9 @@ class TranslationWorker(QThread):
                 start_page=self.start_page,
                 target_language=self.target_language,
                 retry_warning_pages=self.retry_warning_pages,
+                page_preview=lambda unit, text, path: self.page_ready.emit(
+                    int(unit), str(text), str(path)
+                ),
                 progress=lambda done, total, msg: self.progress.emit(done, total, msg),
             )
             self.completed.emit(result)
@@ -213,7 +217,7 @@ class WorkbenchWindow(QMainWindow):
         tabs.addTab(self._library_tab(), "PDF资料库")
         tabs.addTab(self._qa_tab(), "PDF问答")
         tabs.addTab(self._organize_tab(), "多书知识整理")
-        tabs.addTab(self._translation_tab(), "整本书翻译")
+        tabs.addTab(self._translation_tab(), "医学文档同格式翻译")
         tabs.addTab(self._notes_tab(), "TXT笔记整理")
         self.setCentralWidget(tabs)
 
@@ -365,20 +369,21 @@ class WorkbenchWindow(QMainWindow):
         layout = QVBoxLayout(widget)
         layout.addWidget(
             QLabel(
-                "整本书翻译：默认第1页→最后一页；也可指定起始页。每页保存，自动续翻。"
+                "医学文档同格式翻译：PDF→PDF、PPTX→PPTX、DOCX论文→DOCX；"
+                "每页/幻灯片/段落组保存并立即显示，可自动续翻。"
             )
         )
 
         file_row = QHBoxLayout()
         self.translation_path = QLineEdit()
-        self.translation_path.setPlaceholderText("选择要翻译的医学PDF")
-        choose_button = QPushButton("选择PDF")
+        self.translation_path.setPlaceholderText("选择医学 PDF / PPTX / DOCX")
+        choose_button = QPushButton("选择文档")
         file_row.addWidget(self.translation_path, 1)
         file_row.addWidget(choose_button)
         layout.addLayout(file_row)
 
         options = QHBoxLayout()
-        options.addWidget(QLabel("从第几页开始："))
+        options.addWidget(QLabel("从第几个单元开始（页/幻灯片/段落组）："))
         self.translation_start_page = QSpinBox()
         self.translation_start_page.setRange(1, 999999)
         self.translation_start_page.setValue(1)
@@ -637,7 +642,15 @@ class WorkbenchWindow(QMainWindow):
         self.last_organize_path = Path(output)
         self.organize_progress.setValue(100)
         self.organize_status.setText(f"整理完成：{output}")
-        self.organize_result.setPlainText(self._preview_path(Path(output)))
+        path = Path(output)
+        markdown = self._preview_path(path)
+        try:
+            self.organize_result.document().setBaseUrl(
+                QUrl.fromLocalFile(str(path.parent.resolve()) + "/")
+            )
+            self.organize_result.setMarkdown(markdown)
+        except Exception:
+            self.organize_result.setPlainText(markdown)
         self.refresh_resume_state()
 
     def _organize_failed(self, error: str):
@@ -650,9 +663,9 @@ class WorkbenchWindow(QMainWindow):
     def choose_translation_pdf(self):
         file, _ = QFileDialog.getOpenFileName(
             self,
-            "选择整本翻译PDF",
+            "选择医学文档同格式翻译",
             str(self.workbench.paths.source_root),
-            "PDF Files (*.pdf)",
+            "医学文档 (*.pdf *.pptx *.docx);;PDF (*.pdf);;PowerPoint (*.pptx);;Word论文 (*.docx)",
         )
         if file:
             self.translation_path.setText(file)
@@ -677,7 +690,9 @@ class WorkbenchWindow(QMainWindow):
 
         self.refresh_translation_models()
         self.translation_progress.setValue(0)
-        self.translation_result.setPlainText("整本书翻译任务正在运行……")
+        self.translation_result.setPlainText(
+            "同格式医学翻译任务正在运行；完成一个单元就立即显示……"
+        )
         self.worker = TranslationWorker(
             self.workbench,
             path,
@@ -686,6 +701,8 @@ class WorkbenchWindow(QMainWindow):
             retry_warning_pages=retry_warning_pages,
         )
         self.worker.progress.connect(self._translation_progress)
+        if hasattr(self.worker, "page_ready"):
+            self.worker.page_ready.connect(self._translation_page_ready)
         self.worker.completed.connect(self._translation_done)
         self.worker.failed.connect(self._translation_failed)
         self.worker.start()
@@ -694,6 +711,13 @@ class WorkbenchWindow(QMainWindow):
         self.translation_progress.setValue(int(done / max(total, 1) * 100))
         self.translation_status.setText(message)
 
+    def _translation_page_ready(self, unit: int, text: str, path: str):
+        suffix = Path(self.translation_path.text().strip()).suffix.lower()
+        label = "页" if suffix == ".pdf" else ("幻灯片" if suffix == ".pptx" else "论文段落组")
+        self.translation_result.setPlainText(
+            f"{label} {int(unit)} 已完成并保存：{path}\n\n{text}"
+        )
+
     def _translation_done(self, result):
         self.last_translation_path = Path(result.output_path)
         self.translation_progress.setValue(100)
@@ -701,7 +725,11 @@ class WorkbenchWindow(QMainWindow):
             f"整本翻译完成 | 警告页={result.warning_pages} | "
             f"模型={','.join(result.available_backends)}"
         )
-        preview = self._preview_path(self.last_translation_path)
+        preview = (
+            self._preview_path(self.last_translation_path)
+            if self.last_translation_path.suffix.lower() in {".txt", ".md"}
+            else "同格式成品已通过结构验收，请用对应阅读器打开。"
+        )
         self.translation_result.setPlainText(
             f"完整译本：{self.last_translation_path}\n"
             f"起始页：{result.start_page}\n总页数：{result.total_pages}\n"

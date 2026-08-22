@@ -72,6 +72,7 @@ jobs:
           phoenix_knowledge/gui_bootstrap.py
           phoenix_knowledge/release_gui_hardening.py
           phoenix_knowledge/translator.py
+          phoenix_knowledge/office_translation.py
           phoenix_knowledge/translation_models.py
           phoenix_knowledge/translation_semantics.py
           phoenix_knowledge/provider_hub_v2.py
@@ -95,5 +96,7 @@ jobs:
           tests.test_translation_backend_priority
           tests.test_translation_medical_semantics
           tests.test_translation_product_v2
+          tests.test_office_translation
+          tests.test_image_and_token_hardening
           tests.test_provider_hub
           tests.test_final_gui_runtime_contract

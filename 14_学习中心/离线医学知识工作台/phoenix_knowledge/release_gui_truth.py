@@ -72,20 +72,14 @@ def install(gui_module) -> None:
                 if status.get("generator_deep_ready")
                 else "未就绪"
             )
-            engine = self.workbench.translator.engine
-            preview = (
-                "可用"
-                if engine.marian.available() or engine.nllb.available()
-                else "未就绪"
-            )
             suffix = (
                 " | 商业版已禁用非商业模型"
                 if status.get("commercial_release")
                 else ""
             )
             self.translation_models_label.setText(
-                f"医学精译={quality}（仅质量模型） | "
-                f"普通资料快速预览={preview}{suffix}"
+                f"医学精译={quality}（Smart2质量模型、低推理） | "
+                f"旧Smart1预览模型不参与正式翻译{suffix}"
             )
         except Exception:
             return original_refresh_translation_models(self)

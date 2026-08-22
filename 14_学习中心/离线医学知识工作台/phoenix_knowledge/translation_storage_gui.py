@@ -12,6 +12,10 @@ from .translation_pdf import (
     LAYOUT_TRANSLATED_ONLY,
 )
 from .translator import EXPORT_PDF, EXPORT_PDF_RICH
+from .office_translation import (
+    OFFICE_SIZE_RATIO_DEFAULT,
+    OFFICE_SIZE_SLACK_BYTES,
+)
 
 _INSTALLED = False
 
@@ -53,6 +57,23 @@ def _integrity_summary(complete: Path) -> str | None:
         except Exception:
             pass
     return text
+
+
+def _office_integrity_summary(complete: Path) -> str | None:
+    report_path = Path(complete).parent / "Office翻译完整性报告.json"
+    if not report_path.is_file():
+        return None
+    try:
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+    except Exception:
+        return "- 完整性验收：报告无法读取（成品不会因此被标记为PASS）"
+    if not bool(payload.get("passed", False)):
+        return "- 完整性验收：FAIL"
+    media_count = int(payload.get("media_count", 0) or 0)
+    return (
+        "- 完整性验收：PASS（同格式、ZIP结构、成员集合、文字写入、"
+        f"原媒体逐项SHA一致；媒体 {media_count} 个）"
+    )
 
 
 def install(gui_module) -> None:
@@ -135,6 +156,50 @@ def install(gui_module) -> None:
         try:
             source = Path(result.source_path)
             outputs = tuple(getattr(result, "output_paths", ()) or ())
+            if not outputs and getattr(result, "output_path", None):
+                outputs = (Path(result.output_path),)
+            if source.suffix.lower() in {".pptx", ".docx"}:
+                same_format = [
+                    Path(path)
+                    for path in outputs
+                    if Path(path).suffix.lower() == source.suffix.lower()
+                ]
+                if len(same_format) != 1 or not source.is_file():
+                    return
+                complete = same_format[0]
+                if not complete.is_file():
+                    return
+                source_size = int(source.stat().st_size)
+                complete_size = int(complete.stat().st_size)
+                ratio = complete_size / source_size if source_size else 0.0
+                allowed = max(
+                    int(source_size * OFFICE_SIZE_RATIO_DEFAULT),
+                    source_size + OFFICE_SIZE_SLACK_BYTES,
+                )
+                current = self.translation_result.toPlainText().rstrip()
+                label = source.suffix.lstrip(".").upper()
+                lines = [
+                    "",
+                    "成品验收：",
+                    f"- 原{label}：{_human_size(source_size)}",
+                    f"- 同格式译本：{_human_size(complete_size)}"
+                    + (f"（{ratio:.2f}×）" if source_size else ""),
+                    (
+                        f"- 发布体积目标：PASS（≤{OFFICE_SIZE_RATIO_DEFAULT:.2f}×；"
+                        "小文件含1MB结构余量）"
+                        if complete_size <= allowed
+                        else f"- 发布体积目标：FAIL（目标≤{OFFICE_SIZE_RATIO_DEFAULT:.2f}×）"
+                    ),
+                ]
+                integrity = _office_integrity_summary(complete)
+                lines.append(
+                    integrity
+                    or "- 完整性验收：未找到报告；不应把该Office文件视为稳定发布成品"
+                )
+                self.translation_result.setPlainText(
+                    current + "\n" + "\n".join(lines)
+                )
+                return
             pdfs = [
                 Path(path)
                 for path in outputs

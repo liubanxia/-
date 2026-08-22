@@ -108,7 +108,7 @@ def install(gui_module) -> None:
             if button.text() == "导入PDF":
                 button.setText("导入资料/论文")
             elif button.text() == "选中书→整本翻译":
-                button.setText("选中PDF→整本翻译")
+                button.setText("选中文档→同格式翻译")
         return widget
 
     def _qa_tab(self):
@@ -271,14 +271,14 @@ def install(gui_module) -> None:
         if item is None:
             return
         path = item.data(Qt.ItemDataRole.UserRole)
-        if path and Path(str(path)).suffix.lower() != ".pdf":
+        if path and Path(str(path)).suffix.lower() not in {".pdf", ".pptx", ".docx"}:
             QMessageBox.information(
                 self,
-                "整本翻译目前仅支持PDF",
-                "论文/课件/题录已可进入知识库和联合整理；"
-                "原页+中文双语版式翻译仍保留为 PDF 专用功能。"
+                "该格式不支持同格式翻译",
+                "翻译支持 PDF→PDF、PPTX→PPTX、DOCX论文→DOCX；"
+                "旧版PPT请先离线转换为PPTX。"
                 "CAJ/NH/KDH/TEB 导入时会在后台离线转PDF参与知识库，"
-                "但不会替换用户原文件。",
+                "但不会替换用户原文件，也不会跨格式生成译本。",
             )
             return
         return original_use_for_translation(self)

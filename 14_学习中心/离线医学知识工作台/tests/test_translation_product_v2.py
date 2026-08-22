@@ -195,17 +195,20 @@ class TranslationProductV2Tests(unittest.TestCase):
                 smart_level="smart1",
                 export_format=EXPORT_TXT,
                 should_pause=pause_after_first_page,
+                page_preview=lambda page, text, path: None,
             )
             self.assertTrue(first.paused)
             self.assertEqual(first.pages_done, 1)
             self.assertEqual(first.smart_level, "smart2")
 
+            previews = []
             second = translator.translate_book(
                 source,
                 target_language="中文",
                 smart_level="smart1",
                 export_format=EXPORT_TXT,
                 should_pause=lambda: False,
+                page_preview=lambda page, text, path: previews.append(page),
             )
             self.assertFalse(second.paused)
             self.assertGreaterEqual(second.resumed_pages, 1)
@@ -213,6 +216,7 @@ class TranslationProductV2Tests(unittest.TestCase):
             text = second.output_path.read_text(encoding="utf-8")
             self.assertIn("第 1 页", text)
             self.assertIn("第 2 页", text)
+            self.assertEqual(previews, [1, 2])
 
 
 if __name__ == "__main__":

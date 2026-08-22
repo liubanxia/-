@@ -26,6 +26,7 @@ from .translation_pdf import (
 
 ProgressCallback = Callable[[int, int, str], None]
 PauseCallback = Callable[[], bool]
+PreviewCallback = Callable[[int, str, Path], None]
 
 EXPORT_PDF = "pdf"
 EXPORT_PDF_RICH = "pdf_rich"
@@ -614,6 +615,7 @@ class PDFTranslator:
         export_format: str = EXPORT_PDF,
         part_pages: int = 50,
         should_pause: PauseCallback | None = None,
+        page_preview: PreviewCallback | None = None,
     ) -> TranslationResult:
         pdf_path = Path(pdf_path).resolve()
         if not pdf_path.exists() or not pdf_path.is_file():
@@ -789,6 +791,9 @@ class PDFTranslator:
                 )
 
                 if can_resume_page:
+                    resumed_text = page_file.read_text(
+                        encoding='utf-8', errors='replace'
+                    ).strip()
                     pages_done += 1
                     resumed_pages += 1
                     if has_warning:
@@ -803,6 +808,11 @@ class PDFTranslator:
                             selected_total,
                             f'第 {page_number}/{total_pages} 页已精译，直接续用',
                         )
+                    if page_preview:
+                        try:
+                            page_preview(page_number, resumed_text, page_file)
+                        except Exception:
+                            pass
                     continue
 
                 def note(message: str) -> None:
@@ -829,6 +839,11 @@ class PDFTranslator:
                 state['status'] = 'running'
                 state['warning_pages'] = warning_pages
                 self._write_json(checkpoint_path, state)
+                if page_preview:
+                    try:
+                        page_preview(page_number, translated, page_file)
+                    except Exception:
+                        pass
                 if progress:
                     progress(
                         pages_done,

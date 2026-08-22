@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Callable
@@ -16,6 +17,22 @@ PauseCallback = Callable[[], bool]
 _CITATION_RE = re.compile(r"\[S(\d+)\]")
 _RESUMABLE_STATUS = {"queued", "running", "failed", "paused"}
 _QUERY_SPLIT_RE = re.compile(r"[\n\r；;。！？!?]+")
+
+
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    try:
+        value = int(raw) if raw else int(default)
+    except (TypeError, ValueError):
+        value = int(default)
+    return max(minimum, min(maximum, value))
+
+
+def _generation_budget(prompt: str, *, ceiling: int) -> int:
+    """Reserve output in proportion to evidence size, never at a fixed maximum."""
+
+    chars = len(str(prompt or ""))
+    return max(512, min(int(ceiling), 360 + int(chars * 0.10)))
 
 
 class OrganizePaused(RuntimeError):
@@ -46,6 +63,20 @@ class DeepOrganizer:
         self.assets = PDFAssetStore(
             runtime_root or (self.evidence_root.parent / "_runtime")
         )
+
+    def _generate(self, prompt: str, *, max_new_tokens: int, profile: str) -> str:
+        """Use an explicit model tier while retaining old test/runtime adapters."""
+
+        try:
+            return self.llm.generate(
+                prompt,
+                max_new_tokens=max_new_tokens,
+                profile=profile,
+            )
+        except TypeError as exc:
+            if "profile" not in str(exc):
+                raise
+            return self.llm.generate(prompt, max_new_tokens=max_new_tokens)
 
     @staticmethod
     def _batch_prompt(instruction: str, batch: list[Evidence]) -> str:
@@ -169,7 +200,7 @@ class DeepOrganizer:
         if not queries:
             return []
 
-        per_query = max(40, min(120, int(candidate_limit)))
+        per_query = max(24, min(72, int(candidate_limit)))
         merged: dict[int, Evidence] = {}
         scores: dict[int, float] = {}
 
@@ -370,7 +401,7 @@ class DeepOrganizer:
         partials: list[str],
         valid_ids: set[int],
         *,
-        group_size: int = 5,
+        group_size: int = 6,
         progress: ProgressCallback | None = None,
         batch_total: int = 1,
         should_pause: PauseCallback | None = None,
@@ -379,6 +410,17 @@ class DeepOrganizer:
         level = [text for text in partials if text.strip()]
         if not level:
             return ""
+        if len(level) == 1:
+            if should_pause and should_pause() and task_id is not None:
+                self._pause(task_id)
+            prompt_text = self._merge_prompt(title, instruction, level)
+            merged = self._generate(
+                prompt_text,
+                max_new_tokens=_generation_budget(prompt_text, ceiling=1800),
+                profile="translation",
+            ).strip()
+            used = {int(x) for x in _CITATION_RE.findall(merged)} & valid_ids
+            return merged if used else level[0]
         merge_level = 0
         while len(level) > 1:
             merge_level += 1
@@ -399,9 +441,15 @@ class DeepOrganizer:
                         batch_total,
                         f"正在精确合并：第{merge_level}层 {group_index}/{len(groups)}",
                     )
-                merged = self.llm.generate(
-                    self._merge_prompt(title, instruction, group),
-                    max_new_tokens=2400,
+                prompt_text = self._merge_prompt(title, instruction, group)
+                final_merge = len(groups) == 1
+                merged = self._generate(
+                    prompt_text,
+                    max_new_tokens=_generation_budget(
+                        prompt_text,
+                        ceiling=1800 if final_merge else 1400,
+                    ),
+                    profile="translation" if final_merge else "fast",
                 ).strip()
                 used = {
                     int(x) for x in _CITATION_RE.findall(merged)
@@ -428,7 +476,7 @@ class DeepOrganizer:
         return self.organize(
             str(payload.get("title", "医学知识专题")),
             str(payload.get("instruction", "")),
-            batch_size=int(payload.get("batch_size", 8) or 8),
+            batch_size=int(payload.get("batch_size", 12) or 12),
             task_id=int(task_id),
             progress=progress,
             should_pause=should_pause,
@@ -439,8 +487,8 @@ class DeepOrganizer:
         title: str,
         instruction: str,
         *,
-        candidate_limit: int = 240,
-        batch_size: int = 8,
+        candidate_limit: int = 96,
+        batch_size: int = 12,
         task_id: int | None = None,
         progress: ProgressCallback | None = None,
         should_pause: PauseCallback | None = None,
@@ -453,13 +501,24 @@ class DeepOrganizer:
         instruction = instruction.strip()
         if not instruction:
             raise ValueError("整理要求不能为空")
-        batch_size = max(1, int(batch_size))
+        candidate_limit = _env_int(
+            "PHOENIX_ORGANIZE_CANDIDATE_LIMIT",
+            int(candidate_limit),
+            12,
+            160,
+        )
+        batch_size = _env_int(
+            "PHOENIX_ORGANIZE_BATCH_SIZE",
+            int(batch_size),
+            1,
+            16,
+        )
 
         if task_id is None:
             evidence = self._retrieve_evidence(
                 title,
                 instruction,
-                max(1, int(candidate_limit)),
+                candidate_limit,
                 progress=progress,
             )
             if not evidence:
@@ -477,6 +536,8 @@ class DeepOrganizer:
                     "instruction": instruction,
                     "chunk_ids": [x.chunk_id for x in evidence],
                     "batch_size": batch_size,
+                    "candidate_limit": candidate_limit,
+                    "model_route": "fast_batches_then_quality_final",
                 },
                 total=(len(evidence) + batch_size - 1) // batch_size,
             )
@@ -545,9 +606,14 @@ class DeepOrganizer:
                         total_batches,
                         f"正在精确整理第 {batch_index + 1}/{total_batches} 批证据……",
                     )
-                partial = self.llm.generate(
-                    self._batch_prompt(instruction, batch),
-                    max_new_tokens=1600,
+                prompt_text = self._batch_prompt(instruction, batch)
+                partial = self._generate(
+                    prompt_text,
+                    max_new_tokens=_generation_budget(
+                        prompt_text,
+                        ceiling=1400,
+                    ),
+                    profile="fast",
                 )
                 valid_ids = {x.chunk_id for x in batch}
                 used = {

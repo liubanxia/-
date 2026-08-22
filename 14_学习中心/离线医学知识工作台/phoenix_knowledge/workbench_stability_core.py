@@ -200,6 +200,7 @@ def _method_contract(method) -> int:
 
 
 def architecture_status(workbench=None) -> dict:
+    from .office_translation import OFFICE_TRANSLATION_CONTRACT_VERSION
     from .translation_pdf import TranslationPDFBuilder
     from .translator import PDFTranslator
     from .workbench import MedicalKnowledgeWorkbench
@@ -235,12 +236,23 @@ def architecture_status(workbench=None) -> dict:
         ingestor = getattr(workbench, "ingestor", None)
         if getattr(type(ingestor), "_phoenix_output_contract", 0) != OUTPUT_CONTRACT_VERSION:
             broken.append("stable_ingestor_missing")
+        office_translator = getattr(workbench, "office_translator", None)
+        if (
+            getattr(
+                type(office_translator),
+                "_phoenix_office_translation_contract",
+                0,
+            )
+            != OFFICE_TRANSLATION_CONTRACT_VERSION
+        ):
+            broken.append("office_translation_contract_missing")
 
     fingerprint_payload = {
         "workbench_contract": WORKBENCH_CONTRACT_VERSION,
         "output_contract": OUTPUT_CONTRACT_VERSION,
         "workbench_depth": wb_depth,
         "translation_depth": tr_depth,
+        "office_translation_contract": OFFICE_TRANSLATION_CONTRACT_VERSION,
         "methods": method_modules,
     }
     fingerprint = hashlib.sha256(
@@ -252,6 +264,7 @@ def architecture_status(workbench=None) -> dict:
         "fingerprint": fingerprint,
         "workbench_wrapper_depth": wb_depth,
         "translation_wrapper_depth": tr_depth,
+        "office_translation_contract": OFFICE_TRANSLATION_CONTRACT_VERSION,
         "method_modules": method_modules,
     }
 
@@ -316,6 +329,7 @@ def _stable_status(self) -> dict:
         "architecture_fingerprint": architecture["fingerprint"],
         "workbench_wrapper_depth": architecture["workbench_wrapper_depth"],
         "translation_wrapper_depth": architecture["translation_wrapper_depth"],
+        "office_translation_contract": architecture["office_translation_contract"],
     })
     return payload
 
@@ -485,8 +499,32 @@ def _stable_resume_task(self, task_id: int, **kwargs):
 
 def _stable_translate_book(self, path: Path, **kwargs):
     _unload_embeddings(self)
-    result = self.translator.translate_book(Path(path), **kwargs)
+    source = Path(path)
+    suffix = source.suffix.lower()
+    if suffix == ".pdf":
+        result = self.translator.translate_book(source, **kwargs)
+    elif suffix in {".pptx", ".docx"}:
+        result = self.office_translator.translate_document(source, **kwargs)
+    else:
+        raise ValueError("翻译仅支持 PDF、PPTX、DOCX，且输出保持原格式。")
     if bool(getattr(result, "paused", False)):
+        return result
+    if suffix in {".pptx", ".docx"}:
+        from .office_translation import validate_office_package
+
+        outputs = tuple(
+            Path(p) for p in (getattr(result, "output_paths", ()) or ())
+        )
+        if len(outputs) != 1 or outputs[0].suffix.lower() != suffix:
+            raise OutputContractError(
+                "Office翻译违反同格式输出合同：必须且只能生成一个同扩展名成品。"
+            )
+        try:
+            validate_office_package(source, outputs[0])
+        except Exception as exc:
+            raise OutputContractError(
+                f"Office同格式译文完整性验收失败：{type(exc).__name__}: {exc}"
+            ) from exc
         return result
     from .translation_output_validation import validate_deliverables
     outputs = tuple(Path(p) for p in (getattr(result, "output_paths", ()) or ()))

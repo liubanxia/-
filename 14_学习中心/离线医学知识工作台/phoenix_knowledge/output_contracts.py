@@ -71,6 +71,11 @@ def validate_docx(path: Path) -> dict:
             document_xml = archive.read("word/document.xml")
             if len(document_xml) < 32:
                 raise OutputContractError("DOCX正文结构异常短")
+            image_names = sorted(
+                name
+                for name in names
+                if name.startswith("word/media/") and not name.endswith("/")
+            )
     except OutputContractError:
         raise
     except Exception as exc:
@@ -80,6 +85,7 @@ def validate_docx(path: Path) -> dict:
         "bytes": int(path.stat().st_size),
         "sha256": sha256_file(path),
         "structure_sha256": hashlib.sha256(document_xml).hexdigest(),
+        "images": len(image_names),
     }
 
 
@@ -175,6 +181,15 @@ def validate_export_bundle(bundle) -> dict:
     text = validate_text_file(Path(bundle.text), label="TXT成品")
     docx = validate_docx(Path(bundle.docx))
     pdf = validate_pdf(Path(bundle.pdf))
+    expected_images = int(markdown.get("local_images", 0) or 0)
+    if expected_images and int(docx.get("images", 0) or 0) <= 0:
+        raise OutputContractError(
+            "Markdown含本地图像，但DOCX成品没有嵌入任何图片。"
+        )
+    if expected_images and int(pdf.get("images", 0) or 0) <= 0:
+        raise OutputContractError(
+            "Markdown含本地图像，但PDF成品没有嵌入任何图片。"
+        )
     structure_payload = {
         "markdown": markdown["sha256"],
         "text": text["sha256"],

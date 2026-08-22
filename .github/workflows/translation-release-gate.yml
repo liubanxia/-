@@ -7,16 +7,20 @@ on:
       - 'fix/**'
     paths:
       - '14_学习中心/离线医学知识工作台/phoenix_knowledge/translation_*.py'
+      - '14_学习中心/离线医学知识工作台/phoenix_knowledge/office_translation.py'
       - '14_学习中心/离线医学知识工作台/phoenix_knowledge/provider_hub*.py'
       - '14_学习中心/离线医学知识工作台/phoenix_knowledge/llm*.py'
       - '14_学习中心/离线医学知识工作台/tests/test_translation_*.py'
+      - '14_学习中心/离线医学知识工作台/tests/test_office_translation.py'
       - '.github/workflows/translation-release-gate.yml'
   pull_request:
     paths:
       - '14_学习中心/离线医学知识工作台/phoenix_knowledge/translation_*.py'
+      - '14_学习中心/离线医学知识工作台/phoenix_knowledge/office_translation.py'
       - '14_学习中心/离线医学知识工作台/phoenix_knowledge/provider_hub*.py'
       - '14_学习中心/离线医学知识工作台/phoenix_knowledge/llm*.py'
       - '14_学习中心/离线医学知识工作台/tests/test_translation_*.py'
+      - '14_学习中心/离线医学知识工作台/tests/test_office_translation.py'
       - '.github/workflows/translation-release-gate.yml'
 
 permissions:
@@ -61,6 +65,7 @@ jobs:
         run: >-
           python -m py_compile
           phoenix_knowledge/translator.py
+          phoenix_knowledge/office_translation.py
           phoenix_knowledge/translation_models.py
           phoenix_knowledge/translation_semantics.py
           phoenix_knowledge/translation_pdf.py
@@ -80,4 +85,5 @@ jobs:
           tests.test_translation_backend_priority
           tests.test_translation_medical_semantics
           tests.test_translation_product_v2
+          tests.test_office_translation
           tests.test_provider_hub

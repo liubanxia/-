@@ -83,6 +83,7 @@ class _OrganizeWorkerV2(QThread):
 
 class _TranslationWorkerV2(QThread):
     progress = Signal(int, int, str)
+    page_ready = Signal(int, str, str)
     completed = Signal(object)
     failed = Signal(str)
 
@@ -126,6 +127,9 @@ class _TranslationWorkerV2(QThread):
                 export_format=self.export_format,
                 part_pages=self.part_pages,
                 should_pause=self._pause_requested.is_set,
+                page_preview=lambda unit, text, path: self.page_ready.emit(
+                    int(unit), str(text), str(path)
+                ),
                 progress=lambda done, total, msg: self.progress.emit(
                     int(done), int(total), str(msg)
                 ),
@@ -277,8 +281,10 @@ def install(gui_module) -> None:
         row = QHBoxLayout()
         row.addWidget(QLabel("整理方式："))
         self.organize_smart_combo = QComboBox()
-        self.organize_smart_combo.addItem("智能1", "smart1")
-        self.organize_smart_combo.addItem("智能2", "smart2")
+        self.organize_smart_combo.addItem(
+            "节省T双层整理（快速取证 → 质量合并）",
+            "hybrid",
+        )
         self.organize_smart_combo.setCurrentIndex(0)
         row.addWidget(self.organize_smart_combo)
         self.pause_organize_button = QPushButton("暂停整理")
@@ -288,8 +294,9 @@ def install(gui_module) -> None:
         row.addStretch(1)
 
         note = QLabel(
-            "多资料整理会从多个检索视角交叉取证；暂停后保留已完成批次，"
-            "点击“继续未完成任务”即可续做。相关PDF原图会插入到引用内容附近。"
+            "多资料整理默认最多取96条证据、每批12条；批次与中间归并使用快速层，"
+            "只在最终合并使用低推理质量层。暂停后保留已完成批次，"
+            "点击“继续未完成任务”即可续做。相关资料原图会插入到引用内容附近。"
         )
         note.setWordWrap(True)
         if layout is not None:
@@ -454,7 +461,12 @@ def install(gui_module) -> None:
         open_button = QPushButton("打开译本目录")
 
         def open_outputs():
-            root = self.workbench.translator.output_root
+            suffix = Path(self.translation_path.text().strip()).suffix.lower()
+            root = (
+                self.workbench.office_translator.output_root
+                if suffix in {".pptx", ".docx"}
+                else self.workbench.translator.output_root
+            )
             root.mkdir(parents=True, exist_ok=True)
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
 
@@ -464,8 +476,9 @@ def install(gui_module) -> None:
         action_row.addStretch(1)
 
         format_label = QLabel(
-            "默认成品会保留原PDF页面及原图，中文译文紧接在原页下方；"
-            "同时生成一份完整PDF和按页数拆开的多册PDF。暂停后已完成页不会重翻。"
+            "严格同格式输出：PDF→PDF、PPTX→PPTX、DOCX论文→DOCX。"
+            "PPTX/DOCX只替换原文字节点，图片、图表关系和版式保持原包结构；"
+            "PDF版式选项仅对PDF生效。完成一页/幻灯片/论文段落组就立即显示并保存。"
         )
         format_label.setWordWrap(True)
 
@@ -475,7 +488,29 @@ def install(gui_module) -> None:
             layout.insertLayout(5, export_row)
             layout.insertLayout(6, action_row)
             layout.insertWidget(7, format_label)
+        if hasattr(self, "translation_path"):
+            self.translation_path.textChanged.connect(
+                lambda _text: self._update_translation_format_controls()
+            )
+        self._update_translation_format_controls()
         return widget
+
+    def _update_translation_format_controls(self):
+        suffix = Path(self.translation_path.text().strip()).suffix.lower()
+        office = suffix in {".pptx", ".docx"}
+        for name in (
+            "translation_layout_combo",
+            "translation_export_combo",
+            "translation_part_pages",
+        ):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setEnabled(not office)
+        if office and hasattr(self, "translation_status"):
+            label = "PPTX→PPTX" if suffix == ".pptx" else "DOCX论文→DOCX"
+            self.translation_status.setText(
+                f"{label}：版式和媒体保持原结构；每个完成单元立即预览。"
+            )
 
     def refresh_translation_models(self):
         if not hasattr(self, "translation_models_label"):
@@ -485,15 +520,9 @@ def install(gui_module) -> None:
             if self.workbench.llm.available("translation")
             else "未就绪"
         )
-        engine = self.workbench.translator.engine
-        preview = (
-            "可用"
-            if engine.marian.available() or engine.nllb.available()
-            else "未就绪"
-        )
         self.translation_models_label.setText(
-            f"医学精译={quality}（仅质量模型） | "
-            f"普通资料快速预览={preview}"
+            f"医学精译={quality}（Smart2质量模型、低推理） | "
+            "旧Smart1预览模型不参与任何正式文档翻译"
         )
 
     def start_translation(self, retry_warning_pages: bool):
@@ -509,7 +538,7 @@ def install(gui_module) -> None:
         self.refresh_translation_models()
         self.translation_progress.setValue(0)
         self.translation_result.setPlainText(
-            "整本医学精译任务正在运行；每完成一页立即保存……"
+            "医学精译任务正在运行；每完成一页/幻灯片/论文段落组立即保存并显示……"
         )
         smart_level = (
             self.translation_smart_combo.currentData()
@@ -531,6 +560,11 @@ def install(gui_module) -> None:
             if hasattr(self, "translation_part_pages")
             else 50
         )
+        suffix = Path(path).suffix.lower()
+        if suffix in {".pptx", ".docx"}:
+            output_layout = "source_format"
+            export_format = suffix.lstrip(".")
+            part_pages = 0
         os.environ["PHOENIX_KNOWLEDGE_LLM_PROFILE"] = (
             "translation" if smart_level == "smart2" else "fast"
         )
@@ -552,6 +586,7 @@ def install(gui_module) -> None:
             part_pages=int(part_pages),
         )
         self.worker.progress.connect(self._translation_progress)
+        self.worker.page_ready.connect(self._translation_page_ready)
         self.worker.completed.connect(self._translation_done)
         self.worker.failed.connect(self._translation_failed)
         self.pause_translation_button.setEnabled(True)
@@ -572,12 +607,12 @@ def install(gui_module) -> None:
 
         if bool(getattr(result, "paused", False)):
             self.translation_status.setText(
-                "翻译已暂停；已完成页已写入checkpoint。再次点击“开始/继续整本翻译”即可续翻。"
+                "翻译已暂停；已完成单元已写入checkpoint。再次点击开始/继续即可续翻。"
             )
             self.translation_result.setPlainText(
-                f"已暂停\n已处理页：{result.pages_done}\n"
-                f"已续用页：{result.resumed_pages}\n"
-                f"待复核页：{result.warning_pages}\n\n"
+                f"已暂停\n已处理单元：{result.pages_done}\n"
+                f"已续用单元：{result.resumed_pages}\n"
+                f"待复核单元：{result.warning_pages}\n\n"
                 "已完成内容保留在当前译本任务目录，不会从头重来。"
             )
             self.refresh_translation_models()
@@ -592,15 +627,17 @@ def install(gui_module) -> None:
             if str(getattr(result, "smart_level", "smart2")) == "smart2"
             else "普通资料快速预览"
         )
+        suffix = Path(result.source_path).suffix.lower()
+        unit_label = "页" if suffix == ".pdf" else ("幻灯片" if suffix == ".pptx" else "论文段落组")
         self.translation_status.setText(
-            f"整本翻译完成 | {smart_label} | 待复核页={result.warning_pages}"
+            f"同格式翻译完成 | {smart_label} | 待复核{unit_label}={result.warning_pages}"
         )
         lines = [
             "翻译完成。",
             f"原文件：{result.source_path}",
-            f"范围：第 {result.start_page} 页至第 {result.total_pages} 页",
-            f"续翻跳过页：{result.resumed_pages}",
-            f"待复核页：{result.warning_pages}",
+            f"范围：第 {result.start_page} 至第 {result.total_pages} {unit_label}",
+            f"续翻跳过{unit_label}：{result.resumed_pages}",
+            f"待复核{unit_label}：{result.warning_pages}",
             "",
             "成品文件：",
         ]
@@ -619,14 +656,21 @@ def install(gui_module) -> None:
             self.pause_translation_button.setEnabled(False)
         return original_translation_failed(self, error)
 
+    def _translation_page_ready(self, unit: int, text: str, path: str):
+        suffix = Path(self.translation_path.text().strip()).suffix.lower()
+        label = "页" if suffix == ".pdf" else ("幻灯片" if suffix == ".pptx" else "论文段落组")
+        self.translation_result.setPlainText(
+            f"{label} {int(unit)} 已完成并写入checkpoint：{path}\n\n{text}"
+        )
+
     def _print_translation(self, preview: bool):
         path = getattr(self, "last_translation_path", None)
         if path is not None:
             path = Path(path)
-            if path.is_file() and path.suffix.lower() == ".pdf":
+            if path.is_file() and path.suffix.lower() in {".pdf", ".pptx", ".docx"}:
                 QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
                 self.translation_status.setText(
-                    "已用系统PDF阅读器打开译本，可直接打印或另存。"
+                    "已用系统对应阅读器打开同格式译本，可直接打印或另存。"
                 )
                 return
         return original_print_translation(self, preview)
@@ -643,9 +687,11 @@ def install(gui_module) -> None:
     cls._organize_done = _organize_done
     cls._organize_failed = _organize_failed
     cls._translation_tab = _translation_tab
+    cls._update_translation_format_controls = _update_translation_format_controls
     cls.refresh_translation_models = refresh_translation_models
     cls.start_translation = start_translation
     cls.pause_translation = pause_translation
     cls._translation_done = _translation_done
+    cls._translation_page_ready = _translation_page_ready
     cls._translation_failed = _translation_failed
     cls._print_translation = _print_translation
