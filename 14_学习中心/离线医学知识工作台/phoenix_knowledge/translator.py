@@ -14,6 +14,7 @@ from .llm import LocalLLM
 from .pdf_assets import PDFAssetStore, html_images, markdown_images
 from .pdf_parser import iter_pdf_pages, pdf_page_count, sha256_file
 from .translation_models import MultiModelTranslationEngine
+from .translation_runtime_adapter import TranslationRuntimeAdapter
 from .translation_pdf import (
     LAYOUT_ORIGINAL_BILINGUAL,
     LAYOUT_TEXT_BILINGUAL,
@@ -98,6 +99,7 @@ class PDFTranslator:
         self.paths = paths
         self.llm = llm
         self.engine = MultiModelTranslationEngine(paths, llm)
+        self.translation_runtime = TranslationRuntimeAdapter()
         self.assets = PDFAssetStore(paths.runtime_root)
         self.output_root = paths.evidence_root / 'PDF整本翻译'
         self.output_root.mkdir(parents=True, exist_ok=True)
@@ -205,10 +207,12 @@ class PDFTranslator:
                     f'{part_index}/{len(parts)} 段'
                 )
             try:
-                decision = self.engine.translate(
+                decision = self.translation_runtime.translate(
+                    self.engine,
                     part_text,
                     target_language,
-                    smart_level=smart_level,
+                    page_number=page_number,
+                    requested_level=smart_level,
                 )
                 translated = decision.text.strip()
                 if decision.needs_review:
@@ -895,6 +899,7 @@ class PDFTranslator:
             self._write_json(checkpoint_path, state)
             raise
         finally:
+            self.translation_runtime.clear()
             self.engine.unload()
 
     def translate(self, pdf_path: Path, **kwargs) -> TranslationResult:
