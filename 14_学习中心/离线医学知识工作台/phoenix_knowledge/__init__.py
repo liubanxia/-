@@ -28,6 +28,7 @@ from .translation_layout_compact import install as _install_translation_layout_c
 from .provider_hub import install as _install_provider_hub
 from .provider_hub_compat import install as _install_provider_hub_compat
 from .provider_hub_v2 import install as _install_provider_hub_v2
+from .token_efficiency_hardening import install as _install_token_efficiency_hardening
 
 _install_translation_recovery()
 _install_scholarly_pubmed()
@@ -43,6 +44,7 @@ _install_translation_layout_compact()
 _install_provider_hub()
 _install_provider_hub_compat()
 _install_provider_hub_v2()
+_install_token_efficiency_hardening()
 
 # Translation owns its lower-level PDF contract first. Workbench installs last
 # so every user-facing public operation sees the final translation/runtime
