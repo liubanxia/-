@@ -1,4 +1,5 @@
 from .workbench import MedicalKnowledgeWorkbench
+from .translation_learning_pool import TranslationLearningPool, TranslationCorrectionSample
 from .translation_stability_core import (
     capture_core as _capture_translation_core,
     install_final as _install_translation_stability_core,
@@ -8,9 +9,6 @@ from .workbench_stability_core import (
     install_final as _install_workbench_stability_core,
 )
 
-# Capture the unwrapped public cores before historical compatibility installers
-# can wrap them. Final installers below deliberately replace those wrapper
-# chains with one deterministic release contract.
 _capture_workbench_core()
 _capture_translation_core()
 
@@ -49,19 +47,14 @@ _install_provider_hub_compat()
 _install_provider_hub_v2()
 _install_token_efficiency_hardening()
 
-# Translation owns its lower-level PDF contract first. Workbench installs last
-# so every user-facing public operation sees the final translation/runtime
-# topology rather than a partially patched class.
 _install_translation_stability_core()
 _install_workbench_stability_core()
-
-# Base policy keeps offline translation available. HY-MT adds the second local
-# tier. Cascade v2 installs last and defines the production order precisely:
-# model 1 -> model 2 only if model 1 fails -> Smart2 final polish of whichever
-# local draft won. The API therefore edits existing work instead of replacing
-# the local cascade with a full remote translation.
 _install_hybrid_translation_policy()
 _install_hymt_cascade_policy()
 _install_translation_cascade_v2()
 
-__all__ = ["MedicalKnowledgeWorkbench"]
+__all__ = [
+    "MedicalKnowledgeWorkbench",
+    "TranslationLearningPool",
+    "TranslationCorrectionSample",
+]
