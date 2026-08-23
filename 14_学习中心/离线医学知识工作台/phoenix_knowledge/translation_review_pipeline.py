@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 
@@ -17,18 +18,17 @@ class ReviewStageResult:
 
 
 class MedicalTranslationReviewPipeline:
-    """Second-pass medical review after the fallback translation cascade.
+    """Fast second-pass medical review after the translation cascade.
 
-    The first phase chooses one usable translation through model1 -> model2 ->
-    model3 -> Smart2 only when the previous stage fails.  This class is the
-    second phase: the completed page/unit is reviewed in sequence by model1,
-    model2, model3 and Smart2.  A later reviewer may improve the text, but a
-    candidate that breaks the medical validator or segment structure is rejected
-    and the last safe version is retained.
+    Normal pages do not pay for four full-page generations.  The completed
+    translation is scanned first; expensive reviewers are escalated only when
+    the current page/unit still fails the medical quality gate.  Set
+    PHOENIX_EXHAUSTIVE_PAGE_REVIEW=1 only when an intentionally slow four-stage
+    full audit is desired.
     """
 
     API_REVIEW_REASON = (
-        "这是已经完成翻译并经过三级本地复核的医学译文。请做最终医学审稿，不要从头重译。"
+        "这是已经完成翻译并经过本地复核的医学译文。请做最终医学审稿，不要从头重译。"
         "只修正仍存在的医学术语、解剖关系、疾病名称、影像学表达、漏译/误译和中文语序问题；"
         "严格保持全部数字、单位、正负号、侧别、否定关系、分级、医学缩写、图表编号和诊断"
         "确定性。不得总结、删减、扩写或添加原文没有的信息。只输出最终完整译文。"
@@ -36,6 +36,11 @@ class MedicalTranslationReviewPipeline:
 
     def __init__(self, engine):
         self.engine = engine
+
+    @staticmethod
+    def _exhaustive() -> bool:
+        raw = os.environ.get("PHOENIX_EXHAUSTIVE_PAGE_REVIEW", "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
 
     def _quality(self, source: str, text: str, target_language: str):
         return self.engine.validator.validate(source, str(text or "").strip(), target_language)
@@ -147,10 +152,11 @@ class MedicalTranslationReviewPipeline:
                 return None, "qwen_local_medical_model3", "unavailable"
             backend = cascade_v2._model3(self.engine)
             review = getattr(backend, "medical_review", None)
-            if callable(review):
-                text = review(source, current, target_language)
-            else:
-                text = backend.refine(source, current, target_language)
+            text = (
+                review(source, current, target_language)
+                if callable(review)
+                else backend.refine(source, current, target_language)
+            )
             return text, backend.name, ""
         except Exception as exc:
             return None, "qwen_local_medical_model3", f"{type(exc).__name__}: {exc}"
@@ -178,6 +184,19 @@ class MedicalTranslationReviewPipeline:
         except Exception as exc:
             return None, "smart2_api", f"{type(exc).__name__}: {exc}"
 
+    def _result_for_skipped(self, stage: str, backend: str, current: str, quality) -> ReviewStageResult:
+        return ReviewStageResult(
+            stage=stage,
+            backend=backend,
+            text=current,
+            changed=False,
+            passed=bool(quality.ok),
+            accepted=False,
+            quality_score=float(quality.score),
+            reasons=tuple(quality.reasons),
+            error="skipped_fast_path",
+        )
+
     def run(
         self,
         source_text: str,
@@ -193,23 +212,61 @@ class MedicalTranslationReviewPipeline:
         if not source or not current:
             return current, ()
 
-        print(f"[Phoenix][复核] {label} 开始：模型1 -> 模型2 -> 模型3 -> Smart2", flush=True)
-        results: list[ReviewStageResult] = []
-        stages = (
-            ("model1_review", lambda value: self._model1_candidate(source, target_language)),
-            ("model2_review", lambda value: self._model2_candidate(source, value, target_language)),
-            ("model3_review", lambda value: self._model3_candidate(source, value, target_language)),
-            ("api_review", lambda value: self._api_candidate(source, value, target_language)),
+        exhaustive = self._exhaustive()
+        initial_quality = self._quality(source, current, target_language)
+        print(
+            f"[Phoenix][复核] {label} 开始 | 模式={'完整四级' if exhaustive else '快速条件升级'} "
+            f"| 初始={'PASS' if initial_quality.ok else 'REVIEW'} "
+            f"| score={float(initial_quality.score):.2f}",
+            flush=True,
         )
 
-        for stage, runner in stages:
+        # The translation phase has already run segment-level model gates.  A
+        # whole-page deterministic PASS therefore goes straight to export in
+        # normal mode instead of asking Qwen3B to regenerate the entire page.
+        if initial_quality.ok and not exhaustive:
+            print(
+                f"[Phoenix][复核] {label} 快速放行：整页质量门已通过，跳过3B/API全文重写。",
+                flush=True,
+            )
+            return current, ()
+
+        results: list[ReviewStageResult] = []
+        stages = (
+            ("model1_review", "model1", lambda value: self._model1_candidate(source, target_language)),
+            ("model2_review", "hymt15_1p8b", lambda value: self._model2_candidate(source, value, target_language)),
+            ("model3_review", "qwen_local_medical_model3", lambda value: self._model3_candidate(source, value, target_language)),
+            ("api_review", "smart2_api", lambda value: self._api_candidate(source, value, target_language)),
+        )
+
+        for index, (stage, default_backend, runner) in enumerate(stages):
+            current_quality = self._quality(source, current, target_language)
+            if not exhaustive and current_quality.ok:
+                # Once a stage repairs the page, stop escalating.  This keeps
+                # model3/API off the common path while retaining them for real
+                # failures.
+                for skipped_stage, skipped_backend, _ in stages[index:]:
+                    results.append(
+                        self._result_for_skipped(
+                            skipped_stage,
+                            skipped_backend,
+                            current,
+                            current_quality,
+                        )
+                    )
+                print(
+                    f"[Phoenix][复核] {label} 已通过质量门，后续重模型跳过。",
+                    flush=True,
+                )
+                break
+
             before = current
             candidate, backend, error = runner(current)
             if candidate is None:
                 quality = self._quality(source, current, target_language)
                 result = ReviewStageResult(
                     stage=stage,
-                    backend=backend,
+                    backend=backend or default_backend,
                     text=current,
                     changed=False,
                     passed=bool(quality.ok),
@@ -242,7 +299,8 @@ class MedicalTranslationReviewPipeline:
             suffix = f" | error={result.error}" if result.error and result.error != "unavailable" else ""
             state = "CHANGED" if result.changed else ("PASS" if result.passed else "REJECT")
             print(
-                f"[Phoenix][复核] {stage} | {backend} | {state} | score={result.quality_score:.2f}{suffix}",
+                f"[Phoenix][复核] {stage} | {result.backend} | {state} "
+                f"| score={result.quality_score:.2f}{suffix}",
                 flush=True,
             )
 
