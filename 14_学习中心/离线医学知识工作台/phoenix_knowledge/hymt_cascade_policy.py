@@ -336,7 +336,8 @@ def _patch_resume_policy() -> None:
     def local_only(name: str) -> bool:
         value = str(name or "").strip()
         return (
-            value.startswith("local_guarded_review:")
+            value.startswith("blocked_local_candidate:")
+            or value.startswith("local_guarded_review:")
             or value.startswith("local_source_preserved_review:")
             or value == "failed_preserve_source"
         )
@@ -363,15 +364,18 @@ def _patch_runtime_cache() -> None:
             if bool(getattr(decision, "needs_review", False)):
                 return False
             backend = str(getattr(decision, "backend", "") or "")
-            if backend.startswith(("local_guarded_review:", "local_source_preserved_review:")):
+            if backend.startswith((
+                "blocked_local_candidate:",
+                "local_guarded_review:",
+                "local_source_preserved_review:",
+            )):
                 return False
             if backend == "failed_preserve_source":
                 return False
             if runtime.smart_level != "smart2":
                 return True
             return (
-                backend in {"marian_en_zh", "nllb_600m_en_zh"}
-                or backend.startswith("hymt15_1p8b_refine")
+                backend.startswith("hymt15_1p8b_refine")
                 or backend.startswith("qwen35_medical_translation")
             )
 

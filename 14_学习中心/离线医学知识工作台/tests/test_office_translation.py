@@ -53,7 +53,7 @@ def _png_bytes() -> bytes:
     )
 
 
-def _write_pptx(path: Path) -> None:
+def _write_pptx(path: Path, *, acronym_labels: bool = False) -> None:
     types = """<?xml version="1.0" encoding="UTF-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
  <Default Extension="xml" ContentType="application/xml"/>
@@ -75,6 +75,9 @@ def _write_pptx(path: Path) -> None:
     slide2 = slide1.replace(
         "Pulmonary nodule", "Right lung lesion 12 mm"
     ).replace("No pleural effusion", "CT follow-up")
+    if acronym_labels:
+        slide1 = slide1.replace("Pulmonary nodule", "DWI")
+        slide2 = slide2.replace("Right lung lesion 12 mm", "ADC")
     slide_rels = """<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/>
@@ -223,6 +226,31 @@ class OfficeTranslationTests(unittest.TestCase):
             self.assertEqual(resumed.resumed_pages, 2)
             self.assertEqual(len(engine.calls), 2)
 
+    def test_pptx_pure_medical_acronyms_use_cached_deck_glossary(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "acronyms.pptx"
+            _write_pptx(source, acronym_labels=True)
+            engine = _Engine()
+            translator = OfficeDocumentTranslator(_paths(root), engine)
+
+            result = translator.translate_document(source)
+
+            with zipfile.ZipFile(result.output_path) as archive:
+                slide1 = archive.read("ppt/slides/slide1.xml").decode("utf-8")
+                slide2 = archive.read("ppt/slides/slide2.xml").decode("utf-8")
+            self.assertIn("弥散加权成像（DWI）", slide1)
+            self.assertIn("表观弥散系数（ADC）", slide2)
+            sent_to_model = {source for call in engine.calls for source in call}
+            self.assertNotIn("DWI", sent_to_model)
+            self.assertNotIn("ADC", sent_to_model)
+
+            glossary_files = list(translator.output_root.rglob("医学缩写术语表.json"))
+            self.assertEqual(len(glossary_files), 1)
+            glossary = json.loads(glossary_files[0].read_text(encoding="utf-8"))
+            self.assertEqual(glossary["glossary"]["DWI"]["chinese"], "弥散加权成像")
+            self.assertEqual(glossary["glossary"]["ADC"]["chinese"], "表观弥散系数")
+
     def test_docx_paper_stays_docx_and_translates_one_paragraph_batch(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -252,7 +280,7 @@ class OfficeTranslationTests(unittest.TestCase):
                 result = workbench.translate_book(source)
                 self.assertEqual(result.output_path.suffix, ".docx")
                 self.assertTrue(result.output_path.is_file())
-                self.assertEqual(workbench.status()["office_translation_contract"], 2)
+                self.assertEqual(workbench.status()["office_translation_contract"], 3)
             finally:
                 workbench.close()
 

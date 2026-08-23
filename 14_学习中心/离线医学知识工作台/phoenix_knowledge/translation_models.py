@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .config import WorkbenchPaths, resolve_model_dir
 from .llm import LocalLLM
+from .medical_acronyms import extract_acronyms, normalize_acronym
 
 
 _MEASUREMENT_RE = re.compile(
@@ -163,6 +164,14 @@ class TranslationValidator:
             cjk_count = len(_CJK_RE.findall(translated))
             latin_count = len(_LATIN_RE.findall(translated))
             source_latin = len(_LATIN_RE.findall(source))
+            source_acronyms = extract_acronyms(source)
+            if (
+                len(source_acronyms) == 1
+                and source.strip() == source_acronyms[0]
+                and cjk_count == 0
+            ):
+                reasons.append("独立医学缩写未给出中文释义")
+                score -= 0.55
             translatable_words = [
                 word
                 for word in _TRANSLATABLE_WORD_RE.findall(source)
@@ -300,6 +309,50 @@ class QwenMedicalTranslationBackend:
 
     def __init__(self, llm: LocalLLM):
         self.llm = llm
+        self._document_glossary: dict[str, dict[str, str]] = {}
+
+    def set_document_glossary(self, glossary: dict[str, dict] | None) -> None:
+        cleaned: dict[str, dict[str, str]] = {}
+        for raw_key, raw_row in (glossary or {}).items():
+            if not isinstance(raw_row, dict):
+                continue
+            acronym = str(raw_row.get("acronym", raw_key) or raw_key).strip()
+            key = normalize_acronym(acronym or str(raw_key))
+            english = str(raw_row.get("english", "") or "").strip()
+            chinese = str(raw_row.get("chinese", "") or "").strip()
+            if key and chinese:
+                cleaned[key] = {
+                    "acronym": acronym or str(raw_key),
+                    "english": english,
+                    "chinese": chinese,
+                }
+        self._document_glossary = cleaned
+
+    def clear_document_glossary(self) -> None:
+        self._document_glossary = {}
+
+    def glossary_prompt(self, source_text: str) -> str:
+        """Return only glossary rows used by this batch, not the whole deck."""
+
+        if not self._document_glossary:
+            return ""
+        keys = [
+            normalize_acronym(token)
+            for token in extract_acronyms(source_text)
+        ]
+        lines: list[str] = []
+        for key in dict.fromkeys(keys):
+            row = self._document_glossary.get(key)
+            if not row:
+                continue
+            english = row.get("english", "")
+            detail = f" = {english}" if english else ""
+            lines.append(
+                f"- {row['acronym']}{detail} = {row['chinese']}"
+            )
+        if not lines:
+            return ""
+        return "本批固定医学缩写表（含义不得改动）：\n" + "\n".join(lines[:32])
 
     def available(self, smart_level: str = "smart1") -> bool:
         profile = (
@@ -319,6 +372,8 @@ class QwenMedicalTranslationBackend:
         level = _normalize_smart_level(smart_level)
         profile = "translation" if level == "smart2" else "fast"
         max_tokens = translation_output_budget(text, level)
+        glossary = self.glossary_prompt(text)
+        glossary_section = f"\n{glossary}\n" if glossary else ""
         prompt = f"""你是 Phoenix 医学教材精译器。把下面英文医学原文完整、准确地翻译成{target_language}。
 
 这是医学教材正文，不是摘要任务。必须做到：
@@ -327,10 +382,12 @@ class QwenMedicalTranslationBackend:
 - 疾病、解剖、影像学征象、检查技术、药物、分级和病理术语使用规范医学中文。
 - 首次出现且中文可能歧义的专业名词，可采用“规范中文（English）”；之后使用规范中文。
 - 所有数字、单位、百分比、HU、分级、剂量、图号、表号、公式、参考文献编号必须保留。
-- CT/MRI/X线/超声/心电等专业缩写按医学惯例保留，不擅自改写。
+- 医学缩写必须保留；含义严格采用固定缩写表。原文若只有一个缩写，输出“规范中文（原缩写）”。
+- 正文中的缩写保持紧凑，不强制重复英文全称，避免课件文本膨胀。
 - 标题、项目符号、编号、表格式行尽量维持原来的层级和顺序。
 - 句子损坏、OCR错误或语义无法确定时标记“[原文不清]”，不得猜测。
 - 译文应达到医生直接阅读教材的中文可读性，不输出解释、评语、翻译过程或模型信息。
+{glossary_section}
 
 原文：
 {text}
@@ -380,15 +437,20 @@ class QwenMedicalTranslationBackend:
             ),
         )
         source_json = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+        glossary = self.glossary_prompt(joined)
+        glossary_section = f"\n{glossary}\n" if glossary else ""
         prompt = f"""你是 Phoenix 医学课件和论文精译器。把JSON数组中每个 text 完整、准确地翻译成{target_language}。
 
 要求：
 - 保持每个 id 不变、条目数量和顺序不变；只翻译 text 的内容。
 - 使用规范医学术语，不总结、不删减、不扩写，不加入原文没有的知识。
 - 数字、单位、百分比、HU、剂量、图表编号、参考文献编号和医学缩写必须保留。
+- 缩写含义严格采用固定缩写表；条目若只有一个缩写，输出“规范中文（原缩写）”。
+- 正文中的缩写保持紧凑，不强制重复英文全称，避免PPT文本框和文件体积膨胀。
 - 否定/肯定、左右侧、可能/明确、增高/降低、增大/缩小、稳定/进展等关系必须保持。
 - 相邻条目属于同一页或同一论文段落组，可利用上下文消除歧义，但不得合并条目。
 - 只输出合法JSON数组，格式严格为 [{{"id":"S0001","translation":"译文"}}]；不得输出Markdown代码围栏或说明。
+{glossary_section}
 
 输入JSON：
 {source_json}
@@ -422,10 +484,13 @@ class QwenMedicalTranslationBackend:
         target_language: str = "中文",
     ) -> str:
         reason_text = "；".join(reasons) or "批量结果缺失或结构校验失败"
+        glossary = self.glossary_prompt(source)
+        glossary_section = f"\n{glossary}\n" if glossary else ""
         prompt = f"""你是 Phoenix 医学翻译纠错器。只修正下面这一条译文，输出修正后的{target_language}译文，不要解释。
 
-硬性要求：完整翻译，不总结、不扩写；数字、单位、正负号、缩写、否定、侧别、诊断确定性和方向关系必须与原文一致。
+硬性要求：完整翻译，不总结、不扩写；数字、单位、正负号、缩写、否定、侧别、诊断确定性和方向关系必须与原文一致。独立医学缩写必须输出“规范中文（原缩写）”。
 校验失败原因：{reason_text}
+{glossary_section}
 
 原文：
 {source}
@@ -462,6 +527,12 @@ class MultiModelTranslationEngine:
         self.marian = MarianEnZhBackend(paths)
         self.nllb = NLLBEnZhBackend(paths)
         self.qwen = QwenMedicalTranslationBackend(llm)
+
+    def set_document_glossary(self, glossary: dict[str, dict] | None) -> None:
+        self.qwen.set_document_glossary(glossary)
+
+    def clear_document_glossary(self) -> None:
+        self.qwen.clear_document_glossary()
 
     @staticmethod
     def _backend_available(backend, smart_level: str | None = None) -> bool:

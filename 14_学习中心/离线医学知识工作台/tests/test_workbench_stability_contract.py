@@ -43,7 +43,7 @@ class WorkbenchStabilityContractTests(unittest.TestCase):
                 self.assertEqual(state["formal_translation_contract"], 1)
                 status = wb.status()
                 self.assertEqual(status["workbench_contract"], 3)
-                self.assertEqual(status["office_translation_contract"], 2)
+                self.assertEqual(status["office_translation_contract"], 3)
                 self.assertIs(
                     wb.translator.engine,
                     wb.office_translator.engine,

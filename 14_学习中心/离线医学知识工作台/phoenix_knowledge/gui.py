@@ -737,7 +737,7 @@ class WorkbenchWindow(QMainWindow):
         self.last_translation_path = Path(result.output_path)
         self.translation_progress.setValue(100)
         self.translation_status.setText(
-            f"同格式翻译完成 | 待复核单元={result.warning_pages} | "
+            f"同格式翻译完成 | 自动校验失败单元={result.warning_pages} | "
             f"模型={','.join(result.available_backends)}"
         )
         preview = (
@@ -749,7 +749,7 @@ class WorkbenchWindow(QMainWindow):
             f"完整译本：{self.last_translation_path}\n"
             f"起始单元：{result.start_page}\n总单元：{result.total_pages}\n"
             f"续翻跳过单元：{result.resumed_pages}\n"
-            f"待复核单元：{result.warning_pages}\n"
+            f"自动校验失败单元：{result.warning_pages}\n"
             f"正式模型：{', '.join(result.available_backends)}\n\n{preview}"
         )
         self.refresh_translation_models()

@@ -15,8 +15,8 @@ def _with_model3(engine: MultiModelTranslationEngine, backends: list[object]) ->
     if any(str(getattr(item, "name", "") or "").strip() == name for item in backends):
         return backends
 
-    # Keep the visible order identical to the production path:
-    # model1 -> HY-MT model2 -> local Qwen model3 -> Smart2 API.
+    # Keep the visible experimental order: HY-MT -> local Qwen model3 ->
+    # Smart2 API. Legacy Smart1 backends are never formal candidates.
     insert_at = len(backends)
     for index, item in enumerate(backends):
         item_name = str(getattr(item, "name", "") or "").strip()

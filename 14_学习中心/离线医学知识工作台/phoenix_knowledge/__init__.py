@@ -1,3 +1,5 @@
+import os
+
 from .workbench import MedicalKnowledgeWorkbench
 from .translation_learning_pool import TranslationLearningPool, TranslationCorrectionSample
 from .translation_learning_collector import TranslationLearningCollector, TranslationLearningRecord
@@ -52,11 +54,24 @@ _install_token_efficiency_hardening()
 
 _install_translation_stability_core()
 _install_workbench_stability_core()
-_install_hybrid_translation_policy()
-_install_hymt_cascade_policy()
-_install_translation_cascade_v2()
-_install_translation_model3_inventory()
-_install_translation_review_integration()
+
+# The multi-stage local cascade is retained as an experimental foundation, but
+# it must not replace the validated Smart2 batch route in normal releases. The
+# experimental stack currently translates segments one by one, exposes legacy
+# preview backends as formal models, adds a second full-page rewrite, and can
+# publish REVIEW-marked fallbacks. All four conflict with the production
+# accuracy/token/stability contract. Developers can still exercise the stack
+# explicitly without putting hospital users on it by default.
+_experimental_cascade = os.environ.get(
+    "PHOENIX_EXPERIMENTAL_TRANSLATION_CASCADE",
+    "",
+).strip().lower() in {"1", "true", "yes", "on"}
+if _experimental_cascade:
+    _install_hybrid_translation_policy()
+    _install_hymt_cascade_policy()
+    _install_translation_cascade_v2()
+    _install_translation_model3_inventory()
+    _install_translation_review_integration()
 
 __all__ = [
     "MedicalKnowledgeWorkbench",

@@ -13,6 +13,11 @@ from pathlib import Path
 from typing import Callable, Iterable
 from xml.etree import ElementTree
 
+from .medical_acronyms import (
+    ACRONYM_CONTRACT_VERSION,
+    MedicalAcronymResolver,
+    preferred_translation,
+)
 from .translation_models import MultiModelTranslationEngine
 from .translator import TranslationResult
 
@@ -22,7 +27,7 @@ PauseCallback = Callable[[], bool]
 PreviewCallback = Callable[[int, str, Path], None]
 
 SUPPORTED_OFFICE_TRANSLATION_EXTENSIONS = {".pptx", ".docx"}
-OFFICE_TRANSLATION_CONTRACT_VERSION = 2
+OFFICE_TRANSLATION_CONTRACT_VERSION = 3
 OFFICE_OUTPUT_LAYOUT = "source_format"
 OFFICE_SIZE_RATIO_DEFAULT = 1.25
 OFFICE_SIZE_SLACK_BYTES = 1024 * 1024
@@ -36,7 +41,10 @@ _TEXT_NODE_RE = re.compile(
 _LATIN_RE = re.compile(r"[A-Za-z]")
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 _URL_RE = re.compile(r"^(?:https?://|www\.)\S+$", re.I)
-_PURE_ACRONYM_RE = re.compile(r"^[A-Z][A-Z0-9+./_-]{1,15}$")
+_PURE_ACRONYM_RE = re.compile(
+    r"^(?:[A-Z][A-Z0-9+./_-]{1,15}|[A-Z][a-z][A-Z][A-Za-z0-9]{0,9}|"
+    r"SUV(?:max|mean|peak)|MinIP|eGFR|mRNA|pH|HFrEF|HFpEF|SARS-CoV-2)$"
+)
 _PPT_SLIDE_RE = re.compile(r"^ppt/slides/slide(\d+)\.xml$")
 
 
@@ -128,8 +136,6 @@ def _should_translate(text: str, target_language: str) -> bool:
         return False
     if _is_chinese_target(target_language):
         if not _LATIN_RE.search(value):
-            return False
-        if _PURE_ACRONYM_RE.fullmatch(value):
             return False
         return True
     if _is_english_target(target_language):
@@ -657,11 +663,14 @@ class OfficeDocumentTranslator:
         *,
         source_sha256: str,
         target_language: str,
+        glossary_sha256: str,
     ) -> tuple[dict[str, str], int, list[dict]] | None:
         payload = _read_json(path)
         if not payload or payload.get("source_sha256") != source_sha256:
             return None
         if payload.get("target_language") != target_language:
+            return None
+        if payload.get("glossary_sha256") != glossary_sha256:
             return None
         rows = payload.get("translations")
         if not isinstance(rows, list):
@@ -858,11 +867,74 @@ class OfficeDocumentTranslator:
                 f"开始单元 {start_page} 超出总单元数 {total_units}。"
             )
         selected_total = total_units - start_page + 1
+
+        # Build one fixed abbreviation glossary for the whole document. The
+        # large optional inventory is filtered locally, and Smart2 sees only
+        # ambiguous/unknown terms plus short nearby contexts. The result is
+        # cached by source digest so resume/retry costs no additional tokens.
+        glossary_file = root / "医学缩写术语表.json"
+        glossary_payload = _read_json(glossary_file)
+        glossary: dict[str, dict] = {}
+        cache_valid = bool(
+            glossary_payload.get("source_sha256") == digest
+            and glossary_payload.get("target_language") == target_language
+            and str(glossary_payload.get("acronym_contract", ""))
+            == str(ACRONYM_CONTRACT_VERSION)
+            and isinstance(glossary_payload.get("glossary"), dict)
+        )
+        if _is_chinese_target(target_language):
+            if cache_valid:
+                glossary = dict(glossary_payload.get("glossary") or {})
+            else:
+                if progress:
+                    progress(
+                        0,
+                        selected_total,
+                        "正在扫描整份文档医学缩写并建立固定术语表……",
+                    )
+                qwen = getattr(self.engine, "qwen", None)
+                llm = getattr(qwen, "llm", None)
+                glossary = MedicalAcronymResolver(self.paths, llm).resolve(
+                    (
+                        (
+                            unit.number,
+                            "\n".join(segment.source for segment in unit.segments),
+                        )
+                        for unit in units
+                    ),
+                    target_language,
+                )
+                _write_json(
+                    glossary_file,
+                    {
+                        "source_path": str(source),
+                        "source_sha256": digest,
+                        "target_language": target_language,
+                        "acronym_contract": ACRONYM_CONTRACT_VERSION,
+                        "glossary": glossary,
+                    },
+                )
+        glossary_sha256 = _sha256_bytes(
+            json.dumps(
+                glossary,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        set_glossary = getattr(self.engine, "set_document_glossary", None)
+        if callable(set_glossary):
+            set_glossary(glossary)
+
         state = {
             "source_path": str(source),
             "source_sha256": digest,
             "target_language": target_language,
             "format": suffix.lstrip("."),
+            "office_translation_contract": OFFICE_TRANSLATION_CONTRACT_VERSION,
+            "acronym_contract": ACRONYM_CONTRACT_VERSION,
+            "glossary_count": len(glossary),
+            "glossary_sha256": glossary_sha256,
             "start_page": start_page,
             "total_units": total_units,
             "status": "running",
@@ -874,6 +946,15 @@ class OfficeDocumentTranslator:
 
         replacements: dict[tuple[str, int], str] = {}
         translation_cache: dict[str, str] = {}
+        if _is_chinese_target(target_language):
+            for unit in units:
+                for segment in unit.segments:
+                    source_text = segment.source.strip()
+                    if not _PURE_ACRONYM_RE.fullmatch(source_text):
+                        continue
+                    translated = preferred_translation(source_text, glossary)
+                    if translated:
+                        translation_cache[segment.source] = translated
         pages_done = 0
         resumed_pages = 0
         warning_pages = 0
@@ -912,6 +993,7 @@ class OfficeDocumentTranslator:
                     unit,
                     source_sha256=digest,
                     target_language=target_language,
+                    glossary_sha256=glossary_sha256,
                 )
                 # A formal Office delivery may never reuse a warning unit.
                 # It is automatically retried on the next run instead of
@@ -1079,6 +1161,7 @@ class OfficeDocumentTranslator:
                     {
                         "source_sha256": digest,
                         "target_language": target_language,
+                        "glossary_sha256": glossary_sha256,
                         "unit": unit.number,
                         "label": unit.label,
                         "warning_count": warning_count,
@@ -1101,7 +1184,7 @@ class OfficeDocumentTranslator:
                     progress(
                         pages_done,
                         selected_total,
-                        f"已完成 {unit.label} | 待复核单元={warning_pages}",
+                        f"已完成 {unit.label} | 自动校验失败单元={warning_pages}",
                     )
 
                 if should_pause and should_pause():
@@ -1154,6 +1237,9 @@ class OfficeDocumentTranslator:
                 "unit_count": total_units,
                 "translated_units": selected_total,
                 "warning_units": warning_pages,
+                "acronym_contract": ACRONYM_CONTRACT_VERSION,
+                "glossary_count": len(glossary),
+                "glossary_sha256": glossary_sha256,
                 "source_sha256": digest,
                 "output_sha256": _sha256_file(final_output),
             })
@@ -1196,6 +1282,12 @@ class OfficeDocumentTranslator:
             _write_json(checkpoint, state)
             raise
         finally:
+            clear_glossary = getattr(self.engine, "clear_document_glossary", None)
+            if callable(clear_glossary):
+                try:
+                    clear_glossary()
+                except Exception:
+                    pass
             try:
                 self.engine.unload()
             except Exception:

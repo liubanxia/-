@@ -15,6 +15,7 @@ from phoenix_knowledge.translation_output_validation import (
     validate_pdf,
     write_integrity_report,
 )
+from phoenix_knowledge.translation_models import MultiModelTranslationEngine
 from phoenix_knowledge.translation_pdf import TranslationPDFBuilder
 from phoenix_knowledge.translation_stability_core import (
     LAYOUT_SOURCE_TRANSLATED,
@@ -76,6 +77,24 @@ class TranslationOutputStabilityTests(unittest.TestCase):
         self.assertEqual(
             TranslationPDFBuilder.build.__module__,
             "phoenix_knowledge.translation_stability_core",
+        )
+        self.assertFalse(
+            bool(
+                getattr(
+                    MultiModelTranslationEngine,
+                    "_phoenix_translation_cascade_v2_installed",
+                    False,
+                )
+            )
+        )
+        self.assertFalse(
+            bool(
+                getattr(
+                    MultiModelTranslationEngine,
+                    "_phoenix_hybrid_translation_policy_installed",
+                    False,
+                )
+            )
         )
 
     def test_truncated_pdf_is_rejected(self):

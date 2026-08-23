@@ -41,7 +41,7 @@ def _review_pdf_page(
     )
     source = str(source_text or "").strip()
     draft = str(translated or "").strip()
-    if not source or not draft:
+    if not source or not draft or not hasattr(self.engine, "validator"):
         return translated, audit
 
     if status:
@@ -85,7 +85,11 @@ def _review_pdf_page(
 def _review_office_sources(self, sources: list[str], target_language: str):
     previous = getattr(type(self), "_phoenix_review_previous_translate_sources")
     decisions = list(previous(self, sources, target_language))
-    if not sources or len(decisions) != len(sources):
+    if (
+        not sources
+        or len(decisions) != len(sources)
+        or not hasattr(self.engine, "validator")
+    ):
         return decisions
 
     source_bundle = _REVIEW_SEPARATOR.join(str(value or "").strip() for value in sources)

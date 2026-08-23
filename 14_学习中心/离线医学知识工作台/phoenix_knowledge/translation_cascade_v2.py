@@ -40,8 +40,8 @@ def _report_model3_fast_mode(engine: MultiModelTranslationEngine) -> None:
     if bool(getattr(engine, "_phoenix_model3_fast_mode_reported", False)):
         return
     print(
-        "[Phoenix][翻译级联] 失败升级模式：模型1失败→模型2，模型2失败→模型3，"
-        "模型3失败→Smart2 API。整页复核在翻译完成后另行执行。",
+        "[Phoenix][翻译级联] 实验模式：HY-MT失败→本地Qwen模型3→Smart2 API；"
+        "旧Smart1模型不参与。整页自动质量门在翻译完成后另行执行。",
         flush=True,
     )
     engine._phoenix_model3_fast_mode_reported = True
@@ -383,6 +383,12 @@ def _translate_segments(
     if level != "smart2":
         previous = getattr(self, "_phoenix_cascade_v2_previous_translate_segments")
         return previous(values, target_language, smart_level=level)
+    if not cascade._model2_available(self) and not _model3_available(self):
+        # No experimental local stage is usable: keep the proven one-call
+        # Smart2 batch path instead of degrading into one API request per text
+        # box. This is the common hospital/net-cafe configuration.
+        previous = getattr(self, "_phoenix_cascade_v2_previous_translate_segments")
+        return previous(values, target_language, smart_level="smart2")
     return tuple(
         _translate(self, value, target_language, smart_level="smart2")
         for value in values
@@ -395,6 +401,7 @@ def _local_only_backend(name: str) -> bool:
         value in LEGACY_PREVIEW_BACKEND_NAMES
         or value.startswith("hymt15_1p8b")
         or value.startswith("qwen_local_medical_model3")
+        or value.startswith("blocked_local_candidate:")
         or value.startswith("local_guarded_review:")
         or value.startswith("local_source_preserved_review:")
         or value == "failed_preserve_source"

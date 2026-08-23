@@ -11,15 +11,11 @@ from .translation_models import (
     QwenMedicalTranslationBackend,
     TranslationAttempt,
     TranslationDecision,
-    _SIMPLIFIED_TARGETS,
     _normalize_smart_level,
 )
 
 
-LOCAL_DIRECT_ACCEPT_SCORE = 0.78
 SMART2_REFINEMENT_EPOCH = 1
-_REVIEW_PREFIX = "[本地模型译文；Smart2当前不可用或精修失败，建议复核]\n"
-_SOURCE_PREFIX = "[本地模型未通过关键安全校验；为避免错误已保留原文，建议复核]\n"
 _REFINEMENT_REASON = (
     "这是本地模型已经完成的医学初译。请不要重新摘要；请在逐句保留原意、数字、单位、"
     "正负号、侧别、否定关系、分级和医学缩写的前提下，对现有中文译文进行二次医学精修，"
@@ -28,19 +24,26 @@ _REFINEMENT_REASON = (
 
 
 def _local_backends(engine: MultiModelTranslationEngine, target_language: str) -> list[object]:
-    if target_language not in _SIMPLIFIED_TARGETS:
-        return []
-    result: list[object] = []
-    for backend in (engine.marian, engine.nllb):
-        if engine._backend_available(backend):
-            result.append(backend)
-    return result
+    del engine, target_language
+    # Smart1/legacy Marian and NLLB candidates are permanently excluded from
+    # every formal or experimental medical route. HY-MT/model3 have their own
+    # explicit stages; keeping this function empty also prevents an installed
+    # legacy folder from silently re-entering Smart2 inventory.
+    return []
 
 
 def _smart_available(engine: MultiModelTranslationEngine) -> bool:
-    if engine._real_smart_backend():
-        return engine._backend_available(engine.qwen, "smart2")
-    return engine._backend_available(engine.qwen)
+    backend = getattr(engine, "qwen", None)
+    available = getattr(engine, "_backend_available", None)
+    if backend is None or not callable(available):
+        return False
+    real = getattr(engine, "_real_smart_backend", None)
+    try:
+        if callable(real) and real():
+            return bool(available(backend, "smart2"))
+        return bool(available(backend))
+    except Exception:
+        return False
 
 
 def _attempt(
@@ -66,29 +69,19 @@ def _reviewable_local_fallback(
     best: TranslationAttempt,
     attempts: Iterable[TranslationAttempt],
 ) -> TranslationDecision:
+    del source
     reasons = tuple(best.quality.reasons)
-    unsafe_numeric = any("数字/单位/正负号未完整保留" in reason for reason in reasons)
-    unsafe = unsafe_numeric or not best.text.strip() or float(best.quality.score) < 0.25
-
-    if unsafe:
-        text = _SOURCE_PREFIX + source.strip()
-        backend = f"local_source_preserved_review:{best.backend}"
-        note = "本地候选未通过关键安全校验，已保留原文而不是发布可疑译文"
-    else:
-        text = _REVIEW_PREFIX + best.text.strip()
-        backend = f"local_guarded_review:{best.backend}"
-        note = "Smart2未完成二次精修，本地译文已显式标记为建议复核"
-
-    publishable_quality = QualityReport(
-        ok=True,
-        score=float(best.quality.score),
+    note = "自动医学质量门未通过；禁止发布并等待可用模型自动重试"
+    blocked_quality = QualityReport(
+        ok=False,
+        score=min(float(best.quality.score), 0.61),
         reasons=tuple((*reasons, note)),
     )
     return TranslationDecision(
-        text=text,
-        backend=backend,
-        quality=publishable_quality,
-        needs_review=False,
+        text=best.text.strip(),
+        backend=f"blocked_local_candidate:{best.backend}",
+        quality=blocked_quality,
+        needs_review=True,
         attempts=tuple(attempts),
     )
 
@@ -211,18 +204,8 @@ def _translate(
             attempts.append(attempt)
             if local_best is None or attempt.quality.score > local_best.quality.score:
                 local_best = attempt
-            if (
-                not smart_ready
-                and attempt.quality.ok
-                and attempt.quality.score >= LOCAL_DIRECT_ACCEPT_SCORE
-            ):
-                return TranslationDecision(
-                    text=attempt.text,
-                    backend=attempt.backend,
-                    quality=attempt.quality,
-                    needs_review=False,
-                    attempts=tuple(attempts),
-                )
+            # Legacy local translators are excluded by _local_backends. Keep
+            # this loop generic for adapter tests, but never publish its draft.
         except Exception as exc:
             errors.append(
                 f"{getattr(backend, 'name', 'local')}: {type(exc).__name__}: {exc}"
@@ -341,6 +324,7 @@ def _is_local_only_backend(name: str) -> bool:
     value = str(name or "").strip()
     return (
         value in LEGACY_PREVIEW_BACKEND_NAMES
+        or value.startswith("blocked_local_candidate:")
         or value.startswith("local_guarded_review:")
         or value.startswith("local_source_preserved_review:")
         or value == "failed_preserve_source"

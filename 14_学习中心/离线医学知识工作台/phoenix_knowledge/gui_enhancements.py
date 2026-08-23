@@ -705,7 +705,7 @@ def install(gui_module) -> None:
             self.translation_result.setPlainText(
                 f"已暂停\n已处理单元：{result.pages_done}\n"
                 f"已续用单元：{result.resumed_pages}\n"
-                f"待复核单元：{result.warning_pages}\n\n"
+                f"自动校验失败单元：{result.warning_pages}\n\n"
                 "已完成内容保留在当前译本任务目录，不会从头重来。"
             )
             self.refresh_translation_models()
@@ -723,14 +723,14 @@ def install(gui_module) -> None:
         suffix = Path(result.source_path).suffix.lower()
         unit_label = "页" if suffix == ".pdf" else ("幻灯片" if suffix == ".pptx" else "论文段落组")
         self.translation_status.setText(
-            f"同格式翻译完成 | {smart_label} | 待复核{unit_label}={result.warning_pages}"
+            f"同格式翻译完成 | {smart_label} | 自动校验失败{unit_label}={result.warning_pages}"
         )
         lines = [
             "翻译完成。",
             f"原文件：{result.source_path}",
             f"范围：第 {result.start_page} 至第 {result.total_pages} {unit_label}",
             f"续翻跳过{unit_label}：{result.resumed_pages}",
-            f"待复核{unit_label}：{result.warning_pages}",
+            f"自动校验失败{unit_label}：{result.warning_pages}",
             "",
             "成品文件：",
         ]

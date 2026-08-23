@@ -180,6 +180,9 @@ def install() -> None:
         level = tm._normalize_smart_level(smart_level)
         profile = "translation" if level == "smart2" else "fast"
         max_tokens = tm.translation_output_budget(text, level)
+        glossary_builder = getattr(self, "glossary_prompt", None)
+        glossary = glossary_builder(text) if callable(glossary_builder) else ""
+        glossary_section = f"\n{glossary}\n" if glossary else ""
         prompt = f"""你是 Phoenix 医学教材精译器。把下面英文医学原文完整、准确地翻译成{target_language}。
 
 这是医学教材正文，不是摘要任务。必须做到：
@@ -189,9 +192,11 @@ def install() -> None:
 - 否定/肯定、不能排除/可以排除、可能/提示/倾向/明确诊断等诊断确定性必须逐项保持。
 - 左/右/双侧、增高/降低、增大/缩小、稳定/进展、高于/低于等方向关系必须与原文一致。
 - sensitivity、specificity、AUC、PPV、NPV 等统计指标必须和各自数值绑定，严禁互换。
-- CT/MRI/X线/超声/心电等专业缩写按医学惯例保留。
+- 医学缩写必须保留；含义严格采用固定缩写表。原文若只有一个缩写，输出“规范中文（原缩写）”。
+- 正文中的缩写保持紧凑，不强制重复英文全称，避免课件文本膨胀。
 - 句子损坏、OCR错误或语义无法确定时标记“[原文不清]”，不得猜测。
 - 只输出译文，不输出解释、评语、翻译过程或模型信息。
+{glossary_section}
 
 原文：
 {text}

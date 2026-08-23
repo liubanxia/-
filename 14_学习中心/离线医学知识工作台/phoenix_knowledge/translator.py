@@ -876,7 +876,7 @@ class PDFTranslator:
                         pages_done,
                         selected_total,
                         f'整本翻译：已完成第 {page_number}/{total_pages} 页 '
-                        f'| 待复核页={warning_pages}',
+                        f'| 自动校验失败页={warning_pages}',
                     )
 
                 if should_pause and should_pause():
