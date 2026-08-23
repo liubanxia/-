@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 
@@ -70,19 +71,33 @@ class LocalQwenMedicalBackend:
                 str(self.model_path),
                 local_files_only=True,
                 trust_remote_code=False,
+                use_fast=True,
             )
 
             load_kwargs = {
                 "local_files_only": True,
                 "trust_remote_code": False,
+                "low_cpu_mem_usage": True,
             }
             if self._device.startswith("cuda"):
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.set_float32_matmul_precision("high")
                 load_kwargs["torch_dtype"] = torch.float16
+                load_kwargs["attn_implementation"] = "sdpa"
 
-            self._model = AutoModelForCausalLM.from_pretrained(
-                str(self.model_path),
-                **load_kwargs,
-            )
+            try:
+                self._model = AutoModelForCausalLM.from_pretrained(
+                    str(self.model_path),
+                    **load_kwargs,
+                )
+            except (TypeError, ValueError):
+                # Older transformers builds may not expose SDPA as a load arg.
+                load_kwargs.pop("attn_implementation", None)
+                self._model = AutoModelForCausalLM.from_pretrained(
+                    str(self.model_path),
+                    **load_kwargs,
+                )
+
             self._model.to(self._device)
             self._model.eval()
         except Exception as exc:
@@ -96,7 +111,7 @@ class LocalQwenMedicalBackend:
         gpu_name = ""
         if self._device.startswith("cuda"):
             try:
-                gpu_name = f" | GPU={torch.cuda.get_device_name(0)}"
+                gpu_name = f" | GPU={torch.cuda.get_device_name(0)} | FP16/SDPA"
             except Exception:
                 gpu_name = ""
         print(
@@ -156,16 +171,21 @@ class LocalQwenMedicalBackend:
             prompt,
             return_tensors="pt",
             truncation=True,
-            max_length=2048,
+            max_length=1792,
         )
         inputs = {key: value.to(self._device) for key, value in inputs.items()}
         input_length = int(inputs["input_ids"].shape[-1])
-        max_new_tokens = max(256, min(768, int(len(source) * 0.72) + 256))
+
+        # Model3 is an editor, not a second full translator. Bound its output by
+        # the existing Chinese draft so short paragraphs do not spend hundreds
+        # of unnecessary generation tokens.
+        max_new_tokens = max(160, min(512, int(len(draft) * 1.15) + 96))
         eos_id = self._tokenizer.eos_token_id
         pad_id = self._tokenizer.pad_token_id
         if pad_id is None:
             pad_id = eos_id
 
+        started = time.perf_counter()
         try:
             with torch.inference_mode():
                 output = self._model.generate(
@@ -191,6 +211,14 @@ class LocalQwenMedicalBackend:
         text = self._tokenizer.decode(generated, skip_special_tokens=True).strip()
         if not text:
             raise RuntimeError("Local Qwen model3 returned empty text")
+
+        elapsed = max(time.perf_counter() - started, 0.001)
+        token_count = int(generated.numel())
+        print(
+            f"[Phoenix][模型3] 精修完成 | {elapsed:.1f}s | "
+            f"{token_count / elapsed:.1f} token/s | {token_count} tokens",
+            flush=True,
+        )
         return text
 
     def unload(self) -> None:
