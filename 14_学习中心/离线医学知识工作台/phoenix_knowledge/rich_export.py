@@ -15,6 +15,11 @@ _SAFE_RE = re.compile(r'[\\/:*?"<>|\r\n]+')
 _PDF_PAGE_CHAR_LIMIT = 1000
 _PDF_PAGE_LINE_LIMIT = 28
 _PDF_LINE_CHAR_LIMIT = 900
+# XML 1.0 forbids C0 control characters except TAB/LF/CR.  PDF extraction and
+# remote model responses can contain these invisible bytes; scrub them before
+# writing Markdown, DOCX or HTML so one bad character cannot reject a complete
+# multi-document result.
+_XML_CONTROL_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
 
 
 @dataclass(frozen=True)
@@ -32,6 +37,10 @@ class ExportBundle:
 
 def _safe_name(value: str) -> str:
     return (_SAFE_RE.sub("_", value).strip(" ._") or "Phoenix医学专题")[:96]
+
+
+def sanitize_export_text(value: str) -> str:
+    return _XML_CONTROL_RE.sub("", str(value or "")).replace("\r\n", "\n")
 
 
 def _resolve_image(base_dir: Path, reference: str) -> Path | None:
@@ -346,7 +355,8 @@ class MultiFormatExporter:
         title: str,
         source_path: Path | None = None,
     ) -> ExportBundle:
-        title = _safe_name(title)
+        title = _safe_name(sanitize_export_text(title))
+        markdown = sanitize_export_text(markdown)
         bundle_root = self.output_root / title
         bundle_root.mkdir(parents=True, exist_ok=True)
 

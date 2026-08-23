@@ -645,9 +645,22 @@ class PDFTranslator:
             smart_level,
         )
         if not active_backends:
+            compute = self.llm.compute.status()
+            provider = "本机 Smart2"
+            model = self.llm.active_model_name("translation")
+            detail = ""
+            if self.llm.compute.requested_mode() == "remote":
+                try:
+                    provider = self.llm.compute.provider_label()
+                except Exception:
+                    provider = "外接 API"
+                detail = (
+                    f"当前平台：{provider}；统一模型：{model}。"
+                    "请在“模型/算力”重新粘贴该平台 API Key，勾选授权后点击“保存并启用”，"
+                    "再点“真实测试算力/API”。"
+                )
             raise RuntimeError(
-                '医学精译质量模型未就绪；旧Smart1预览模型不允许生成'
-                '正式医学译文。请先配置智能2质量模型。'
+                'Smart2 医学精译未就绪，无法发布正式译文。' + detail
             )
 
         total_pages = int(pdf_page_count(pdf_path))

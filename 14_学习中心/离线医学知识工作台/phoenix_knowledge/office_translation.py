@@ -585,8 +585,18 @@ class OfficeDocumentTranslator:
         except AttributeError:
             active = [object()]
         if not active:
+            compute = getattr(getattr(self.engine, "qwen", None), "llm", None)
+            detail = "请配置并测试 Smart2 统一模型。"
+            if compute is not None and compute.compute.requested_mode() == "remote":
+                try:
+                    detail = (
+                        f"当前外接平台：{compute.compute.provider_label()}；"
+                        "请重新粘贴该平台 API Key，保存并执行真实测试。"
+                    )
+                except Exception:
+                    pass
             raise RuntimeError(
-                "医学精译质量模型未就绪；PPTX/DOCX正式译文不允许降级到Smart1。"
+                "Smart2 医学精译未就绪；" + detail
             )
         formal_names = getattr(self.engine, "formal_backend_names", None)
         if callable(formal_names):
