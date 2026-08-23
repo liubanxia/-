@@ -30,6 +30,7 @@ from .provider_hub_compat import install as _install_provider_hub_compat
 from .provider_hub_v2 import install as _install_provider_hub_v2
 from .token_efficiency_hardening import install as _install_token_efficiency_hardening
 from .hybrid_translation_policy import install as _install_hybrid_translation_policy
+from .hymt_cascade_policy import install as _install_hymt_cascade_policy
 
 _install_translation_recovery()
 _install_scholarly_pubmed()
@@ -53,10 +54,10 @@ _install_token_efficiency_hardening()
 _install_translation_stability_core()
 _install_workbench_stability_core()
 
-# Final translation policy: local models remain productive even when the
-# external Smart2 route is unavailable. Strong local segments publish directly;
-# only weak segments escalate to Smart2, and safe local fallbacks are visibly
-# marked for review instead of disabling the whole translation pipeline.
+# Base local-first policy keeps translation functional when the external API is
+# unavailable. The HY-MT cascade is installed last so the final production order
+# becomes: lightweight local model -> HY-MT local refinement -> Smart2 API.
 _install_hybrid_translation_policy()
+_install_hymt_cascade_policy()
 
 __all__ = ["MedicalKnowledgeWorkbench"]
