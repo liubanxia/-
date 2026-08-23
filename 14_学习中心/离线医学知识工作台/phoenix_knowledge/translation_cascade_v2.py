@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Iterable
 
 from . import hybrid_translation_policy as hybrid
 from . import hymt_cascade_policy as cascade
+from .qwen_local_medical_backend import LocalQwenMedicalBackend
 from .translation_models import (
     LEGACY_PREVIEW_BACKEND_NAMES,
     MultiModelTranslationEngine,
@@ -13,6 +16,7 @@ from .translation_models import (
 )
 
 
+MODEL3_ACCEPT_SCORE = 0.62
 _API_FINAL_POLISH_REASON = (
     "这是本地翻译模型已经完成的中文医学译文。你的任务不是从头重译，也不是总结；"
     "请把现有译文作为工作底稿，严格对照英文原文进行最终医学精修。优先修正医学术语、"
@@ -26,6 +30,35 @@ def _best_attempt(attempts: Iterable[TranslationAttempt]) -> TranslationAttempt 
     if not values:
         return None
     return max(values, key=lambda item: float(item.quality.score))
+
+
+def _model3_path(engine: MultiModelTranslationEngine) -> Path:
+    override = os.environ.get("PHOENIX_QWEN_MODEL3_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return (
+        engine.paths.project_root
+        / "04_AI模型"
+        / "translation"
+        / "model3"
+        / "Qwen2.5-3B-Instruct"
+    )
+
+
+def _model3(engine: MultiModelTranslationEngine) -> LocalQwenMedicalBackend:
+    backend = getattr(engine, "_phoenix_qwen_model3", None)
+    expected = _model3_path(engine)
+    if backend is None or Path(getattr(backend, "model_path", "")) != expected:
+        backend = LocalQwenMedicalBackend(expected)
+        engine._phoenix_qwen_model3 = backend
+    return backend
+
+
+def _model3_available(engine: MultiModelTranslationEngine) -> bool:
+    try:
+        return _model3(engine).available()
+    except Exception:
+        return False
 
 
 def _run_model1(
@@ -58,6 +91,42 @@ def _run_model1(
     return best, passed
 
 
+def _run_model3(
+    engine: MultiModelTranslationEngine,
+    source: str,
+    draft: TranslationAttempt | None,
+    target_language: str,
+    attempts: list[TranslationAttempt],
+    errors: list[str],
+) -> TranslationAttempt | None:
+    """Use SSD Qwen2.5-3B as the last local medical refinement stage."""
+
+    if draft is None or not str(draft.text or "").strip():
+        return None
+    if not _model3_available(engine):
+        return None
+
+    backend = _model3(engine)
+    try:
+        text = backend.refine(
+            source,
+            draft.text,
+            target_language,
+        )
+        attempt = cascade._quality_attempt(
+            engine,
+            backend.name,
+            source,
+            text,
+            target_language,
+        )
+        attempts.append(attempt)
+        return attempt
+    except Exception as exc:
+        errors.append(f"Qwen-model3: {type(exc).__name__}: {exc}")
+        return None
+
+
 def _run_local_cascade(
     engine: MultiModelTranslationEngine,
     source: str,
@@ -65,7 +134,13 @@ def _run_local_cascade(
     attempts: list[TranslationAttempt],
     errors: list[str],
 ) -> tuple[TranslationAttempt | None, str]:
-    """Model 2 runs only when model 1 fails its quality gate."""
+    """Run model1 -> conditional HY-MT -> local Qwen model3.
+
+    HY-MT remains conditional: it runs only when model1 fails its gate. Model3 is
+    a medical refiner, so whenever a local draft exists it gets one refinement
+    pass before Smart2. This keeps the paid API as the final editor rather than
+    the first component responsible for medical cleanup.
+    """
 
     model1, model1_passed = _run_model1(
         engine,
@@ -74,28 +149,54 @@ def _run_local_cascade(
         attempts,
         errors,
     )
-    if model1_passed:
-        return model1, "model1"
 
-    model2 = cascade._run_model2(
+    base: TranslationAttempt | None = model1
+    base_stage = "model1" if model1_passed else "model1_failed"
+
+    if not model1_passed:
+        model2 = cascade._run_model2(
+            engine,
+            source,
+            model1,
+            target_language,
+            attempts,
+            errors,
+        )
+        if (
+            model2 is not None
+            and model2.quality.ok
+            and float(model2.quality.score) >= cascade.MODEL2_ACCEPT_SCORE
+        ):
+            base = model2
+            base_stage = "model2"
+        else:
+            base = _best_attempt(
+                item for item in (model1, model2) if item is not None
+            )
+            base_stage = "model2_failed" if model2 is not None else "model1_failed"
+
+    if base is None:
+        return None, base_stage
+
+    model3 = _run_model3(
         engine,
         source,
-        model1,
+        base,
         target_language,
         attempts,
         errors,
     )
     if (
-        model2 is not None
-        and model2.quality.ok
-        and float(model2.quality.score) >= cascade.MODEL2_ACCEPT_SCORE
+        model3 is not None
+        and model3.quality.ok
+        and float(model3.quality.score) >= MODEL3_ACCEPT_SCORE
     ):
-        return model2, "model2"
+        return model3, f"{base_stage}_model3"
 
-    best = _best_attempt(
-        item for item in (model1, model2) if item is not None
-    )
-    return best, "model2_failed" if model2 is not None else "model1_failed"
+    # A failed model3 refinement must never replace a safer prior draft. The
+    # validator decides whether its output is eligible; otherwise Smart2 receives
+    # the best pre-model3 local draft.
+    return base, base_stage
 
 
 def _api_polish_local_draft(
@@ -168,6 +269,19 @@ def _api_polish_local_draft(
     return None
 
 
+def _local_draft_accepted(local_draft: TranslationAttempt, local_stage: str) -> bool:
+    if not local_draft.quality.ok:
+        return False
+    score = float(local_draft.quality.score)
+    if local_stage.endswith("_model3"):
+        return score >= MODEL3_ACCEPT_SCORE
+    if local_stage == "model1":
+        return score >= cascade.MODEL1_ACCEPT_SCORE
+    if local_stage == "model2":
+        return score >= cascade.MODEL2_ACCEPT_SCORE
+    return False
+
+
 def _translate(
     self: MultiModelTranslationEngine,
     source: str,
@@ -184,8 +298,6 @@ def _translate(
     attempts: list[TranslationAttempt] = []
     errors: list[str] = []
 
-    # Local work always happens first. Model 2 is strictly conditional: it is
-    # never loaded/called when model 1 already passes the quality gate.
     local_draft, local_stage = _run_local_cascade(
         self,
         source,
@@ -195,8 +307,8 @@ def _translate(
     )
 
     if local_draft is not None:
-        # When the API exists it always edits the selected local translation,
-        # regardless of whether that draft came from model 1 or model 2.
+        # API availability never skips the local cascade. When Smart2 exists it
+        # always receives the selected local result, including model3 output.
         polished = _api_polish_local_draft(
             self,
             source,
@@ -209,16 +321,9 @@ def _translate(
         if polished is not None:
             return polished
 
-        # Offline/API-failed mode remains useful. A locally accepted model-1 or
-        # model-2 result can publish; a weak result keeps the visible review
-        # guard inherited from the base hybrid policy.
-        if (
-            local_draft.quality.ok
-            and (
-                (local_stage == "model1" and local_draft.quality.score >= cascade.MODEL1_ACCEPT_SCORE)
-                or (local_stage == "model2" and local_draft.quality.score >= cascade.MODEL2_ACCEPT_SCORE)
-            )
-        ):
+        # Offline/API-failed mode remains useful. Only a locally accepted result
+        # can publish automatically; weak local results stay visibly reviewable.
+        if _local_draft_accepted(local_draft, local_stage):
             return TranslationDecision(
                 text=local_draft.text,
                 backend=local_draft.backend,
@@ -264,8 +369,8 @@ def _translate(
             errors.append(f"Smart2-source-only: {type(exc).__name__}: {exc}")
 
     if errors:
-        raise RuntimeError("翻译链全部失败: " + " | ".join(errors))
-    raise RuntimeError("没有可用的一级本地模型、HY-MT二级模型或Smart2 API。")
+        raise RuntimeError("四级翻译链全部失败: " + " | ".join(errors))
+    raise RuntimeError("没有可用的一级本地模型、HY-MT二级模型、Qwen三级模型或Smart2 API。")
 
 
 def _translate_segments(
@@ -293,6 +398,7 @@ def _local_only_backend(name: str) -> bool:
     return (
         value in LEGACY_PREVIEW_BACKEND_NAMES
         or value.startswith("hymt15_1p8b")
+        or value.startswith("qwen_local_medical_model3")
         or value.startswith("local_guarded_review:")
         or value.startswith("local_source_preserved_review:")
         or value == "failed_preserve_source"
@@ -345,6 +451,19 @@ def _patch_resume_and_cache_policy() -> None:
         pass
 
 
+def _unload(self: MultiModelTranslationEngine) -> None:
+    previous = getattr(self, "_phoenix_cascade_v2_previous_unload")
+    try:
+        previous()
+    finally:
+        backend = getattr(self, "_phoenix_qwen_model3", None)
+        if backend is not None:
+            try:
+                backend.unload()
+            except Exception:
+                pass
+
+
 def install() -> None:
     cls = MultiModelTranslationEngine
     if bool(getattr(cls, "_phoenix_translation_cascade_v2_installed", False)):
@@ -352,8 +471,10 @@ def install() -> None:
 
     cls._phoenix_cascade_v2_previous_translate = cls.translate
     cls._phoenix_cascade_v2_previous_translate_segments = cls.translate_segments
+    cls._phoenix_cascade_v2_previous_unload = cls.unload
     cls.translate = _translate
     cls.translate_segments = _translate_segments
+    cls.unload = _unload
     cls._phoenix_translation_cascade_v2_installed = True
 
     _patch_resume_and_cache_policy()
