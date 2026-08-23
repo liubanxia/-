@@ -1,6 +1,7 @@
-# Optional model backends
+# Optional model and UI backends
 onnxruntime>=1.17
 ultralytics>=8.0
 transformers>=4.40
 torch>=2.2
 safetensors>=0.4
+Pillow>=10.0
