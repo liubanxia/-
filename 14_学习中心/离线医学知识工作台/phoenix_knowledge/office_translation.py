@@ -903,9 +903,10 @@ class OfficeDocumentTranslator:
                     source_sha256=digest,
                     target_language=target_language,
                 )
-                if completed is not None and not (
-                    retry_warning_pages and completed[1] > 0
-                ):
+                # A formal Office delivery may never reuse a warning unit.
+                # It is automatically retried on the next run instead of
+                # publishing source text or asking the reader to review it.
+                if completed is not None and completed[1] <= 0:
                     translated, unit_warnings, _audits = completed
                     for segment in unit.segments:
                         value = translated[segment.segment_id]
@@ -1131,10 +1132,11 @@ class OfficeDocumentTranslator:
                         and str(row.get("backend", "")) != "failed_preserve_source"
                     ):
                         accepted_segments += 1
-            if audited_segments and accepted_segments == 0:
+            if audited_segments and accepted_segments != audited_segments:
                 raise OfficeTranslationError(
-                    "所有待翻译文字均未通过医学质量校验；Phoenix已保留逐单元"
-                    "checkpoint供查看/重试，但拒绝发布未翻译的正式Office文件。"
+                    "存在未通过医学质量校验的文字；Phoenix已保留逐单元"
+                    "checkpoint并拒绝发布不合格Office成品。检查模型/API连接后"
+                    "再次开始即可自动重译失败单元，无需人工修改。"
                 )
 
             report = self._build_output(source, final_output, replacements)
@@ -1147,7 +1149,7 @@ class OfficeDocumentTranslator:
             })
             _write_json(root / "Office翻译完整性报告.json", report)
             state.update({
-                "status": "completed_with_warnings" if warning_pages else "completed",
+                "status": "completed",
                 "last_completed_unit": total_units,
                 "warning_units": warning_pages,
                 "output_path": str(final_output),

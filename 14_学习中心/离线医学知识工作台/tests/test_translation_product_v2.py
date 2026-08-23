@@ -99,12 +99,12 @@ class TranslationProductV2Tests(unittest.TestCase):
             os.environ,
             {"PHOENIX_TRANSLATION_CHUNK_CHARS": "100"},
         ):
-            self.assertEqual(_translation_chunk_chars(), 1600)
+            self.assertEqual(_translation_chunk_chars(), 2400)
         with patch.dict(
             os.environ,
             {"PHOENIX_TRANSLATION_CHUNK_CHARS": "999999"},
         ):
-            self.assertEqual(_translation_chunk_chars(), 6000)
+            self.assertEqual(_translation_chunk_chars(), 7200)
 
     def test_original_page_above_translation_pdf_and_split_volumes(self):
         import fitz
@@ -213,9 +213,10 @@ class TranslationProductV2Tests(unittest.TestCase):
             self.assertFalse(second.paused)
             self.assertGreaterEqual(second.resumed_pages, 1)
             self.assertTrue(second.output_path.is_file())
-            text = second.output_path.read_text(encoding="utf-8")
-            self.assertIn("第 1 页", text)
-            self.assertIn("第 2 页", text)
+            self.assertEqual(second.output_path.suffix.lower(), ".pdf")
+            import fitz
+            with fitz.open(second.output_path) as translated:
+                self.assertEqual(translated.page_count, 2)
             self.assertEqual(previews, [1, 2])
 
 

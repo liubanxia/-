@@ -22,6 +22,7 @@ from .translation_pdf import (
     LAYOUT_TRANSLATED_ONLY,
     TranslationPDFBuilder,
 )
+from .translation_layout_compact import LAYOUT_SOURCE_TRANSLATED
 
 
 ProgressCallback = Callable[[int, int, str], None]
@@ -47,10 +48,10 @@ def _normalize_smart_level(value: str | None) -> str:
 def _translation_chunk_chars() -> int:
     raw = os.environ.get("PHOENIX_TRANSLATION_CHUNK_CHARS", "").strip()
     try:
-        value = int(raw) if raw else 3200
+        value = int(raw) if raw else 4800
     except (TypeError, ValueError):
         value = 3200
-    return max(1600, min(6000, value))
+    return max(2400, min(7200, value))
 
 
 def _normalize_export_format(value: str | None) -> str:
@@ -188,17 +189,20 @@ class PDFTranslator:
         smart_label = "智能2" if smart_level == "smart2" else "智能1"
 
         if not source_text:
-            text = '[本页未提取到可翻译文字，可能是扫描页、图片页或需要OCR。]'
-            return text, {
+            # Scanned/image-only pages are kept as their original PDF page by
+            # the compact renderer.  They are not a translation-quality
+            # failure and must never leak an "人工复核" marker into a delivery.
+            return '', {
                 'page': page_number,
-                'warning_count': 1,
+                'warning_count': 0,
+                'skipped_no_text': True,
                 'smart_level': smart_level,
                 'parts': [{
                     'part': 1,
                     'backend': 'none',
-                    'quality_ok': False,
+                    'quality_ok': True,
                     'quality_score': 0.0,
-                    'reasons': ['PDF未提取到文字'],
+                    'reasons': ['PDF未提取到文字；原页已保留'],
                 }],
             }
 
@@ -227,8 +231,11 @@ class PDFTranslator:
                 )
                 translated = decision.text.strip()
                 if decision.needs_review:
+                    # The engine already performs a correction pass.  Do not
+                    # ship a low-confidence draft or ask the reader to repair
+                    # it manually: retain the checkpoint/audit and stop formal
+                    # publication below.
                     warning_count += 1
-                    translated = '[本段需人工复核]\n' + translated
                 translated_parts.append(translated)
                 part_audits.append({
                     'part': part_index,
@@ -255,9 +262,7 @@ class PDFTranslator:
                     )
             except Exception as exc:
                 warning_count += 1
-                translated_parts.append(
-                    '[自动翻译失败；已保留原文，待重试]\n' + part_text
-                )
+                translated_parts.append('')
                 part_audits.append({
                     'part': part_index,
                     'part_total': len(parts),
@@ -270,7 +275,7 @@ class PDFTranslator:
                 if status:
                     status(
                         f'第 {page_number} 页：第 {part_index}/{len(parts)} 段失败，'
-                        '已保留原文并继续'
+                        '自动重试失败；本次不会发布不合格成品'
                     )
 
         return '\n\n'.join(translated_parts).strip(), {
@@ -627,9 +632,13 @@ class PDFTranslator:
         # Keep the legacy argument only for source compatibility.
         del medical_quality_required
         smart_level = "smart2"
-        output_layout = _normalize_layout(output_layout)
-        export_format = _normalize_export_format(export_format)
-        part_pages = max(1, int(part_pages))
+        # Public PDF translation is deliberately one-way: PDF in, one full
+        # PDF out.  Rich/TXT sidecars and split volumes caused users to open a
+        # non-PDF artifact by mistake and also duplicated storage.
+        del output_layout, export_format, part_pages
+        output_layout = LAYOUT_SOURCE_TRANSLATED
+        export_format = EXPORT_PDF
+        part_pages = 0
 
         active_backends = self.engine.active_backends(
             target_language,
@@ -792,7 +801,7 @@ class PDFTranslator:
                     and page_file.stat().st_size > 0
                     and not retranslate_existing
                     and page_smart == smart_level
-                    and not (retry_warning_pages and has_warning)
+                    and not has_warning
                 )
 
                 if can_resume_page:
@@ -900,10 +909,11 @@ class PDFTranslator:
                         and bool(part.get('quality_ok', False))
                     ):
                         accepted_parts += 1
-            if audited_parts and accepted_parts == 0:
+            if audited_parts and accepted_parts != audited_parts:
                 raise RuntimeError(
-                    '所有可翻译内容均未通过医学质量校验；Phoenix已保留逐页'
-                    'checkpoint供查看/重试，但拒绝发布未翻译的正式PDF。'
+                    '存在未通过医学质量校验的翻译段落；Phoenix已保留逐页'
+                    'checkpoint并拒绝发布不合格PDF。请检查模型/API连接后点击继续，'
+                    '系统会自动重译失败页，不需要人工修改译文。'
                 )
 
             output_paths, image_count = self._build_deliverables(
@@ -919,9 +929,7 @@ class PDFTranslator:
                 progress=progress,
             )
             final_output = output_paths[0] if output_paths else final_output
-            state['status'] = (
-                'completed_with_warnings' if warning_pages else 'completed'
-            )
+            state['status'] = 'completed'
             state['last_completed_page'] = total_pages
             state['warning_pages'] = warning_pages
             state['output_path'] = str(final_output)

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import time
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -24,6 +25,33 @@ from .provider_hub import provider_choices, provider_spec
 
 _INSTALLED = False
 _LOCAL = "__local__"
+
+
+class _ComputeProbeWorker(QThread):
+    """Run a tiny real inference so 'test compute' is evidence, not a label."""
+
+    completed = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, llm):
+        super().__init__()
+        self.llm = llm
+
+    def run(self):
+        try:
+            started = time.perf_counter()
+            reply = self.llm.generate(
+                "只回复：Phoenix 算力测试通过。",
+                max_new_tokens=16,
+                profile="fast",
+            ).strip()
+            elapsed = time.perf_counter() - started
+            status = self.llm.compute.status()
+            self.completed.emit(
+                f"真实推理测试通过（{status.label()}，{elapsed:.2f}s）：{reply[:80]}"
+            )
+        except Exception as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
 
 
 def _local_or_private_host(host: str) -> bool:
@@ -88,7 +116,7 @@ class ComputeSettingsDialog(QDialog):
         root.addLayout(form)
 
         platform_row = QHBoxLayout()
-        self.platform_button = QPushButton("打开模型平台")
+        self.platform_button = QPushButton("打开 API 官网 / 获取 Key")
         self.platform_button.clicked.connect(self._open_platform)
         platform_row.addWidget(self.platform_button)
         platform_row.addStretch(1)
@@ -102,6 +130,10 @@ class ComputeSettingsDialog(QDialog):
         detect_button = QPushButton("刷新算力状态")
         detect_button.clicked.connect(self.refresh_status)
         action_row.addWidget(detect_button)
+        self.probe_button = QPushButton("真实测试算力/API")
+        self.probe_button.setToolTip("发送一条极短测试请求，验证实际模型、GPU/API和响应时间")
+        self.probe_button.clicked.connect(self.test_compute)
+        action_row.addWidget(self.probe_button)
         action_row.addStretch(1)
         root.addLayout(action_row)
 
@@ -229,6 +261,26 @@ class ComputeSettingsDialog(QDialog):
         warning = f"\n提示：{status.warning}" if status.warning else ""
         self.status_label.setText(
             f"本机检测：{gpu}\n当前选择：{target}\n当前有效算力：{status.label()}{warning}"
+        )
+
+    def test_compute(self) -> None:
+        if getattr(self, "_probe_worker", None) is not None and self._probe_worker.isRunning():
+            return
+        self.probe_button.setEnabled(False)
+        self.status_label.setText("正在执行真实模型推理测试…")
+        self._probe_worker = _ComputeProbeWorker(self.workbench.llm)
+        self._probe_worker.completed.connect(self._probe_done)
+        self._probe_worker.failed.connect(self._probe_failed)
+        self._probe_worker.start()
+
+    def _probe_done(self, message: str) -> None:
+        self.probe_button.setEnabled(True)
+        self.status_label.setText(message)
+
+    def _probe_failed(self, error: str) -> None:
+        self.probe_button.setEnabled(True)
+        self.status_label.setText(
+            "真实测试失败：" + error + "。如刚修改平台，请先保存并启用后再测试。"
         )
 
     def save(self) -> None:

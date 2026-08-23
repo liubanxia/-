@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QProgressBar,
     QSpinBox,
 )
 
@@ -21,6 +22,7 @@ from .translation_pdf import (
     LAYOUT_TEXT_BILINGUAL,
     LAYOUT_TRANSLATED_ONLY,
 )
+from .translation_layout_compact import LAYOUT_SOURCE_TRANSLATED
 from .translator import (
     EXPORT_PDF,
     EXPORT_PDF_RICH,
@@ -30,6 +32,49 @@ from .translator import (
 
 
 _INSTALLED = False
+
+
+class _AskWorkerV2(QThread):
+    """Answer in two observable stages without blocking the GUI thread."""
+
+    progress = Signal(int, int, str)
+    partial = Signal(str)
+    completed = Signal(str)
+    paused = Signal()
+    failed = Signal(str)
+
+    def __init__(self, workbench, query: str, *, intelligent: bool, resume: bool = False):
+        super().__init__()
+        self.workbench = workbench
+        self.query = query
+        self.intelligent = intelligent
+        self.resume = resume
+        self._pause_requested = threading.Event()
+
+    def request_pause(self) -> None:
+        self._pause_requested.set()
+
+    def run(self):
+        try:
+            if not self.resume:
+                self.progress.emit(0, 2, "正在检索本地资料…")
+                quick = self.workbench.ask(self.query, use_embeddings=False, deep=False)
+                self.partial.emit("【即时证据】\n" + quick.text)
+                self.progress.emit(1, 2, "即时证据已到达，正在语义检索…")
+                if self._pause_requested.is_set():
+                    self.paused.emit()
+                    return
+            else:
+                self.progress.emit(1, 2, "正在继续语义检索…")
+            full = self.workbench.ask(self.query)
+            if self._pause_requested.is_set():
+                self.paused.emit()
+                return
+            label = "智能问答" if self.intelligent else "证据问答"
+            self.progress.emit(2, 2, "问答完成")
+            self.completed.emit(f"【完成 | {label}】\n\n{full.text}")
+        except Exception as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
 
 
 class _OrganizeWorkerV2(QThread):
@@ -246,6 +291,14 @@ def install(gui_module) -> None:
         self.qa_mode_combo.addItem("智能2", "smart2")
         self.qa_mode_combo.setCurrentIndex(0)
         mode_row.addWidget(self.qa_mode_combo)
+        self.pause_qa_button = QPushButton("暂停问答")
+        self.pause_qa_button.setEnabled(False)
+        self.pause_qa_button.clicked.connect(self.pause_question)
+        self.resume_qa_button = QPushButton("继续问答")
+        self.resume_qa_button.setEnabled(False)
+        self.resume_qa_button.clicked.connect(self.resume_question)
+        mode_row.addWidget(self.pause_qa_button)
+        mode_row.addWidget(self.resume_qa_button)
         mode_row.addStretch(1)
 
         mode_label = QLabel(
@@ -253,13 +306,23 @@ def install(gui_module) -> None:
             "界面不显示底层模型名称。"
         )
         mode_label.setWordWrap(True)
+        self.qa_progress = QProgressBar()
+        self.qa_progress.setRange(0, 100)
+        self.qa_status = QLabel("就绪")
 
         if layout is not None:
             layout.insertLayout(2, mode_row)
             layout.insertWidget(3, mode_label)
+            layout.insertWidget(4, self.qa_progress)
+            layout.insertWidget(5, self.qa_status)
         return widget
 
     def ask_question(self):
+        if self._busy():
+            return
+        query = self.query_edit.toPlainText().strip()
+        if not query:
+            return
         mode = (
             self.qa_mode_combo.currentData()
             if hasattr(self, "qa_mode_combo")
@@ -272,7 +335,61 @@ def install(gui_module) -> None:
         os.environ["PHOENIX_KNOWLEDGE_LLM_PROFILE"] = (
             "deep" if mode == "smart2" else "fast"
         )
-        return original_ask_question(self)
+        self._paused_qa_query = query
+        self.answer_view.setPlainText("正在从本地资料检索即时证据…")
+        self.qa_progress.setValue(0)
+        self.qa_status.setText("问答已开始：即时证据 → 语义检索")
+        self.worker = _AskWorkerV2(
+            self.workbench, query, intelligent=intelligent
+        )
+        self.worker.progress.connect(self._qa_progress)
+        self.worker.partial.connect(self.answer_view.setPlainText)
+        self.worker.completed.connect(self._qa_done)
+        self.worker.paused.connect(self._qa_paused)
+        self.worker.failed.connect(self._qa_failed)
+        self.pause_qa_button.setEnabled(True)
+        self.resume_qa_button.setEnabled(False)
+        self.worker.start()
+
+    def _qa_progress(self, done: int, total: int, message: str):
+        self.qa_progress.setValue(int(done / max(total, 1) * 100))
+        self.qa_status.setText(message)
+
+    def pause_question(self):
+        worker = getattr(self, "worker", None)
+        if isinstance(worker, _AskWorkerV2) and worker.isRunning():
+            worker.request_pause()
+            self.pause_qa_button.setEnabled(False)
+            self.qa_status.setText("已请求暂停：当前检索结束后暂停。")
+
+    def _qa_paused(self):
+        self.qa_status.setText("问答已暂停；点击“继续问答”完成第二阶段。")
+        self.pause_qa_button.setEnabled(False)
+        self.resume_qa_button.setEnabled(True)
+
+    def resume_question(self):
+        query = str(getattr(self, "_paused_qa_query", "")).strip()
+        if not query or self._busy():
+            return
+        self.worker = _AskWorkerV2(self.workbench, query, intelligent=True, resume=True)
+        self.worker.progress.connect(self._qa_progress)
+        self.worker.completed.connect(self._qa_done)
+        self.worker.paused.connect(self._qa_paused)
+        self.worker.failed.connect(self._qa_failed)
+        self.pause_qa_button.setEnabled(True)
+        self.resume_qa_button.setEnabled(False)
+        self.worker.start()
+
+    def _qa_done(self, text: str):
+        self.answer_view.setPlainText(text)
+        self.qa_progress.setValue(100)
+        self.qa_status.setText("问答完成")
+        self.pause_qa_button.setEnabled(False)
+
+    def _qa_failed(self, error: str):
+        self.pause_qa_button.setEnabled(False)
+        self.qa_status.setText("问答失败，可重试。")
+        self._failed(error)
 
     def _organize_tab(self):
         widget = original_organize_tab(self)
@@ -434,24 +551,14 @@ def install(gui_module) -> None:
         export_row = QHBoxLayout()
         export_row.addWidget(QLabel("输出："))
         self.translation_export_combo = QComboBox()
-        self.translation_export_combo.addItem(
-            "PDF整书 + PDF分册（推荐）",
-            EXPORT_PDF,
-        )
-        self.translation_export_combo.addItem(
-            "PDF + DOCX + Markdown + TXT",
-            EXPORT_PDF_RICH,
-        )
-        self.translation_export_combo.addItem(
-            "DOCX + Markdown + TXT",
-            EXPORT_RICH,
-        )
-        self.translation_export_combo.addItem("仅TXT", EXPORT_TXT)
+        self.translation_export_combo.addItem("PDF→PDF（完整译本）", EXPORT_PDF)
+        self.translation_export_combo.setEnabled(False)
         export_row.addWidget(self.translation_export_combo, 1)
         export_row.addWidget(QLabel("每册原文页数："))
         self.translation_part_pages = QSpinBox()
-        self.translation_part_pages.setRange(10, 200)
-        self.translation_part_pages.setValue(50)
+        self.translation_part_pages.setRange(0, 0)
+        self.translation_part_pages.setValue(0)
+        self.translation_part_pages.setEnabled(False)
         export_row.addWidget(self.translation_part_pages)
 
         action_row = QHBoxLayout()
@@ -498,11 +605,7 @@ def install(gui_module) -> None:
     def _update_translation_format_controls(self):
         suffix = Path(self.translation_path.text().strip()).suffix.lower()
         office = suffix in {".pptx", ".docx"}
-        for name in (
-            "translation_layout_combo",
-            "translation_export_combo",
-            "translation_part_pages",
-        ):
+        for name in ("translation_layout_combo",):
             widget = getattr(self, name, None)
             if widget is not None:
                 widget.setEnabled(not office)
@@ -511,6 +614,10 @@ def install(gui_module) -> None:
             self.translation_status.setText(
                 f"{label}：版式和媒体保持原结构；每个完成单元立即预览。"
             )
+        elif hasattr(self, "translation_layout_combo"):
+            index = self.translation_layout_combo.findData(LAYOUT_SOURCE_TRANSLATED)
+            if index >= 0:
+                self.translation_layout_combo.setCurrentIndex(index)
 
     def refresh_translation_models(self):
         if not hasattr(self, "translation_models_label"):
@@ -545,21 +652,9 @@ def install(gui_module) -> None:
             if hasattr(self, "translation_smart_combo")
             else "smart2"
         )
-        output_layout = (
-            self.translation_layout_combo.currentData()
-            if hasattr(self, "translation_layout_combo")
-            else LAYOUT_ORIGINAL_BILINGUAL
-        )
-        export_format = (
-            self.translation_export_combo.currentData()
-            if hasattr(self, "translation_export_combo")
-            else EXPORT_PDF
-        )
-        part_pages = (
-            self.translation_part_pages.value()
-            if hasattr(self, "translation_part_pages")
-            else 50
-        )
+        output_layout = LAYOUT_SOURCE_TRANSLATED
+        export_format = EXPORT_PDF
+        part_pages = 0
         suffix = Path(path).suffix.lower()
         if suffix in {".pptx", ".docx"}:
             output_layout = "source_format"
@@ -678,6 +773,12 @@ def install(gui_module) -> None:
     cls.__init__ = _init
     cls._qa_tab = _qa_tab
     cls.ask_question = ask_question
+    cls._qa_progress = _qa_progress
+    cls.pause_question = pause_question
+    cls.resume_question = resume_question
+    cls._qa_paused = _qa_paused
+    cls._qa_done = _qa_done
+    cls._qa_failed = _qa_failed
     cls._organize_tab = _organize_tab
     cls._connect_organize_worker = _connect_organize_worker
     cls.start_organize = start_organize

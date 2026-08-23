@@ -70,6 +70,12 @@ def _rebuild_result(
         # failure. Let the normal resume path translate the missing pages.
         return None
 
+    # A warning checkpoint is not a deliverable.  Return to the normal
+    # translation path so the failed pages are automatically retried instead
+    # of assembling a PDF containing low-confidence text.
+    if int(state.get("warning_pages", 0) or 0) > 0:
+        return None
+
     # Old checkpoints predate selectable output formats. Rebuild those in the
     # original rich-text form; new checkpoints preserve the user's selected
     # PDF/text format and bilingual layout.
@@ -97,9 +103,7 @@ def _rebuild_result(
     warning_pages = int(state.get("warning_pages", 0) or 0)
     state.update(
         {
-            "status": (
-                "completed_with_warnings" if warning_pages else "completed"
-            ),
+            "status": "completed",
             "last_completed_page": total_pages,
             "output_path": str(output_paths[0]),
             "output_paths": [str(path) for path in output_paths],
