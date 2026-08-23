@@ -7,6 +7,33 @@ from typing import Any
 from .translation_integration import TranslationRuntime, build_translation_runtime
 
 
+_LOCAL_ONLY_PREFIXES = (
+    "local_guarded_review:",
+    "local_source_preserved_review:",
+)
+_LOCAL_ONLY_NAMES = {
+    "marian_en_zh",
+    "nllb_600m_en_zh",
+    "failed_preserve_source",
+}
+
+
+def _cacheable_decision(runtime: TranslationRuntime, decision) -> bool:
+    if bool(getattr(decision, "needs_review", False)):
+        return False
+    if runtime.smart_level != "smart2":
+        return True
+
+    # A Smart2 task translated only by local models must not survive in the
+    # in-memory cache after the user reconnects/configures the API. Otherwise a
+    # second run would keep returning the old local draft and never reach the
+    # Smart2 refinement pass.
+    backend = str(getattr(decision, "backend", "") or "")
+    if backend in _LOCAL_ONLY_NAMES or backend.startswith(_LOCAL_ONLY_PREFIXES):
+        return False
+    return backend.startswith("qwen35_medical_translation")
+
+
 @dataclass
 class TranslationRuntimeAdapter:
     """Route translation chunks through one normalized runtime contract."""
@@ -64,7 +91,7 @@ class TranslationRuntimeAdapter:
         if (
             runtime.use_cache
             and self.cache_limit > 0
-            and not bool(getattr(decision, "needs_review", False))
+            and _cacheable_decision(runtime, decision)
         ):
             self._cache[cache_key] = decision
             self._cache.move_to_end(cache_key)
