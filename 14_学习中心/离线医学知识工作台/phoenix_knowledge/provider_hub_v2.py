@@ -55,8 +55,8 @@ def _install_current_presets() -> None:
                 fast_model="gpt-5.6-luna",
                 deep_model="gpt-5.6-sol",
                 note=(
-                    "OpenAI 官方 Responses API。智能1默认 GPT-5.6 Luna，"
-                    "智能2默认 GPT-5.6 Sol；高级设置可覆盖模型名。"
+                    "OpenAI 官方 Responses API。正式工作台统一使用 GPT-5.6 Sol；"
+                    "高级设置可覆盖模型名。"
                 ),
             )
         current.append(spec)
@@ -171,6 +171,11 @@ def install() -> None:
                     response.read().decode("utf-8")
                 )
         except Exception as exc:
+            if getattr(exc, "code", None) == 401:
+                raise RuntimeError(
+                    "OpenAI API Key 验证失败（401）：请在 OpenAI 平台重新创建/复制 Key，"
+                    "保存并启用后再测试。"
+                ) from exc
             raise RuntimeError(
                 f"OpenAI 调用失败（{timeout}s）："
                 f"{type(exc).__name__}: {exc}"

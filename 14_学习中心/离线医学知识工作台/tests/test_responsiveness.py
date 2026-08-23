@@ -57,16 +57,14 @@ class _VectorDB:
 
 
 class ResponsivenessTests(unittest.TestCase):
-    def test_fast_and_deep_generator_tiers_are_routed_separately(self):
+    def test_all_generator_requests_route_to_smart2(self):
         with tempfile.TemporaryDirectory() as temp:
             paths = _paths(Path(temp))
-            fast = paths.model_root / "Qwen3.5-2B"
             deep = paths.model_root / "Qwen3.5-4B"
-            _ready_model(fast)
             _ready_model(deep)
 
             llm = LocalLLM(paths)
-            self.assertEqual(llm.selected_model("fast")[0], "Qwen3.5-2B")
+            self.assertEqual(llm.selected_model("fast")[0], "Qwen3.5-4B")
             self.assertEqual(llm.selected_model("deep")[0], "Qwen3.5-4B")
 
     def test_fast_profile_falls_back_to_existing_4b(self):

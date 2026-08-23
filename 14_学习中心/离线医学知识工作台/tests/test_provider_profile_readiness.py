@@ -40,10 +40,9 @@ class ProviderProfileReadinessTests(unittest.TestCase):
                 fast_model="local-fast",
                 deep_model="",
             )
-            # select_provider falls back to the preset default only when one
-            # exists. custom_openai has no default deep model, so Smart2 must
-            # remain unavailable instead of inheriting Smart1.
-            self.assertTrue(llm.available("fast"))
+            # Smart1 is retired: a custom endpoint without the one Smart2
+            # model is unavailable for every product operation.
+            self.assertFalse(llm.available("fast"))
             self.assertFalse(llm.available("deep"))
 
     def test_openai_has_two_explicit_current_profiles(self):
@@ -61,7 +60,7 @@ class ProviderProfileReadinessTests(unittest.TestCase):
             llm.compute.select_provider("openai")
             self.assertEqual(
                 llm.compute.remote_model("fast"),
-                "gpt-5.6-luna",
+                "gpt-5.6-sol",
             )
             self.assertEqual(
                 llm.compute.remote_model("deep"),

@@ -28,7 +28,9 @@ class LocalLLM:
     """
 
     model_name = "Qwen3.5-4B"
-    fast_model_name = "Qwen3.5-2B"
+    # Smart1 has been retired.  Keep this attribute only for checkpoint/API
+    # compatibility; every live request resolves to the Smart2 quality model.
+    fast_model_name = "Qwen3.5-4B"
     deep_model_name = "Qwen3.5-4B"
 
     def __init__(self, paths: WorkbenchPaths):
@@ -79,7 +81,7 @@ class LocalLLM:
         raw = (
             profile
             or os.environ.get("PHOENIX_KNOWLEDGE_LLM_PROFILE", "")
-            or "fast"
+            or "deep"
         ).strip().lower()
         if raw in {
             "translation",
@@ -96,7 +98,7 @@ class LocalLLM:
             "smart2",
         }:
             return "deep"
-        return "fast"
+        return "deep"
 
     def reload_compute_config(self) -> None:
         self.server_url = os.environ.get(
@@ -105,14 +107,11 @@ class LocalLLM:
         self.compute.reload()
         # Re-resolve ModelScope pointers because the SSD may have been remounted
         # under another drive letter since the previous process.
-        self.fast_model_path = resolve_model_dir(
-            self.paths.model_root,
-            self.fast_model_name,
-        )
         self.deep_model_path = resolve_model_dir(
             self.paths.model_root,
             self.deep_model_name,
         )
+        self.fast_model_path = self.deep_model_path
         self.model_path = self.deep_model_path
 
     def compute_status(self) -> dict:
@@ -134,15 +133,8 @@ class LocalLLM:
 
     def _local_candidates(self, profile: str | None = None):
         normalized = self._normalize_profile(profile)
-        if normalized in {"deep", "translation"}:
-            return (
-                (self.deep_model_name, self.deep_model_path),
-                (self.fast_model_name, self.fast_model_path),
-            )
-        return (
-            (self.fast_model_name, self.fast_model_path),
-            (self.deep_model_name, self.deep_model_path),
-        )
+        del normalized
+        return ((self.deep_model_name, self.deep_model_path),)
 
     def selected_model(
         self,

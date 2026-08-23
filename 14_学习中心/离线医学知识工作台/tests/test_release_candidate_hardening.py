@@ -124,7 +124,7 @@ class ReleaseCandidateHardeningTests(unittest.TestCase):
             self.assertEqual(result.backend, "qwen35_medical_translation")
             self.assertFalse(result.quality.ok)
             self.assertTrue(result.needs_review)
-            self.assertEqual(len(result.attempts), 2)
+            self.assertEqual(len(result.attempts), 3)
             self.assertFalse(result.attempts[0].quality.ok)
 
     def test_powershell_alone_never_claims_powerpoint_is_available(self):

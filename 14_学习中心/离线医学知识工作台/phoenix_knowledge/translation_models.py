@@ -602,33 +602,44 @@ class MultiModelTranslationEngine:
                     )
                 if isinstance(backend, QwenMedicalTranslationBackend) and level == "smart2":
                     try:
-                        corrected = backend.retry_translation(
-                            source,
-                            text,
-                            quality.reasons,
-                            target_language,
-                        )
-                        corrected_quality = self.validator.validate(
-                            source,
-                            corrected,
-                            target_language,
-                        )
-                        corrected_attempt = TranslationAttempt(
-                            backend=f"{backend.name}_quality_retry",
-                            text=corrected,
-                            quality=corrected_quality,
-                        )
-                        attempts.append(corrected_attempt)
-                        if best is None or corrected_quality.score > best.quality.score:
-                            best = corrected_attempt
-                        if corrected_quality.ok:
-                            return TranslationDecision(
-                                text=corrected,
-                                backend=corrected_attempt.backend,
-                                quality=corrected_quality,
-                                needs_review=False,
-                                attempts=tuple(attempts),
+                        # No human-review route exists in the product.  Make
+                        # two bounded automatic correction attempts using the
+                        # same external/local Smart2 translation profile.
+                        corrected = text
+                        corrected_quality = quality
+                        for repair_round in range(1, 3):
+                            corrected = backend.retry_translation(
+                                source,
+                                corrected,
+                                corrected_quality.reasons,
+                                target_language,
                             )
+                            corrected_quality = self.validator.validate(
+                                source,
+                                corrected,
+                                target_language,
+                            )
+                            corrected_attempt = TranslationAttempt(
+                                backend=(
+                                    f"{backend.name}_quality_retry_{repair_round}"
+                                ),
+                                text=corrected,
+                                quality=corrected_quality,
+                            )
+                            attempts.append(corrected_attempt)
+                            if best is None or corrected_quality.score > best.quality.score:
+                                best = corrected_attempt
+                            if corrected_quality.ok:
+                                return TranslationDecision(
+                                    text=corrected,
+                                    backend=corrected_attempt.backend,
+                                    quality=corrected_quality,
+                                    needs_review=False,
+                                    attempts=tuple(attempts),
+                                )
+                        # Keep the failed candidates in audit; caller blocks
+                        # publication and resumes automatically later.
+                        continue
                     except Exception as exc:
                         backend_errors.append(
                             f"{backend.name}_quality_retry: {type(exc).__name__}: {exc}"

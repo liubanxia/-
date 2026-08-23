@@ -451,7 +451,7 @@ class DeepOrganizer:
                         prompt_text,
                         ceiling=1800 if final_merge else 1400,
                     ),
-                    profile="translation" if final_merge else "fast",
+                    profile="translation" if final_merge else "smart2",
                 ).strip()
                 used = {
                     int(x) for x in _CITATION_RE.findall(merged)
@@ -615,7 +615,7 @@ class DeepOrganizer:
                         prompt_text,
                         ceiling=1400,
                     ),
-                    profile="fast",
+                    profile="smart2",
                 )
                 valid_ids = {x.chunk_id for x in batch}
                 used = {

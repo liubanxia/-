@@ -35,11 +35,6 @@ def install(gui_module) -> None:
             semantic = str(
                 status.get("semantic_label") or "语义状态未知"
             )
-            smart1 = (
-                "READY"
-                if status.get("generator_fast_ready")
-                else "未就绪"
-            )
             smart2 = (
                 "READY"
                 if status.get("generator_deep_ready")
@@ -48,7 +43,7 @@ def install(gui_module) -> None:
             text = (
                 f"资料 {status['documents']} 本 | "
                 f"知识块 {status['chunks']} | {semantic} | "
-                f"智能1={smart1} | 智能2={smart2}"
+                f"Smart2={smart2}"
             )
             unresolved = int(
                 status.get("document_paths_unresolved", 0) or 0
@@ -79,7 +74,7 @@ def install(gui_module) -> None:
             )
             self.translation_models_label.setText(
                 f"医学精译={quality}（Smart2质量模型、低推理） | "
-                f"旧Smart1预览模型不参与正式翻译{suffix}"
+                f"全链路统一使用 Smart2 医学模型{suffix}"
             )
         except Exception:
             return original_refresh_translation_models(self)
@@ -110,7 +105,7 @@ def install(gui_module) -> None:
                 "PHOENIX_KNOWLEDGE_LLM_PROFILE",
                 "fast",
             ).strip().lower()
-            requested = "智能2" if _deep_profile(profile) else "智能1"
+            requested = "Smart2"
             active_model = ""
             try:
                 active_model = str(
@@ -127,11 +122,6 @@ def install(gui_module) -> None:
                         and active_model == "Qwen3.5-2B"
                     ):
                         label = "智能2请求→Qwen3.5-2B降级执行"
-                    elif (
-                        requested == "智能1"
-                        and active_model == "Qwen3.5-4B"
-                    ):
-                        label = "智能1请求→Qwen3.5-4B替代执行"
                     else:
                         label = f"{requested} · {active_model}"
             elif full.mode == "grounding_blocked":

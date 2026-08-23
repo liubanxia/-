@@ -52,7 +52,7 @@ class ComputeGatewayTests(unittest.TestCase):
             clear=False,
         ):
             gateway = ComputeGateway(_paths(Path(temp)))
-            self.assertEqual(gateway.remote_model("fast"), "deepseek-v4-flash")
+            self.assertEqual(gateway.remote_model("fast"), "deepseek-v4-pro")
             self.assertEqual(gateway.remote_model("deep"), "deepseek-v4-pro")
             self.assertEqual(
                 gateway.remote_chat_url(),
@@ -72,7 +72,7 @@ class ComputeGatewayTests(unittest.TestCase):
             clear=False,
         ):
             gateway = ComputeGateway(_paths(Path(temp)))
-            self.assertEqual(gateway.remote_model("fast"), "qwen-fast")
+            self.assertEqual(gateway.remote_model("fast"), "qwen-deep")
             self.assertEqual(gateway.remote_model("deep"), "qwen-deep")
             self.assertEqual(
                 gateway.remote_chat_url(),

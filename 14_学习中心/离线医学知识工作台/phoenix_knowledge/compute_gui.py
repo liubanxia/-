@@ -43,7 +43,7 @@ class _ComputeProbeWorker(QThread):
             reply = self.llm.generate(
                 "只回复：Phoenix 算力测试通过。",
                 max_new_tokens=16,
-                profile="fast",
+                profile="smart2",
             ).strip()
             elapsed = time.perf_counter() - started
             status = self.llm.compute.status()
@@ -102,7 +102,6 @@ class ComputeSettingsDialog(QDialog):
 
         self.advanced = QCheckBox("显示高级设置")
         self.remote_url = QLineEdit()
-        self.fast_model = QLineEdit()
         self.deep_model = QLineEdit()
 
         form.addRow("模型平台：", self.mode_combo)
@@ -111,8 +110,7 @@ class ComputeSettingsDialog(QDialog):
         form.addRow("", self.allow_remote)
         form.addRow("", self.advanced)
         form.addRow("API 地址：", self.remote_url)
-        form.addRow("智能1模型：", self.fast_model)
-        form.addRow("智能2模型：", self.deep_model)
+        form.addRow("Smart2 统一模型：", self.deep_model)
         root.addLayout(form)
 
         platform_row = QHBoxLayout()
@@ -185,7 +183,6 @@ class ComputeSettingsDialog(QDialog):
             )
             self.api_key.clear()
             self.remote_url.clear()
-            self.fast_model.clear()
             self.deep_model.clear()
             self.platform_button.setText("本机模式无需账号")
             self.platform_button.setEnabled(False)
@@ -203,10 +200,8 @@ class ComputeSettingsDialog(QDialog):
             self._session_keys.get(provider_id, self._env_key(provider_id))
         )
         self.remote_url.setText(str(config.get("base_url") or spec.base_url))
-        self.fast_model.setText(str(config.get("fast_model") or spec.fast_model))
         self.deep_model.setText(str(config.get("deep_model") or spec.deep_model))
         self.remote_url.setPlaceholderText(spec.base_url or "https://your-endpoint/v1")
-        self.fast_model.setPlaceholderText(spec.fast_model or "填写平台模型 ID")
         self.deep_model.setPlaceholderText(spec.deep_model or "填写平台模型 ID")
         self.platform_button.setText(f"打开 {spec.label} 平台")
         self.platform_button.setEnabled(bool(spec.console_url))
@@ -220,12 +215,12 @@ class ComputeSettingsDialog(QDialog):
         self.api_key.setVisible(cloud)
         self.allow_remote.setVisible(cloud)
         self.advanced.setVisible(cloud)
-        for widget in (self.remote_url, self.fast_model, self.deep_model):
+        for widget in (self.remote_url, self.deep_model):
             widget.setVisible(advanced)
 
         form = self.layout().itemAt(1).layout()
         if form is not None:
-            for row in (5, 6, 7):
+            for row in (5, 6):
                 label_item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
                 if label_item and label_item.widget():
                     label_item.widget().setVisible(advanced)
@@ -302,17 +297,13 @@ class ComputeSettingsDialog(QDialog):
         spec = provider_spec(selected)
         key = self.api_key.text().strip()
         remote_url = self.remote_url.text().strip() or spec.base_url
-        fast_model = self.fast_model.text().strip() or spec.fast_model
         deep_model = self.deep_model.text().strip() or spec.deep_model
 
         if not remote_url:
             QMessageBox.warning(self, "缺少 API 地址", "请填写该平台的 API 地址。")
             return
-        if not fast_model:
-            QMessageBox.warning(self, "缺少模型", "请填写智能1模型 ID。")
-            return
         if not deep_model:
-            QMessageBox.warning(self, "缺少模型", "请填写智能2模型 ID。")
+            QMessageBox.warning(self, "缺少模型", "请填写 Smart2 统一模型 ID。")
             return
         if not self.allow_remote.isChecked():
             QMessageBox.warning(
@@ -342,7 +333,7 @@ class ComputeSettingsDialog(QDialog):
         self.gateway.select_provider(
             selected,
             base_url=remote_url,
-            fast_model=fast_model,
+            fast_model=deep_model,
             deep_model=deep_model,
         )
         os.environ["PHOENIX_KNOWLEDGE_ACCELERATOR"] = "remote"

@@ -207,12 +207,11 @@ def install(gui_module) -> None:
 
     def _status_text(self) -> str:
         status = self.workbench.status()
-        smart1 = "READY" if self.workbench.llm.available("fast") else "未就绪"
         smart2 = "READY" if self.workbench.llm.available("deep") else "未就绪"
         semantic = "READY" if status.get("embedding_available") else "未就绪"
         return (
             f"资料 {status['documents']} 本 | 知识块 {status['chunks']} | "
-            f"语义检索={semantic} | 智能1={smart1} | 智能2={smart2}"
+            f"语义检索={semantic} | Smart2={smart2}"
         )
 
     cls._status_text = _status_text
@@ -230,7 +229,7 @@ def install(gui_module) -> None:
             self.completed.emit(
                 f"【即时证据 {quick_elapsed:.2f}s】\n"
                 f"{quick.text}\n\n"
-                "—— 正在后台做语义补全；如选择智能1/智能2，将继续进行证据归纳 ——"
+                "—— 正在后台做语义补全，并由 Smart2 进行证据归纳 ——"
             )
 
             full_started = time.perf_counter()
@@ -247,7 +246,7 @@ def install(gui_module) -> None:
             elif profile in {"deep", "4b", "deep4b", "quality", "max"}:
                 label = "智能2"
             else:
-                label = "智能1"
+                label = "Smart2"
             self.completed.emit(
                 f"【完成 | {label} | 第二阶段 {full_elapsed:.2f}s】\n\n"
                 f"{full.text}"
@@ -287,8 +286,7 @@ def install(gui_module) -> None:
         mode_row.addWidget(QLabel("回答方式："))
         self.qa_mode_combo = QComboBox()
         self.qa_mode_combo.addItem("快速证据", "evidence")
-        self.qa_mode_combo.addItem("智能1", "smart1")
-        self.qa_mode_combo.addItem("智能2", "smart2")
+        self.qa_mode_combo.addItem("Smart2 医学模型", "smart2")
         self.qa_mode_combo.setCurrentIndex(0)
         mode_row.addWidget(self.qa_mode_combo)
         self.pause_qa_button = QPushButton("暂停问答")
@@ -302,7 +300,7 @@ def install(gui_module) -> None:
         mode_row.addStretch(1)
 
         mode_label = QLabel(
-            "响应链：即时PDF证据 → 语义检索 → 可选智能1/智能2。"
+            "响应链：即时PDF证据 → 语义检索 → Smart2 医学归纳。"
             "界面不显示底层模型名称。"
         )
         mode_label.setWordWrap(True)
@@ -328,12 +326,12 @@ def install(gui_module) -> None:
             if hasattr(self, "qa_mode_combo")
             else "evidence"
         )
-        intelligent = mode in {"smart1", "smart2"}
+        intelligent = True
         os.environ["PHOENIX_KNOWLEDGE_DEEP_QA"] = (
             "1" if intelligent else "0"
         )
         os.environ["PHOENIX_KNOWLEDGE_LLM_PROFILE"] = (
-            "deep" if mode == "smart2" else "fast"
+            "smart2"
         )
         self._paused_qa_query = query
         self.answer_view.setPlainText("正在从本地资料检索即时证据…")
@@ -441,10 +439,10 @@ def install(gui_module) -> None:
         mode = (
             self.organize_smart_combo.currentData()
             if hasattr(self, "organize_smart_combo")
-            else "smart1"
+            else "smart2"
         )
         os.environ["PHOENIX_KNOWLEDGE_LLM_PROFILE"] = (
-            "deep" if mode == "smart2" else "fast"
+            "smart2"
         )
         self.organize_progress.setValue(0)
         self.organize_result.setPlainText(
@@ -479,10 +477,10 @@ def install(gui_module) -> None:
         mode = (
             self.organize_smart_combo.currentData()
             if hasattr(self, "organize_smart_combo")
-            else "smart1"
+            else "smart2"
         )
         os.environ["PHOENIX_KNOWLEDGE_LLM_PROFILE"] = (
-            "deep" if mode == "smart2" else "fast"
+            "smart2"
         )
         self.worker = _OrganizeWorkerV2(
             self.workbench,
@@ -629,7 +627,7 @@ def install(gui_module) -> None:
         )
         self.translation_models_label.setText(
             f"医学精译={quality}（Smart2质量模型、低推理） | "
-            "旧Smart1预览模型不参与任何正式文档翻译"
+            "全链路统一使用 Smart2 医学模型"
         )
 
     def start_translation(self, retry_warning_pages: bool):
@@ -661,7 +659,7 @@ def install(gui_module) -> None:
             export_format = suffix.lstrip(".")
             part_pages = 0
         os.environ["PHOENIX_KNOWLEDGE_LLM_PROFILE"] = (
-            "translation" if smart_level == "smart2" else "fast"
+            "translation"
         )
 
         # Release unrelated resident weights before the translation engine loads

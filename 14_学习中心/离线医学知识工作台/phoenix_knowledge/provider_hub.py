@@ -31,7 +31,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         "deepseek-v4-pro",
         "https://platform.deepseek.com/",
         "DEEPSEEK_API_KEY",
-        "官方 OpenAI 兼容接口；智能1=V4 Flash，智能2=V4 Pro。",
+        "正式工作台统一使用 V4 Pro（低推理模式）。",
     ),
     ProviderSpec(
         "openai",
@@ -64,7 +64,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         "glm-5.2",
         "https://open.bigmodel.cn/",
         "ZHIPU_API_KEY",
-        "智能1使用日常模型，智能2使用旗舰长程模型。",
+        "正式工作台统一使用旗舰模型；不保留智能1档位。",
     ),
     ProviderSpec(
         "kimi",
@@ -346,26 +346,14 @@ def install() -> None:
             os.environ.pop(name, None)
 
     def remote_model(self, profile=None) -> str:
-        normalized = str(profile or "fast").strip().lower()
-        deep = normalized in {
-            "deep",
-            "4b",
-            "deep4b",
-            "quality",
-            "max",
-            "smart2",
-            "translation",
-            "medical_translation",
-            "translate",
-        }
-        env_name = "PHOENIX_KNOWLEDGE_REMOTE_MODEL_DEEP" if deep else "PHOENIX_KNOWLEDGE_REMOTE_MODEL_FAST"
-        env = os.environ.get(env_name, "").strip()
+        del profile
+        env = os.environ.get("PHOENIX_KNOWLEDGE_REMOTE_MODEL_DEEP", "").strip()
         if env:
             return env
         spec = self.current_provider()
         config = self.provider_hub.config(spec.id)
-        configured = str(config.get("deep_model" if deep else "fast_model") or "").strip()
-        return configured or (spec.deep_model if deep else spec.fast_model)
+        configured = str(config.get("deep_model") or "").strip()
+        return configured or spec.deep_model
 
     def provider_protocol(self) -> str:
         return self.current_provider().protocol
@@ -389,7 +377,7 @@ def install() -> None:
             if self.remote_is_public() and not self.remote_api_key():
                 effective = "cpu"
                 warning = f"{self.provider_label()} API Key 未配置"
-            elif not self.remote_model("fast"):
+            elif not self.remote_model("smart2"):
                 effective = "cpu"
                 warning = f"{self.provider_label()} 快速模型 ID 未配置"
         return replace(result, effective_mode=effective, warning=warning)
@@ -469,6 +457,12 @@ def install() -> None:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 data = json.loads(response.read().decode("utf-8"))
         except Exception as exc:
+            code = getattr(exc, "code", None)
+            if code == 401:
+                raise RuntimeError(
+                    f"{spec.label} API Key 验证失败（401）：请确认所选平台与 Key 属于同一账号，"
+                    "重新粘贴完整 Key 后点击“保存并启用”，再执行真实测试。"
+                ) from exc
             raise RuntimeError(
                 f"{spec.label} 调用失败（{timeout}s）：{type(exc).__name__}: {exc}"
             ) from exc

@@ -295,7 +295,7 @@ class ProviderHubTests(unittest.TestCase):
                 "https://api.openai.com/v1/responses",
             )
             body = json.loads(request.data.decode("utf-8"))
-            self.assertEqual(body["model"], "gpt-5.6-luna")
+            self.assertEqual(body["model"], "gpt-5.6-sol")
             self.assertEqual(body["input"], "测试")
             self.assertEqual(body["max_output_tokens"], 64)
             self.assertNotIn("temperature", body)
@@ -437,7 +437,7 @@ class ProviderHubTests(unittest.TestCase):
                 "anthropic-secret",
             )
             body = json.loads(request.data.decode("utf-8"))
-            self.assertEqual(body["model"], "claude-test-fast")
+            self.assertEqual(body["model"], "claude-test-deep")
             self.assertEqual(body["messages"][0]["content"], "测试")
 
 

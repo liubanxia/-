@@ -104,11 +104,6 @@ def install(gui_module) -> None:
     def _status_text(self) -> str:
         try:
             status = self.workbench.status()
-            smart1 = (
-                "READY"
-                if self.workbench.llm.available("fast")
-                else "未就绪"
-            )
             smart2 = (
                 "READY"
                 if self.workbench.llm.available("deep")
@@ -119,7 +114,7 @@ def install(gui_module) -> None:
             )
             return (
                 f"资料 {status['documents']} 本 | 知识块 {status['chunks']} | "
-                f"{semantic} | 智能1={smart1} | 智能2={smart2}"
+                f"{semantic} | Smart2={smart2}"
             )
         except Exception:
             return original_status_text(self)

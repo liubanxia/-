@@ -32,14 +32,14 @@ def _model(path: Path) -> None:
 
 
 class SmartTruthTests(unittest.TestCase):
-    def test_fast_fallback_does_not_make_native_smart2_ready(self):
+    def test_single_smart2_model_is_ready_for_all_profiles(self):
         with tempfile.TemporaryDirectory() as temp:
             paths = _paths(Path(temp))
-            _model(paths.model_root / "Qwen3.5-2B")
+            _model(paths.model_root / "Qwen3.5-4B")
             llm = LocalLLM(paths)
             self.assertEqual(
                 llm.active_model_name("deep"),
-                "Qwen3.5-2B",
+                "Qwen3.5-4B",
             )
             with patch(
                 "phoenix_knowledge.release_runtime_hardening.local_generation_runtime_ready",
@@ -48,7 +48,7 @@ class SmartTruthTests(unittest.TestCase):
                 self.assertTrue(
                     _native_generator_ready(llm, "fast")
                 )
-                self.assertFalse(
+                self.assertTrue(
                     _native_generator_ready(llm, "deep")
                 )
 
@@ -108,7 +108,7 @@ class SmartTruthTests(unittest.TestCase):
             worker.run()
         self.assertFalse(worker.failed.values)
         self.assertIn(
-            "智能2请求→Qwen3.5-2B降级执行",
+            "Smart2 · Qwen3.5-2B",
             worker.completed.values[-1],
         )
 

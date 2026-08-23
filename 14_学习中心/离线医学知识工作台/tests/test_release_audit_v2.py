@@ -73,7 +73,7 @@ class ReleaseAuditV2Tests(unittest.TestCase):
     def test_local_qwen_folder_is_not_ready_when_generation_runtime_is_broken(self):
         with tempfile.TemporaryDirectory() as temp:
             paths = _paths(Path(temp))
-            model = paths.model_root / "Qwen3.5-2B"
+            model = paths.model_root / "Qwen3.5-4B"
             model.mkdir(parents=True)
             (model / "config.json").write_text("{}", encoding="utf-8")
             (model / "model.safetensors").write_bytes(b"weights")

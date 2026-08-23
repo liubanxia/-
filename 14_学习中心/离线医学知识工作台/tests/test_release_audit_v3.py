@@ -74,7 +74,7 @@ class ReleaseAuditV3Tests(unittest.TestCase):
         self.assertFalse(worker.failed.values)
         self.assertEqual(len(worker.completed.values), 2)
         final = worker.completed.values[-1]
-        self.assertIn("智能1未实际生成", final)
+        self.assertIn("Smart2未实际生成", final)
         self.assertIn("已回退资料证据", final)
 
     def test_grounded_generation_is_labeled_as_actual_smart_result(self):
@@ -90,7 +90,7 @@ class ReleaseAuditV3Tests(unittest.TestCase):
             worker.run()
         self.assertFalse(worker.failed.values)
         final = worker.completed.values[-1]
-        self.assertIn("完成 | 智能2", final)
+        self.assertIn("完成 | Smart2", final)
         self.assertNotIn("未实际生成", final)
 
     def test_grounding_blocked_is_explicitly_reported(self):

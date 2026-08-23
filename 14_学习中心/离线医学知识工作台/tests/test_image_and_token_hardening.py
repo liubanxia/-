@@ -70,7 +70,7 @@ class ImageAndTokenHardeningTests(unittest.TestCase):
         )
         self.assertIn("[S1]", result)
         profiles = [profile for profile, _budget in organizer.llm.calls]
-        self.assertEqual(profiles, ["fast", "fast", "translation"])
+        self.assertEqual(profiles, ["smart2", "smart2", "translation"])
         self.assertTrue(all(budget <= 1800 for _profile, budget in organizer.llm.calls))
 
     def test_real_multi_document_prompt_is_clipped_before_generation(self):
