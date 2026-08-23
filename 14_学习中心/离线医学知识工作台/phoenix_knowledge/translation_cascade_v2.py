@@ -18,10 +18,9 @@ from .translation_models import (
 
 MODEL3_ACCEPT_SCORE = 0.62
 _API_FINAL_POLISH_REASON = (
-    "这是本地翻译模型已经完成的中文医学译文。你的任务不是从头重译，也不是总结；"
-    "请把现有译文作为工作底稿，严格对照英文原文进行最终医学精修。优先修正医学术语、"
-    "漏译、误译、生硬语序和上下文表达，同时必须保持全部数字、单位、正负号、侧别、"
-    "否定关系、分级、医学缩写、图表编号和诊断确定性。只输出精修后的完整译文。"
+    "前三个本地翻译阶段仍未达到质量门槛。请严格对照英文原文，在保留数字、单位、正负号、"
+    "侧别、否定关系、分级、医学缩写和图表编号的前提下，修复现有中文译文；不得总结、"
+    "删减或扩写。这里只是翻译失败兜底，完成后还会进入独立的整页四级复核。"
 )
 
 
@@ -41,8 +40,8 @@ def _report_model3_fast_mode(engine: MultiModelTranslationEngine) -> None:
     if bool(getattr(engine, "_phoenix_model3_fast_mode_reported", False)):
         return
     print(
-        "[Phoenix][模型3] 快速模式：仅当前两级本地译文未通过质量门槛时调用；"
-        "设置 PHOENIX_MODEL3_ALWAYS=1 可强制每段都精修。",
+        "[Phoenix][翻译级联] 失败升级模式：模型1失败→模型2，模型2失败→模型3，"
+        "模型3失败→Smart2 API。整页复核在翻译完成后另行执行。",
         flush=True,
     )
     engine._phoenix_model3_fast_mode_reported = True
@@ -84,8 +83,6 @@ def _run_model1(
     attempts: list[TranslationAttempt],
     errors: list[str],
 ) -> tuple[TranslationAttempt | None, bool]:
-    """Return best model-1 draft and whether it passed the model-1 gate."""
-
     best: TranslationAttempt | None = None
     for backend in hybrid._local_backends(engine, target_language):
         try:
@@ -115,8 +112,6 @@ def _run_model3(
     attempts: list[TranslationAttempt],
     errors: list[str],
 ) -> TranslationAttempt | None:
-    """Use SSD Qwen2.5-3B as the last local medical refinement stage."""
-
     if draft is None or not str(draft.text or "").strip():
         return None
     if not _model3_available(engine):
@@ -124,11 +119,7 @@ def _run_model3(
 
     backend = _model3(engine)
     try:
-        text = backend.refine(
-            source,
-            draft.text,
-            target_language,
-        )
+        text = backend.refine(source, draft.text, target_language)
         attempt = cascade._quality_attempt(
             engine,
             backend.name,
@@ -150,13 +141,7 @@ def _run_local_cascade(
     attempts: list[TranslationAttempt],
     errors: list[str],
 ) -> tuple[TranslationAttempt | None, str]:
-    """Run model1 -> conditional HY-MT -> conditional local Qwen model3.
-
-    The normal fast path stops escalating as soon as a local stage passes its
-    medical-quality gate. Qwen model3 is reserved for weak/problematic units,
-    which avoids paying a 3B-generation latency on every paragraph. Set
-    ``PHOENIX_MODEL3_ALWAYS=1`` only when an all-segment model3 audit is desired.
-    """
+    """Translation phase only: model1 -> failed model2 -> failed model3."""
 
     always_model3 = _model3_always()
     if not always_model3:
@@ -218,9 +203,11 @@ def _run_local_cascade(
     ):
         return model3, f"{base_stage}_model3"
 
-    # A failed model3 refinement must never replace a safer prior draft. The
-    # validator decides whether its output is eligible; otherwise Smart2 receives
-    # the best pre-model3 local draft.
+    # If model3 actually ran but failed its gate, Smart2 should receive model3's
+    # attempted repair together with the original source.  If model3 was missing
+    # or crashed, keep the best earlier local draft.
+    if model3 is not None:
+        return model3, "model3_failed"
     return base, base_stage
 
 
@@ -233,14 +220,12 @@ def _api_polish_local_draft(
     attempts: list[TranslationAttempt],
     errors: list[str],
 ) -> TranslationDecision | None:
-    """Use Smart2 only as a final editor of the already translated local draft."""
+    """Smart2 fallback used only when the three local translation stages fail."""
 
     if not hybrid._smart_available(engine):
         return None
 
-    reasons = tuple(
-        (*local_draft.quality.reasons, _API_FINAL_POLISH_REASON)
-    )
+    reasons = tuple((*local_draft.quality.reasons, _API_FINAL_POLISH_REASON))
     try:
         polished = engine.qwen.retry_translation(
             source,
@@ -250,7 +235,7 @@ def _api_polish_local_draft(
         )
         first = cascade._quality_attempt(
             engine,
-            f"{engine.qwen.name}_{local_stage}_final_polish_1",
+            f"{engine.qwen.name}_{local_stage}_translation_fallback_1",
             source,
             polished,
             target_language,
@@ -265,8 +250,6 @@ def _api_polish_local_draft(
                 attempts=tuple(attempts),
             )
 
-        # One bounded correction pass is enough. The API is an editor here,
-        # not another full translation tier, which keeps paid work predictable.
         corrected = engine.qwen.retry_translation(
             source,
             first.text or local_draft.text,
@@ -275,7 +258,7 @@ def _api_polish_local_draft(
         )
         second = cascade._quality_attempt(
             engine,
-            f"{engine.qwen.name}_{local_stage}_final_polish_2",
+            f"{engine.qwen.name}_{local_stage}_translation_fallback_2",
             source,
             corrected,
             target_language,
@@ -290,7 +273,7 @@ def _api_polish_local_draft(
                 attempts=tuple(attempts),
             )
     except Exception as exc:
-        errors.append(f"Smart2-final-polish: {type(exc).__name__}: {exc}")
+        errors.append(f"Smart2-translation-fallback: {type(exc).__name__}: {exc}")
     return None
 
 
@@ -332,20 +315,8 @@ def _translate(
     )
 
     if local_draft is not None:
-        # Smart2 remains the final editor when available, but the expensive local
-        # model3 stage now runs only for translation units that actually need it.
-        polished = _api_polish_local_draft(
-            self,
-            source,
-            local_draft,
-            local_stage,
-            target_language,
-            attempts,
-            errors,
-        )
-        if polished is not None:
-            return polished
-
+        # The translation phase stops immediately when model1/model2/model3
+        # passes. Smart2 is used here only if the local cascade still failed.
         if _local_draft_accepted(local_draft, local_stage):
             return TranslationDecision(
                 text=local_draft.text,
@@ -354,10 +325,20 @@ def _translate(
                 needs_review=False,
                 attempts=tuple(attempts),
             )
+
+        api_result = _api_polish_local_draft(
+            self,
+            source,
+            local_draft,
+            local_stage,
+            target_language,
+            attempts,
+            errors,
+        )
+        if api_result is not None:
+            return api_result
         return hybrid._reviewable_local_fallback(source, local_draft, attempts)
 
-    # No local translator is usable. Only then is a source-only API translation
-    # allowed, preserving functionality without changing the normal paid path.
     if hybrid._smart_available(self):
         try:
             translated = self.qwen.translate(
@@ -373,19 +354,11 @@ def _translate(
                 target_language,
             )
             attempts.append(first)
-            if first.quality.ok:
-                return TranslationDecision(
-                    text=first.text,
-                    backend=first.backend,
-                    quality=first.quality,
-                    needs_review=False,
-                    attempts=tuple(attempts),
-                )
             return TranslationDecision(
                 text=first.text,
                 backend=first.backend,
                 quality=first.quality,
-                needs_review=True,
+                needs_review=not bool(first.quality.ok),
                 attempts=tuple(attempts),
             )
         except Exception as exc:
@@ -436,20 +409,13 @@ def _office_unit_needs_refinement(payload: dict) -> bool:
     if not rows:
         return False
     backends = [str(row.get("backend", "") or "") for row in rows]
-    # Once an API-final-polish backend is present, the local draft has already
-    # been upgraded and should remain resumable.
-    if any(
-        name.startswith("qwen35_medical_translation")
-        and "final_polish" in name
-        for name in backends
-    ):
+    # The page/unit review integration marks every successfully reviewed segment.
+    if backends and all("|reviewed" in name for name in backends):
         return False
     return any(_local_only_backend(name) for name in backends)
 
 
 def _patch_resume_and_cache_policy() -> None:
-    # If a document was completed locally while offline, reconnecting the API
-    # must invalidate those local-only checkpoints so they receive final polish.
     hybrid._is_local_only_backend = _local_only_backend
     hybrid._office_unit_needs_refinement = _office_unit_needs_refinement
 
@@ -462,11 +428,11 @@ def _patch_resume_and_cache_policy() -> None:
             if runtime.smart_level != "smart2":
                 return True
             backend = str(getattr(decision, "backend", "") or "")
-            # Smart2 tasks cache only API-polished results. Local-only results
-            # must be recomputed when the API becomes available later.
+            # Page/unit checkpoints are the authoritative cache after the second
+            # review phase. Keep direct runtime caching conservative.
             return (
-                backend.startswith("qwen35_medical_translation")
-                and ("final_polish" in backend or "source_only_emergency" in backend)
+                "|reviewed" in backend
+                or backend.startswith("qwen35_medical_translation")
             )
 
         runtime_adapter._cacheable_decision = cacheable
