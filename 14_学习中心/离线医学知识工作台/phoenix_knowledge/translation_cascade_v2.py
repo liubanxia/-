@@ -32,6 +32,22 @@ def _best_attempt(attempts: Iterable[TranslationAttempt]) -> TranslationAttempt 
     return max(values, key=lambda item: float(item.quality.score))
 
 
+def _model3_always() -> bool:
+    raw = os.environ.get("PHOENIX_MODEL3_ALWAYS", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _report_model3_fast_mode(engine: MultiModelTranslationEngine) -> None:
+    if bool(getattr(engine, "_phoenix_model3_fast_mode_reported", False)):
+        return
+    print(
+        "[Phoenix][模型3] 快速模式：仅当前两级本地译文未通过质量门槛时调用；"
+        "设置 PHOENIX_MODEL3_ALWAYS=1 可强制每段都精修。",
+        flush=True,
+    )
+    engine._phoenix_model3_fast_mode_reported = True
+
+
 def _model3_path(engine: MultiModelTranslationEngine) -> Path:
     override = os.environ.get("PHOENIX_QWEN_MODEL3_DIR", "").strip()
     if override:
@@ -134,13 +150,17 @@ def _run_local_cascade(
     attempts: list[TranslationAttempt],
     errors: list[str],
 ) -> tuple[TranslationAttempt | None, str]:
-    """Run model1 -> conditional HY-MT -> local Qwen model3.
+    """Run model1 -> conditional HY-MT -> conditional local Qwen model3.
 
-    HY-MT remains conditional: it runs only when model1 fails its gate. Model3 is
-    a medical refiner, so whenever a local draft exists it gets one refinement
-    pass before Smart2. This keeps the paid API as the final editor rather than
-    the first component responsible for medical cleanup.
+    The normal fast path stops escalating as soon as a local stage passes its
+    medical-quality gate. Qwen model3 is reserved for weak/problematic units,
+    which avoids paying a 3B-generation latency on every paragraph. Set
+    ``PHOENIX_MODEL3_ALWAYS=1`` only when an all-segment model3 audit is desired.
     """
+
+    always_model3 = _model3_always()
+    if not always_model3:
+        _report_model3_fast_mode(engine)
 
     model1, model1_passed = _run_model1(
         engine,
@@ -149,6 +169,9 @@ def _run_local_cascade(
         attempts,
         errors,
     )
+
+    if model1_passed and not always_model3:
+        return model1, "model1"
 
     base: TranslationAttempt | None = model1
     base_stage = "model1" if model1_passed else "model1_failed"
@@ -167,6 +190,8 @@ def _run_local_cascade(
             and model2.quality.ok
             and float(model2.quality.score) >= cascade.MODEL2_ACCEPT_SCORE
         ):
+            if not always_model3:
+                return model2, "model2"
             base = model2
             base_stage = "model2"
         else:
@@ -307,8 +332,8 @@ def _translate(
     )
 
     if local_draft is not None:
-        # API availability never skips the local cascade. When Smart2 exists it
-        # always receives the selected local result, including model3 output.
+        # Smart2 remains the final editor when available, but the expensive local
+        # model3 stage now runs only for translation units that actually need it.
         polished = _api_polish_local_draft(
             self,
             source,
@@ -321,8 +346,6 @@ def _translate(
         if polished is not None:
             return polished
 
-        # Offline/API-failed mode remains useful. Only a locally accepted result
-        # can publish automatically; weak local results stay visibly reviewable.
         if _local_draft_accepted(local_draft, local_stage):
             return TranslationDecision(
                 text=local_draft.text,
