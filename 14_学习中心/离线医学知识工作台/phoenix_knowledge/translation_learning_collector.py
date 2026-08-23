@@ -34,9 +34,28 @@ class TranslationLearningCollector:
         self.path = Path(root) / "translation_learning.jsonl"
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
+    def _valid_record(self, record: TranslationLearningRecord) -> bool:
+        source = record.source.strip()
+        final_text = record.final_text.strip()
+
+        if not source or not final_text:
+            return False
+
+        if source == final_text:
+            return False
+
+        if len(final_text) < 5:
+            return False
+
+        if not record.reviewed:
+            return False
+
+        return True
+
     def append(self, record: TranslationLearningRecord) -> None:
-        if not record.source.strip() or not record.final_text.strip():
+        if not self._valid_record(record):
             return
+
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
 
@@ -58,6 +77,7 @@ class TranslationLearningCollector:
                         "output": row["final_text"],
                     }
                 )
+
         output.write_text(
             "\n".join(json.dumps(item, ensure_ascii=False) for item in pairs),
             encoding="utf-8",
