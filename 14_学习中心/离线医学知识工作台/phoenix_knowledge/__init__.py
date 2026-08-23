@@ -31,6 +31,7 @@ from .provider_hub_v2 import install as _install_provider_hub_v2
 from .token_efficiency_hardening import install as _install_token_efficiency_hardening
 from .hybrid_translation_policy import install as _install_hybrid_translation_policy
 from .hymt_cascade_policy import install as _install_hymt_cascade_policy
+from .translation_cascade_v2 import install as _install_translation_cascade_v2
 
 _install_translation_recovery()
 _install_scholarly_pubmed()
@@ -54,10 +55,13 @@ _install_token_efficiency_hardening()
 _install_translation_stability_core()
 _install_workbench_stability_core()
 
-# Base local-first policy keeps translation functional when the external API is
-# unavailable. The HY-MT cascade is installed last so the final production order
-# becomes: lightweight local model -> HY-MT local refinement -> Smart2 API.
+# Base policy keeps offline translation available. HY-MT adds the second local
+# tier. Cascade v2 installs last and defines the production order precisely:
+# model 1 -> model 2 only if model 1 fails -> Smart2 final polish of whichever
+# local draft won. The API therefore edits existing work instead of replacing
+# the local cascade with a full remote translation.
 _install_hybrid_translation_policy()
 _install_hymt_cascade_policy()
+_install_translation_cascade_v2()
 
 __all__ = ["MedicalKnowledgeWorkbench"]
