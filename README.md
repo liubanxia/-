@@ -1,10 +1,34 @@
 # Project Phoenix Core
 
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.x-blue.svg)](https://www.python.org/)
+[![DICOM](https://img.shields.io/badge/Medical%20Imaging-DICOM-green.svg)](https://www.dicomstandard.org/)
+
 **Offline, DICOM-first medical-imaging AI framework for CT, DR/X-ray and extensible specialist pipelines.**
 
 Project Phoenix Core is the public engineering core extracted from a larger offline radiology-assistance project. It focuses on portable image ingestion, explicit model routing, lightweight inference adapters, result fusion, lesion geometry, and clinician-reviewed report drafting.
 
-> Research/engineering software only. It is not a medical device and does not replace clinician interpretation.
+> Research and engineering software only. It is not a medical device and does not replace clinician interpretation.
+
+## Overview
+
+Phoenix Core explores how medical imaging AI components can be composed into transparent, modular workflows while keeping the human clinician in control.
+
+Core ideas:
+
+- DICOM-first processing instead of screenshot-based analysis
+- Explicit routing between imaging tasks and specialist models
+- Modular adapters for different AI backends
+- Structured intermediate results for explainability
+- Human-reviewed reporting workflows
+- Offline-capable engineering design
+
+## Documentation
+
+- [Architecture](docs/architecture.md)
+- [Demo Flow](docs/demo.md)
+- [Synthetic Example](examples/synthetic_case/README.md)
+- [Roadmap](ROADMAP.md)
 
 ## What is included
 
@@ -15,7 +39,7 @@ Project Phoenix Core is the public engineering core extracted from a larger offl
 - MedSAM2, SAM-Med3D, TotalSegmentator, VISTA3D and SegVol adapter interfaces
 - Local Hugging Face encoder/report-teacher adapters
 - CPU-only ONNX adapter with lazy loading
-- Doctor-triggered dual-vision inference gate
+- Doctor-triggered inference gate
 - Unified lesion/result contracts and world-LPS → DICOM pixel mapping
 - Structured radiology report drafting and report-diff utilities
 - Hardware-aware model loading and explicit incomplete-analysis states
@@ -56,11 +80,11 @@ The base dependency set is intentionally small. Model-specific packages are list
 
 1. **Offline-first** — core processing does not require cloud access.
 2. **DICOM-first** — routing and spatial mapping use DICOM metadata/geometry rather than screenshots.
-3. **Doctor-controlled** — visual inference is off by default; a UI/caller must explicitly enable it.
+3. **Doctor-controlled** — inference requires explicit activation by the caller.
 4. **No false negatives from failures** — missing/failed models remain explicit incomplete states.
-5. **Lightweight frontline, large teachers offline** — large models can be used as research/distillation teachers without being silently promoted into routine inference.
+5. **Lightweight frontline, large teachers offline** — larger models can support research and distillation workflows.
 6. **Ephemeral case data** — temporary case state is removed when the case closes.
-7. **Explainable composition** — routing, model execution, fusion and report generation are separate inspectable layers.
+7. **Explainable composition** — routing, model execution, fusion and reporting remain inspectable layers.
 
 ## Repository layout
 
@@ -79,8 +103,8 @@ tests/              core behavior tests
 
 ## Safety and privacy
 
-Never commit identifiable DICOM/clinical data, deployment credentials, private network configuration, or model weights. The repository includes defensive `.gitignore` rules, but contributors remain responsible for reviewing changes before publication.
+Never commit identifiable DICOM/clinical data, deployment credentials, private network configuration, or model weights. Contributors remain responsible for reviewing changes before publication.
 
 ## Status
 
-Active public-core extraction from Project Phoenix. Interfaces are being stabilized and more synthetic tests/documentation will be added as the private deployment code is separated from the reusable core.
+Active public-core extraction from Project Phoenix. Interfaces are being stabilized and more synthetic tests/documentation will be added as reusable components are separated from private deployment code.
