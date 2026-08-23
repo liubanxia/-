@@ -1,0 +1,86 @@
+# Project Phoenix Core - public repository safety exclusions
+
+# Secrets / local configuration
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+*secret*
+*credential*
+*token*
+*api_key*
+config.local.*
+
+# Hospital / PACS private integrations
+*yunpacs*
+*YUNPACS*
+inspect_yunpacs*
+**/pacs_auto/**
+**/hospital/**
+**/private/**
+
+# Patient / clinical data
+*.dcm
+*.dicom
+*.nii
+*.nii.gz
+*.mha
+*.mhd
+*.nrrd
+*.mdb
+*.accdb
+*.db
+*.sqlite
+*.sqlite3
+
+# Model weights / large artifacts
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+*.bin
+*.gguf
+*.h5
+*.hdf5
+*.engine
+*.plan
+
+# Logs / outputs / caches
+*.log
+logs/
+log/
+outputs/
+output_cache/
+cache/
+.cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments
+.venv/
+venv/
+env/
+02_开发环境/
+
+# Generated / temporary / backup files
+*.tmp
+*.temp
+*.bak
+*.backup
+*.before_*
+*.old
+*.orig
+reports/
+VideoBrain/outputs/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
