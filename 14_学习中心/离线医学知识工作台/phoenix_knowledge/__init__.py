@@ -31,6 +31,7 @@ from .token_efficiency_hardening import install as _install_token_efficiency_har
 from .hybrid_translation_policy import install as _install_hybrid_translation_policy
 from .hymt_cascade_policy import install as _install_hymt_cascade_policy
 from .translation_cascade_v2 import install as _install_translation_cascade_v2
+from .translation_model3_inventory import install as _install_translation_model3_inventory
 
 _install_translation_recovery()
 _install_scholarly_pubmed()
@@ -53,6 +54,7 @@ _install_workbench_stability_core()
 _install_hybrid_translation_policy()
 _install_hymt_cascade_policy()
 _install_translation_cascade_v2()
+_install_translation_model3_inventory()
 
 __all__ = [
     "MedicalKnowledgeWorkbench",
