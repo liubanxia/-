@@ -24,10 +24,10 @@ class TranslationLearningRecord:
 
 
 class TranslationLearningCollector:
-    """Store approved translation corrections for future Phoenix model tuning.
+    """Collect Phoenix-owned translation corrections.
 
-    This stores only Phoenix-owned learning data. It does not update model
-    weights online; it creates a clean dataset for later supervised tuning.
+    Records are training candidates only. They never modify model weights
+    online. Only reviewed final translations should enter future tuning sets.
     """
 
     def __init__(self, root: str | Path):
@@ -35,29 +35,30 @@ class TranslationLearningCollector:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def append(self, record: TranslationLearningRecord) -> None:
+        if not record.source.strip() or not record.final_text.strip():
+            return
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
 
     def export_training_pair(self, output: str | Path) -> None:
         output = Path(output)
         output.parent.mkdir(parents=True, exist_ok=True)
-        rows = []
-        if not self.path.exists():
-            return
-        for line in self.path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                rows.append(json.loads(line))
-        output.write_text(
-            "\n".join(
-                json.dumps(
+        pairs = []
+        if self.path.exists():
+            for line in self.path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if not bool(row.get("reviewed", False)):
+                    continue
+                pairs.append(
                     {
-                        "instruction": "医学专业翻译，请保持术语、数字、单位和否定关系准确。",
+                        "instruction": "医学专业翻译，请保持术语、数字、单位、否定关系和解剖关系准确。",
                         "input": row["source"],
                         "output": row["final_text"],
-                    },
-                    ensure_ascii=False,
+                    }
                 )
-                for row in rows
-            ),
+        output.write_text(
+            "\n".join(json.dumps(item, ensure_ascii=False) for item in pairs),
             encoding="utf-8",
         )
