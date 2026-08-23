@@ -1,5 +1,6 @@
 from .workbench import MedicalKnowledgeWorkbench
 from .translation_learning_pool import TranslationLearningPool, TranslationCorrectionSample
+from .translation_learning_collector import TranslationLearningCollector, TranslationLearningRecord
 from .translation_stability_core import (
     capture_core as _capture_translation_core,
     install_final as _install_translation_stability_core,
@@ -57,4 +58,6 @@ __all__ = [
     "MedicalKnowledgeWorkbench",
     "TranslationLearningPool",
     "TranslationCorrectionSample",
+    "TranslationLearningCollector",
+    "TranslationLearningRecord",
 ]
