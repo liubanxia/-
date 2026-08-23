@@ -29,6 +29,7 @@ from .provider_hub import install as _install_provider_hub
 from .provider_hub_compat import install as _install_provider_hub_compat
 from .provider_hub_v2 import install as _install_provider_hub_v2
 from .token_efficiency_hardening import install as _install_token_efficiency_hardening
+from .hybrid_translation_policy import install as _install_hybrid_translation_policy
 
 _install_translation_recovery()
 _install_scholarly_pubmed()
@@ -51,5 +52,11 @@ _install_token_efficiency_hardening()
 # topology rather than a partially patched class.
 _install_translation_stability_core()
 _install_workbench_stability_core()
+
+# Final translation policy: local models remain productive even when the
+# external Smart2 route is unavailable. Strong local segments publish directly;
+# only weak segments escalate to Smart2, and safe local fallbacks are visibly
+# marked for review instead of disabling the whole translation pipeline.
+_install_hybrid_translation_policy()
 
 __all__ = ["MedicalKnowledgeWorkbench"]
