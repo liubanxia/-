@@ -1,0 +1,2 @@
+numpy>=1.26
+pydicom>=2.4
