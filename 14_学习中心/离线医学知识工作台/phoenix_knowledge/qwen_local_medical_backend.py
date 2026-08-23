@@ -18,10 +18,12 @@ class LocalQwenMedicalBackend:
         self._tokenizer = None
         self._model = None
         self._device = None
+        self._availability_reported = False
+        self._first_refine_reported = False
 
     def available(self) -> bool:
         try:
-            return (
+            ready = (
                 self.model_path.is_dir()
                 and (self.model_path / "config.json").is_file()
                 and any(
@@ -32,7 +34,16 @@ class LocalQwenMedicalBackend:
                 )
             )
         except OSError:
-            return False
+            ready = False
+
+        if not self._availability_reported:
+            state = "READY" if ready else "NOT READY"
+            print(
+                f"[Phoenix][模型3] {state} | Qwen2.5-3B | {self.model_path}",
+                flush=True,
+            )
+            self._availability_reported = True
+        return ready
 
     def _load(self) -> None:
         if self._model is not None:
@@ -44,25 +55,54 @@ class LocalQwenMedicalBackend:
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
         self._device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        self._tokenizer = AutoTokenizer.from_pretrained(
-            str(self.model_path),
-            local_files_only=True,
-            trust_remote_code=False,
+        print(
+            f"[Phoenix][模型3] 正在加载 Qwen2.5-3B -> {self._device}",
+            flush=True,
         )
+        if self._device == "cpu":
+            print(
+                "[Phoenix][模型3] 警告：当前 PyTorch 未检测到 CUDA，模型3将走CPU。",
+                flush=True,
+            )
 
-        load_kwargs = {
-            "local_files_only": True,
-            "trust_remote_code": False,
-        }
+        try:
+            self._tokenizer = AutoTokenizer.from_pretrained(
+                str(self.model_path),
+                local_files_only=True,
+                trust_remote_code=False,
+            )
+
+            load_kwargs = {
+                "local_files_only": True,
+                "trust_remote_code": False,
+            }
+            if self._device.startswith("cuda"):
+                load_kwargs["torch_dtype"] = torch.float16
+
+            self._model = AutoModelForCausalLM.from_pretrained(
+                str(self.model_path),
+                **load_kwargs,
+            )
+            self._model.to(self._device)
+            self._model.eval()
+        except Exception as exc:
+            print(
+                f"[Phoenix][模型3] 加载失败: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            self.unload()
+            raise
+
+        gpu_name = ""
         if self._device.startswith("cuda"):
-            load_kwargs["torch_dtype"] = torch.float16
-
-        self._model = AutoModelForCausalLM.from_pretrained(
-            str(self.model_path),
-            **load_kwargs,
+            try:
+                gpu_name = f" | GPU={torch.cuda.get_device_name(0)}"
+            except Exception:
+                gpu_name = ""
+        print(
+            f"[Phoenix][模型3] 已加载并启用 | device={self._device}{gpu_name}",
+            flush=True,
         )
-        self._model.to(self._device)
-        self._model.eval()
 
     def _prompt(self, source: str, draft: str, target_language: str) -> str:
         system = (
@@ -104,6 +144,13 @@ class LocalQwenMedicalBackend:
         self._load()
         import torch
 
+        if not self._first_refine_reported:
+            print(
+                "[Phoenix][模型3] 已进入实际翻译链：开始本地医学精修。",
+                flush=True,
+            )
+            self._first_refine_reported = True
+
         prompt = self._prompt(source, draft, target_language)
         inputs = self._tokenizer(
             prompt,
@@ -130,8 +177,15 @@ class LocalQwenMedicalBackend:
                     pad_token_id=pad_id,
                 )
         except torch.cuda.OutOfMemoryError as exc:
+            print("[Phoenix][模型3] CUDA显存不足，已卸载模型3。", flush=True)
             self.unload()
             raise RuntimeError("Local Qwen model3 CUDA显存不足") from exc
+        except Exception as exc:
+            print(
+                f"[Phoenix][模型3] 推理失败: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            raise
 
         generated = output[0][input_length:]
         text = self._tokenizer.decode(generated, skip_special_tokens=True).strip()
