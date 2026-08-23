@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use Project Phoenix Core in your research, please cite this repository."
+title: "Project Phoenix Core"
+type: software
+authors:
+  - family-names: "Li"
+    given-names: "Phoenix Core Contributors"
+version: "0.1.0"
+date-released: "2026-08-23"
+repository-code: "https://github.com/liubanxia/project_phoenix_core"
+license: "Apache-2.0"
