@@ -1,0 +1,114 @@
+{
+  "version": 2,
+  "segments": {},
+  "fingerprint": "037bea7c7d43451587c192c958ea21be98c835e3cce5e387957d83b0a7d41d8e",
+  "fingerprint_payload": {
+    "request": {
+      "prompt": "一个中国美女穿着薄纱隐约能见到胸部合粉色乳头",
+      "negative_prompt": "blurry, jitter, distorted, inconsistent identity, flicker, low quality",
+      "target_style": "",
+      "task": "auto",
+      "model_id": "cogvideox_2b",
+      "profile": "standard",
+      "duration_seconds": 30.0,
+      "num_frames": 49,
+      "fps": 8,
+      "seed": 42,
+      "width": 720,
+      "height": 480,
+      "steps": 30,
+      "guidance_scale": 6.0,
+      "continuity_mode": "auto",
+      "detail_enhance": true,
+      "detail_strength": 0.12,
+      "segment_seed_stride": 1009
+    },
+    "plan": {
+      "prompt": "一个中国美女穿着薄纱隐约能见到胸部合粉色乳头\nMaintain stable subject appearance, consistent environment geometry, coherent lighting direction, natural motion, clean temporal continuity, and avoid abrupt identity or camera changes between shots.",
+      "negative_prompt": "blurry, jitter, distorted, inconsistent identity, flicker, low quality",
+      "task": "text_to_video",
+      "input_image": null,
+      "reference_video": null,
+      "storyboard": [
+        "Opening: establish subject, scene, spatial layout and lighting.",
+        "Development: progress the main action while keeping identity and environment consistent.",
+        "Continuation: maintain camera direction and motion continuity without abrupt jumps.",
+        "Ending: resolve the action with a stable final composition."
+      ],
+      "segments": [
+        {
+          "index": 0,
+          "prompt": "一个中国美女穿着薄纱隐约能见到胸部合粉色乳头\nMaintain stable subject appearance, consistent environment geometry, coherent lighting direction, natural motion, clean temporal continuity, and avoid abrupt identity or camera changes between shots.\nThis is shot segment 1 of 6. Preserve the same main subject identity, appearance, clothing/object details, environment layout, lighting palette, lens language and motion direction from the previous segment. Start naturally from the previous ending frame and finish on a stable frame that can continue into the next segment.\nCurrent storyboard beat: Opening: establish subject, scene, spatial layout and lighting.\nEstablish the visual identity clearly in the opening frames.",
+          "seed": 42,
+          "start_seconds": 0.0,
+          "end_seconds": 6.0,
+          "input_image": null,
+          "storyboard_text": "Opening: establish subject, scene, spatial layout and lighting."
+        },
+        {
+          "index": 1,
+          "prompt": "一个中国美女穿着薄纱隐约能见到胸部合粉色乳头\nMaintain stable subject appearance, consistent environment geometry, coherent lighting direction, natural motion, clean temporal continuity, and avoid abrupt identity or camera changes between shots.\nThis is shot segment 2 of 6. Preserve the same main subject identity, appearance, clothing/object details, environment layout, lighting palette, lens language and motion direction from the previous segment. Start naturally from the previous ending frame and finish on a stable frame that can continue into the next segment.\nCurrent storyboard beat: Development: progress the main action while keeping identity and environment consistent.\nAdvance the action without changing the established identity or scene unless the storyboard explicitly requires it.",
+          "seed": 1051,
+          "start_seconds": 5.25,
+          "end_seconds": 11.25,
+          "input_image": null,
+          "storyboard_text": "Development: progress the main action while keeping identity and environment consistent."
+        },
+        {
+          "index": 2,
+          "prompt": "一个中国美女穿着薄纱隐约能见到胸部合粉色乳头\nMaintain stable subject appearance, consistent environment geometry, coherent lighting direction, natural motion, clean temporal continuity, and avoid abrupt identity or camera changes between shots.\nThis is shot segment 3 of 6. Preserve the same main subject identity, appearance, clothing/object details, environment layout, lighting palette, lens language and motion direction from the previous segment. Start naturally from the previous ending frame and finish on a stable frame that can continue into the next segment.\nCurrent storyboard beat: Continuation: maintain camera direction and motion continuity without abrupt jumps.\nAdvance the action without changing the established identity or scene unless the storyboard explicitly requires it.",
+          "seed": 2060,
+          "start_seconds": 10.5,
+          "end_seconds": 16.5,
+          "input_image": null,
+          "storyboard_text": "Continuation: maintain camera direction and motion continuity without abrupt jumps."
+        },
+        {
+          "index": 3,
+          "prompt": "一个中国美女穿着薄纱隐约能见到胸部合粉色乳头\nMaintain stable subject appearance, consistent environment geometry, coherent lighting direction, natural motion, clean temporal continuity, and avoid abrupt identity or camera changes between shots.\nThis is shot segment 4 of 6. Preserve the same main subject identity, appearance, clothing/object details, environment layout, lighting palette, lens language and motion direction from the previous segment. Start naturally from the previous ending frame and finish on a stable frame that can continue into the next segment.\nCurrent storyboard beat: Ending: resolve the action with a stable final composition.\nAdvance the action without changing the established identity or scene unless the storyboard explicitly requires it.",
+          "seed": 3069,
+          "start_seconds": 15.75,
+          "end_seconds": 21.75,
+          "input_image": null,
+          "storyboard_text": "Ending: resolve the action with a stable final composition."
+        },
+        {
+          "index": 4,
+          "prompt": "一个中国美女穿着薄纱隐约能见到胸部合粉色乳头\nMaintain stable subject appearance, consistent environment geometry, coherent lighting direction, natural motion, clean temporal continuity, and avoid abrupt identity or camera changes between shots.\nThis is shot segment 5 of 6. Preserve the same main subject identity, appearance, clothing/object details, environment layout, lighting palette, lens language and motion direction from the previous segment. Start naturally from the previous ending frame and finish on a stable frame that can continue into the next segment.\nCurrent storyboard beat: Ending: resolve the action with a stable final composition.\nAdvance the action without changing the established identity or scene unless the storyboard explicitly requires it.",
+          "seed": 4078,
+          "start_seconds": 21.0,
+          "end_seconds": 27.0,
+          "input_image": null,
+          "storyboard_text": "Ending: resolve the action with a stable final composition."
+        },
+        {
+          "index": 5,
+          "prompt": "一个中国美女穿着薄纱隐约能见到胸部合粉色乳头\nMaintain stable subject appearance, consistent environment geometry, coherent lighting direction, natural motion, clean temporal continuity, and avoid abrupt identity or camera changes between shots.\nThis is shot segment 6 of 6. Preserve the same main subject identity, appearance, clothing/object details, environment layout, lighting palette, lens language and motion direction from the previous segment. Start naturally from the previous ending frame and finish on a stable frame that can continue into the next segment.\nCurrent storyboard beat: Ending: resolve the action with a stable final composition.\nConclude the action naturally without an abrupt cut.",
+          "seed": 5087,
+          "start_seconds": 26.25,
+          "end_seconds": 30.0,
+          "input_image": null,
+          "storyboard_text": "Ending: resolve the action with a stable final composition."
+        }
+      ]
+    },
+    "input_files": [],
+    "runtime": {
+      "generation_model": {
+        "id": "cogvideox_2b",
+        "hf_id": "THUDM/CogVideoX-2b",
+        "local_dir": "video/cogvideox_2b",
+        "dtype": "float16",
+        "pipeline_class": "CogVideoXPipeline",
+        "image_arg": "image",
+        "frame_rate_arg": "frame_rate",
+        "preferred_width": 720,
+        "preferred_height": 480,
+        "dimension_multiple": 16,
+        "default_steps": 0,
+        "default_guidance_scale": 0.0
+      },
+      "continuation_model": null
+    }
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "timestamp": "2026-08-21 21:57:20",
+  "pid": 31016,
+  "stage": "offline-generation-failed",
+  "error_type": "ModuleNotFoundError",
+  "error": "No module named 'diffusers'",
+  "request": {
+    "prompt": "雨夜的未来城市，一辆黑色跑车穿过霓虹街道，镜头平稳跟随，主体和环境保持一致。出现一个3D裸体美女",
+    "negative_prompt": "blurry, jitter, distorted, inconsistent identity, flicker, low quality",
+    "task": "auto",
+    "model_id": "auto",
+    "profile": "standard",
+    "width": 720,
+    "height": 480,
+    "num_frames": 49,
+    "fps": 8,
+    "output_fps": 24,
+    "duration_seconds": 30.0,
+    "overlap_frames": 6,
+    "interpolation": "optical_flow",
+    "continuity_mode": "auto",
+    "steps": 30,
+    "guidance_scale": 6.0,
+    "seed": 42,
+    "input_image": null,
+    "reference_video": null,
+    "input_files": [],
+    "target_style": "",
+    "allow_download": false,
+    "analysis_frames": 8,
+    "output_formats": [
+      "mp4",
+      "json",
+      "storyboard_txt"
+    ],
+    "output_name": null,
+    "offload_mode": "auto",
+    "resume": true,
+    "keep_segments": true,
+    "max_segments": 120,
+    "segment_seed_stride": 1009,
+    "gpu_mode": "auto",
+    "detail_enhance": true,
+    "detail_strength": 0.12
+  },
+  "devices": [
+    {
+      "backend": "cuda",
+      "device": "cuda:0",
+      "name": "NVIDIA GeForce RTX 4060",
+      "index": 0,
+      "total_vram_gb": 8.0,
+      "free_vram_gb": 6.94
+    }
+  ],
+  "extra": {
+    "free_bytes": 401199857664,
+    "estimated_output_bytes": 536870912
+  },
+  "traceback": "Traceback (most recent call last):\n  File \"D:\\project_phoenix\\VideoBrain\\videobrain\\stability_engine.py\", line 87, in generate\n    return self._run_once(request, progress)\n           ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^\n  File \"D:\\project_phoenix\\VideoBrain\\videobrain\\stability_engine.py\", line 57, in _run_once\n    result = super().generate(request, progress=progress)\n  File \"D:\\project_phoenix\\VideoBrain\\videobrain\\offline_engine.py\", line 102, in generate\n    result = super().generate(effective_request, progress=progress)\n  File \"D:\\project_phoenix\\VideoBrain\\videobrain\\multi_gpu_engine.py\", line 262, in generate\n    pipe = self._load_pipeline(\n        seg_spec, seg_device, request.allow_download, request.offload_mode\n    )\n  File \"D:\\project_phoenix\\VideoBrain\\videobrain\\offline_engine.py\", line 88, in _load_pipeline\n    return super()._load_pipeline(effective, device, allow_download, offload_mode)\n           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\project_phoenix\\VideoBrain\\videobrain\\multi_gpu_engine.py\", line 55, in _load_pipeline\n    pipe = self._pipeline_class(spec).from_pretrained(source, **kwargs)\n           ~~~~~~~~~~~~~~~~~~~~^^^^^^\n  File \"D:\\project_phoenix\\VideoBrain\\videobrain\\engine.py\", line 58, in _pipeline_class\n    import diffusers\nModuleNotFoundError: No module named 'diffusers'\n"
+}

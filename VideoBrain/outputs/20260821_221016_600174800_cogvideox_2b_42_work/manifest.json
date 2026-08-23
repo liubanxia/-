@@ -1,0 +1,78 @@
+{
+  "version": 2,
+  "segments": {},
+  "fingerprint": "7b00e5b3c91d5560a9bee5c1cd7f174716c7981a55cddd1f52af18bd5e4293a2",
+  "fingerprint_payload": {
+    "request": {
+      "prompt": "一只橘猫坐在木桌上，镜头缓慢推进，真实摄影风格，动作自然流畅",
+      "negative_prompt": "",
+      "target_style": "",
+      "task": "auto",
+      "model_id": "cogvideox_2b",
+      "profile": "standard",
+      "duration_seconds": 5.0,
+      "num_frames": 33,
+      "fps": 8,
+      "seed": 42,
+      "width": 480,
+      "height": 320,
+      "steps": 20,
+      "guidance_scale": 6.0,
+      "continuity_mode": "auto",
+      "detail_enhance": true,
+      "detail_strength": 0.12,
+      "segment_seed_stride": 1009
+    },
+    "plan": {
+      "prompt": "一只橘猫坐在木桌上，镜头缓慢推进，真实摄影风格，动作自然流畅\nMaintain stable subject appearance, consistent environment geometry, coherent lighting direction, natural motion, clean temporal continuity, and avoid abrupt identity or camera changes between shots.",
+      "negative_prompt": "",
+      "task": "text_to_video",
+      "input_image": null,
+      "reference_video": null,
+      "storyboard": [
+        "Opening: establish subject, scene, spatial layout and lighting.",
+        "Development: progress the main action while keeping identity and environment consistent.",
+        "Continuation: maintain camera direction and motion continuity without abrupt jumps.",
+        "Ending: resolve the action with a stable final composition."
+      ],
+      "segments": [
+        {
+          "index": 0,
+          "prompt": "一只橘猫坐在木桌上，镜头缓慢推进，真实摄影风格，动作自然流畅\nMaintain stable subject appearance, consistent environment geometry, coherent lighting direction, natural motion, clean temporal continuity, and avoid abrupt identity or camera changes between shots.\nThis is shot segment 1 of 2. Preserve the same main subject identity, appearance, clothing/object details, environment layout, lighting palette, lens language and motion direction from the previous segment. Start naturally from the previous ending frame and finish on a stable frame that can continue into the next segment.\nCurrent storyboard beat: Opening: establish subject, scene, spatial layout and lighting.\nEstablish the visual identity clearly in the opening frames.",
+          "seed": 42,
+          "start_seconds": 0.0,
+          "end_seconds": 4.0,
+          "input_image": null,
+          "storyboard_text": "Opening: establish subject, scene, spatial layout and lighting."
+        },
+        {
+          "index": 1,
+          "prompt": "一只橘猫坐在木桌上，镜头缓慢推进，真实摄影风格，动作自然流畅\nMaintain stable subject appearance, consistent environment geometry, coherent lighting direction, natural motion, clean temporal continuity, and avoid abrupt identity or camera changes between shots.\nThis is shot segment 2 of 2. Preserve the same main subject identity, appearance, clothing/object details, environment layout, lighting palette, lens language and motion direction from the previous segment. Start naturally from the previous ending frame and finish on a stable frame that can continue into the next segment.\nCurrent storyboard beat: Development: progress the main action while keeping identity and environment consistent.\nConclude the action naturally without an abrupt cut.",
+          "seed": 1051,
+          "start_seconds": 3.25,
+          "end_seconds": 5.0,
+          "input_image": null,
+          "storyboard_text": "Development: progress the main action while keeping identity and environment consistent."
+        }
+      ]
+    },
+    "input_files": [],
+    "runtime": {
+      "generation_model": {
+        "id": "cogvideox_2b",
+        "hf_id": "THUDM/CogVideoX-2b",
+        "local_dir": "video/cogvideox_2b",
+        "dtype": "float16",
+        "pipeline_class": "CogVideoXPipeline",
+        "image_arg": "image",
+        "frame_rate_arg": "frame_rate",
+        "preferred_width": 720,
+        "preferred_height": 480,
+        "dimension_multiple": 16,
+        "default_steps": 0,
+        "default_guidance_scale": 0.0
+      },
+      "continuation_model": null
+    }
+  }
+}

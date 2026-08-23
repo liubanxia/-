@@ -1,0 +1,61 @@
+{
+  "timestamp": "2026-08-21 22:23:35",
+  "pid": 8368,
+  "stage": "offline-generation-failed",
+  "error_type": "TypeError",
+  "error": "TiffWriter.write() got an unexpected keyword argument 'fps'",
+  "request": {
+    "prompt": "一只橘猫坐在木桌上，镜头缓慢推进，真实摄影风格，动作自然流畅",
+    "negative_prompt": "",
+    "task": "auto",
+    "model_id": "auto",
+    "profile": "standard",
+    "width": 384,
+    "height": 256,
+    "num_frames": 17,
+    "fps": 8,
+    "output_fps": 24,
+    "duration_seconds": 2.0,
+    "overlap_frames": 6,
+    "interpolation": "optical_flow",
+    "continuity_mode": "auto",
+    "steps": 8,
+    "guidance_scale": 6.0,
+    "seed": 42,
+    "input_image": null,
+    "reference_video": null,
+    "input_files": [],
+    "target_style": "",
+    "allow_download": false,
+    "analysis_frames": 8,
+    "output_formats": [
+      "mp4",
+      "json",
+      "storyboard_txt"
+    ],
+    "output_name": null,
+    "offload_mode": "sequential",
+    "resume": true,
+    "keep_segments": true,
+    "max_segments": 120,
+    "segment_seed_stride": 1009,
+    "gpu_mode": "auto",
+    "detail_enhance": false,
+    "detail_strength": 0.12
+  },
+  "devices": [
+    {
+      "backend": "cuda",
+      "device": "cuda:0",
+      "name": "NVIDIA GeForce RTX 4060",
+      "index": 0,
+      "total_vram_gb": 8.0,
+      "free_vram_gb": 3.25
+    }
+  ],
+  "extra": {
+    "free_bytes": 398487191552,
+    "estimated_output_bytes": 536870912
+  },
+  "traceback": "Traceback (most recent call last):\n  File \"D:\\project_phoenix\\VideoBrain\\videobrain\\stability_engine.py\", line 87, in generate\n    return self._run_once(request, progress)\n           ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^\n  File \"D:\\project_phoenix\\VideoBrain\\videobrain\\stability_engine.py\", line 57, in _run_once\n    result = super().generate(request, progress=progress)\n  File \"D:\\project_phoenix\\VideoBrain\\videobrain\\offline_engine.py\", line 102, in generate\n    result = super().generate(effective_request, progress=progress)\n  File \"D:\\project_phoenix\\VideoBrain\\videobrain\\multi_gpu_engine.py\", line 268, in generate\n    path, anchor = workspace.save_segment(\n                   ~~~~~~~~~~~~~~~~~~~~~~^\n        segment, frames, request.fps, seg_spec.id\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    )\n    ^\n  File \"D:\\project_phoenix\\VideoBrain\\videobrain\\long_video.py\", line 159, in save_segment\n    writer.append_data(to_rgb_array(frame))\n    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\project_phoenix\\02_开发环境\\Lib\\site-packages\\imageio\\v2.py\", line 226, in append_data\n    return self.instance.write(im, **self.write_args)\n           ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\project_phoenix\\02_开发环境\\Lib\\site-packages\\imageio\\plugins\\tifffile_v3.py\", line 240, in write\n    self._fh.write(image, **write_kwargs)\n    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: TiffWriter.write() got an unexpected keyword argument 'fps'\n"
+}

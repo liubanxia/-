@@ -1,0 +1,4 @@
+1. Opening: establish subject, scene, spatial layout and lighting.
+2. Development: progress the main action while keeping identity and environment consistent.
+3. Continuation: maintain camera direction and motion continuity without abrupt jumps.
+4. Ending: resolve the action with a stable final composition.
