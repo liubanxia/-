@@ -36,6 +36,7 @@ from .translation_cascade_v2 import install as _install_translation_cascade_v2
 from .translation_model3_inventory import install as _install_translation_model3_inventory
 from .translation_review_integration import install as _install_translation_review_integration
 from .translation_refusal_guard import install as _install_translation_refusal_guard
+from .translation_local_first_release import install as _install_translation_local_first_release
 
 _install_translation_recovery()
 _install_scholarly_pubmed()
@@ -56,14 +57,12 @@ _install_token_efficiency_hardening()
 _install_translation_stability_core()
 _install_workbench_stability_core()
 _install_translation_refusal_guard()
+_install_translation_local_first_release()
 
-# The multi-stage local cascade is retained as an experimental foundation, but
-# it must not replace the validated Smart2 batch route in normal releases. The
-# experimental stack currently translates segments one by one, exposes legacy
-# preview backends as formal models, adds a second full-page rewrite, and can
-# publish REVIEW-marked fallbacks. All four conflict with the production
-# accuracy/token/stability contract. Developers can still exercise the stack
-# explicitly without putting hospital users on it by default.
+# Optional experimental extras remain available for developers. The production
+# route above is already HY-MT -> local Qwen model3 with API disabled by default;
+# this flag may additionally enable the legacy experimental policies and the
+# expensive full-page review path for explicit testing only.
 _experimental_cascade = os.environ.get(
     "PHOENIX_EXPERIMENTAL_TRANSLATION_CASCADE",
     "",
