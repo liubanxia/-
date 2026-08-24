@@ -37,6 +37,7 @@ from .translation_model3_inventory import install as _install_translation_model3
 from .translation_review_integration import install as _install_translation_review_integration
 from .translation_refusal_guard import install as _install_translation_refusal_guard
 from .translation_local_first_release import install as _install_translation_local_first_release
+from .translation_ssd_storage import install as _install_translation_ssd_storage
 
 _install_translation_recovery()
 _install_scholarly_pubmed()
@@ -58,11 +59,12 @@ _install_translation_stability_core()
 _install_workbench_stability_core()
 _install_translation_refusal_guard()
 _install_translation_local_first_release()
+_install_translation_ssd_storage()
 
 # Optional experimental extras remain available for developers. The production
-# route above is already HY-MT -> local Qwen model3 with API disabled by default;
-# this flag may additionally enable the legacy experimental policies and the
-# expensive full-page review path for explicit testing only.
+# route above is already local-first with API disabled by default; this flag may
+# additionally enable the legacy experimental policies and the expensive
+# full-page review path for explicit testing only.
 _experimental_cascade = os.environ.get(
     "PHOENIX_EXPERIMENTAL_TRANSLATION_CASCADE",
     "",
