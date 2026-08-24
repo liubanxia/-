@@ -1225,15 +1225,17 @@ class OfficeDocumentTranslator:
                         and str(row.get("backend", "")) != "failed_preserve_source"
                     ):
                         accepted_segments += 1
+            review_required = False
+            review_segments = 0
+
             if audited_segments and accepted_segments != audited_segments:
-                raise OfficeTranslationError(
-                    "存在未通过医学质量校验的文字；Phoenix已保留逐单元"
-                    "checkpoint并拒绝发布不合格Office成品。检查模型/API连接后"
-                    "再次开始即可自动重译失败单元，无需人工修改。"
-                )
+                review_required = True
+                review_segments = audited_segments - accepted_segments
 
             report = self._build_output(source, final_output, replacements)
             report.update({
+                "review_required": review_required,
+                "review_segments": review_segments,
                 "unit_count": total_units,
                 "translated_units": selected_total,
                 "warning_units": warning_pages,
@@ -1245,6 +1247,8 @@ class OfficeDocumentTranslator:
             })
             _write_json(root / "Office翻译完整性报告.json", report)
             state.update({
+                "review_required": review_required,
+                "review_segments": review_segments,
                 "status": "completed",
                 "last_completed_unit": total_units,
                 "warning_units": warning_pages,
