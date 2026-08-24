@@ -40,6 +40,7 @@ from .translation_local_first_release import install as _install_translation_loc
 from .translation_quality_first_release import install as _install_translation_quality_first_release
 from .translation_dual_route_release import install as _install_translation_dual_route_release
 from .medical_terminology_core import install as _install_medical_terminology_core
+from .translation_model3_audit_acceleration import install as _install_translation_model3_audit_acceleration
 from .translation_ssd_storage import install as _install_translation_ssd_storage
 
 _install_translation_recovery()
@@ -65,14 +66,17 @@ _install_translation_local_first_release()
 _install_translation_quality_first_release()
 _install_translation_dual_route_release()
 _install_medical_terminology_core()
+_install_translation_model3_audit_acceleration()
 _install_translation_ssd_storage()
 
 # Production translation is context/terminology driven. Model1 prepares the
 # initial medical translation, failed/weak rows escalate to HY-MT model2 with
-# English terminology support, local Qwen model3 performs the source-grounded
-# final correction, and a selected/ready Smart2 API is used only after model3
-# still fails the quality gate. API corrections are stored as learning
-# candidates; model weights are never changed online.
+# English terminology support, local Qwen model3 performs a full source/context
+# audit but normally emits only PASS or exact PATCH edits. If that compact audit
+# cannot be applied safely, the proven full model3 refiner runs before API is
+# allowed. A selected/ready Smart2 API is therefore still final fallback only.
+# API corrections are stored as learning candidates; model weights are never
+# changed online.
 #
 # The old exhaustive page-review stack remains opt-in for developer comparison
 # only. It is intentionally outside the normal release path because whole-page
