@@ -42,6 +42,7 @@ from .translation_dual_route_release import install as _install_translation_dual
 from .medical_terminology_core import install as _install_medical_terminology_core
 from .translation_model3_audit_acceleration import install as _install_translation_model3_audit_acceleration
 from .translation_portable_model3_runtime import install as _install_translation_portable_model3_runtime
+from .translation_portable_local_runtime import install as _install_translation_portable_local_runtime
 from .translation_ssd_storage import install as _install_translation_ssd_storage
 
 _install_translation_recovery()
@@ -69,6 +70,7 @@ _install_translation_dual_route_release()
 _install_medical_terminology_core()
 _install_translation_model3_audit_acceleration()
 _install_translation_portable_model3_runtime()
+_install_translation_portable_local_runtime()
 _install_translation_ssd_storage()
 
 # Production translation is context/terminology driven. Model1 prepares the
@@ -76,11 +78,12 @@ _install_translation_ssd_storage()
 # English terminology support, local Qwen model3 performs a full source/context
 # audit but normally emits only PASS or exact PATCH edits. If that compact audit
 # cannot be applied safely, the proven full model3 refiner runs before API is
-# allowed. Model3 execution is hardware-adaptive: compatible CUDA is preferred,
+# allowed. All local stages are hardware-adaptive: compatible CUDA is preferred,
 # while older/incompatible/failed CUDA automatically falls back to CPU without
-# changing the translation or quality policy. A selected/ready Smart2 API is
-# therefore still final fallback only. API corrections are stored as learning
-# candidates; model weights are never changed online.
+# changing the model order, prompts or quality gates. No GPU model is required.
+# A selected/ready Smart2 API is therefore still final fallback only. API
+# corrections are stored as learning candidates; model weights are never changed
+# online.
 #
 # The old exhaustive page-review stack remains opt-in for developer comparison
 # only. It is intentionally outside the normal release path because whole-page
