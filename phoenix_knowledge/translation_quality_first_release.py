@@ -14,7 +14,6 @@ def install() -> None:
     from . import hymt_cascade_policy as hymt
     from . import translation_cascade_v2 as cascade
     from .qwen_local_medical_backend import LocalQwenMedicalBackend
-    from .translation_models import TranslationAttempt
 
     # Formal medical translation is quality-first. Model1 is only a draft
     # candidate, HY-MT always gets a chance to correct/replace it, and model3
@@ -36,6 +35,9 @@ def install() -> None:
             errors,
         )
 
+        # Model2 is mandatory whenever it is available. Even a model1 draft that
+        # passed the old heuristic score is only a candidate, never the final
+        # medical translation.
         model2 = hymt._run_model2(
             engine,
             source,
@@ -46,16 +48,52 @@ def install() -> None:
         )
 
         base = model2 if model2 is not None and str(model2.text or "").strip() else model1
-        if base is None or not str(base.text or "").strip():
-            # Keep the source-only model3 recovery installed by
-            # translation_local_first_release available for true model1/2
-            # outages. Returning None here lets that wrapper handle it.
-            return None, "quality_no_draft"
 
         if not cascade._model3_available(engine):
+            if base is None:
+                return None, "quality_no_draft"
             return base, "quality_model3_unavailable"
 
         backend = cascade._model3(engine)
+
+        # Model1/2 can both be unavailable or fail. Model3 must still retain a
+        # source-only path so API-offline mode never dead-ends.
+        if base is None or not str(base.text or "").strip():
+            try:
+                system = (
+                    "你是 Phoenix 本地医学翻译终审模型。把英文医学原文完整、准确地翻译成目标语言。"
+                    "医学准确性优先。必须保持疾病、解剖、影像学、病理、检查技术、药物、统计学"
+                    "术语，以及全部数字、单位、正负号、侧别、否定关系、分级、诊断确定性、医学"
+                    "缩写和图表编号。作者姓名、期刊名、DOI、URL、参考文献编号不要擅自改写。"
+                    "禁止总结、删减、扩写、解释、拒答或添加原文没有的医学知识。只输出最终译文。"
+                )
+                user = (
+                    f"目标语言：{target_language}\n\n"
+                    f"英文原文：\n{source}\n\n"
+                    "请逐句翻译，只输出最终完整医学译文。"
+                )
+                backend._load()
+                prompt = backend._chat_prompt(system, user)
+                text = backend._generate_prompt(
+                    prompt,
+                    str(source or ""),
+                    mode_label="质量优先源文直译",
+                    max_input_length=1792,
+                    max_output_tokens=768,
+                )
+                attempt = hymt._quality_attempt(
+                    engine,
+                    backend.name + ":source" + _FINAL_TAG,
+                    source,
+                    text,
+                    target_language,
+                )
+                attempts.append(attempt)
+                return attempt, "quality_final_model3_source"
+            except Exception as exc:
+                errors.append(f"Qwen-model3-final-source: {type(exc).__name__}: {exc}")
+                return None, "quality_model3_source_failed"
+
         try:
             text = backend.refine(source, base.text, target_language)
             attempt = hymt._quality_attempt(
@@ -76,7 +114,7 @@ def install() -> None:
     previous_accept = cascade._local_draft_accepted
 
     def quality_first_accept(local_draft, local_stage: str) -> bool:
-        if local_stage == "quality_final_model3":
+        if local_stage in {"quality_final_model3", "quality_final_model3_source"}:
             return bool(local_draft.quality.ok) and float(local_draft.quality.score) >= cascade.MODEL3_ACCEPT_SCORE
         if local_stage.startswith("quality_"):
             # Without a successful model3 final pass, keep the best local text
