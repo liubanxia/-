@@ -65,10 +65,16 @@ _install_translation_quality_first_release()
 _install_translation_dual_route_release()
 _install_translation_ssd_storage()
 
-# Optional experimental extras remain available for developers. The production
-# route is now dual-mode: selecting a remote/API provider restores the validated
-# Smart2 batch translation path from the last stable release; offline/local use
-# keeps the model1 -> HY-MT -> local Qwen quality-first cascade. API is optional.
+# Production translation is context/terminology driven. Model1 prepares the
+# initial medical translation, failed/weak rows escalate to HY-MT model2 with
+# English terminology support, local Qwen model3 performs the source-grounded
+# final correction, and a selected/ready Smart2 API is used only after model3
+# still fails the quality gate. API corrections are stored as learning
+# candidates; model weights are never changed online.
+#
+# The old exhaustive page-review stack remains opt-in for developer comparison
+# only. It is intentionally outside the normal release path because whole-page
+# model3 regeneration is too expensive for routine translation.
 _experimental_cascade = os.environ.get(
     "PHOENIX_EXPERIMENTAL_TRANSLATION_CASCADE",
     "",
