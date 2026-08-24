@@ -46,6 +46,7 @@ from .translation_portable_local_runtime import install as _install_translation_
 from .translation_ssd_storage import install as _install_translation_ssd_storage
 from .translation_survival_memory import install as _install_translation_survival_memory
 from .translation_learning_maturity_gate import install as _install_translation_learning_maturity_gate
+from .translation_api_value_ledger import install as _install_translation_api_value_ledger
 
 _install_translation_recovery()
 _install_scholarly_pubmed()
@@ -76,6 +77,7 @@ _install_translation_portable_local_runtime()
 _install_translation_ssd_storage()
 _install_translation_survival_memory()
 _install_translation_learning_maturity_gate()
+_install_translation_api_value_ledger()
 
 # Production translation is context/terminology driven. Model1 prepares the
 # initial medical translation, failed/weak rows escalate to HY-MT model2 with
@@ -94,6 +96,14 @@ _install_translation_learning_maturity_gate()
 # only seed model3 for source-grounded correction; it is never published directly.
 # Static medical terminology/rules, the normal 1->2->3 chain, CPU emergency ONNX,
 # and API fallback remain available regardless of maturity state.
+#
+# API is a paid teacher, not the workflow controller. Phoenix never spends an
+# extra API call merely to analyze an earlier API answer. Every API fallback that
+# already happened is recorded locally with the source, local model attempts,
+# API correction, likely error category, terminology/pattern candidates, token
+# estimates and later reuse counts. Pricing is never hard-coded: cost is only
+# estimated when the operator supplies current per-million-token prices. API
+# assets stay candidate_only and cannot automatically train or promote an expert.
 #
 # If every model and API route is unavailable, the English source is preserved
 # and queued for later translation instead of publishing refusal boilerplate.
