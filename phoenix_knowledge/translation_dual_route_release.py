@@ -2,16 +2,11 @@ from __future__ import annotations
 
 
 _INSTALLED = False
+_FINAL_LOCAL_TAG = "|quality_final_v2"
 
 
 def _remote_translation_selected(engine) -> bool:
-    """Return True when the user selected a remote/API translation provider.
-
-    Merely having API credentials stored is not enough: Phoenix follows the
-    compute mode selected in the workbench. If the remote route is selected but
-    temporarily unavailable, the wrapper below falls back to the local 1->2->3
-    chain instead of making API availability a hard requirement.
-    """
+    """Return True when the user selected a remote/API translation provider."""
 
     qwen = getattr(engine, "qwen", None)
     llm = getattr(qwen, "llm", None)
@@ -57,6 +52,26 @@ def _report_route(engine, route: str) -> None:
         )
 
 
+def _is_local_final_backend(name: str) -> bool:
+    value = str(name or "")
+    if value.startswith("qwen_local_medical_model3"):
+        return _FINAL_LOCAL_TAG in value
+    return False
+
+
+def _is_old_or_intermediate_local_backend(name: str) -> bool:
+    value = str(name or "")
+    return (
+        value.startswith("marian")
+        or value.startswith("nllb")
+        or value.startswith("hymt15_1p8b")
+        or (
+            value.startswith("qwen_local_medical_model3")
+            and _FINAL_LOCAL_TAG not in value
+        )
+    )
+
+
 def install() -> None:
     global _INSTALLED
     if _INSTALLED:
@@ -78,8 +93,6 @@ def install() -> None:
     ):
         level = _normalize_smart_level(smart_level)
         if level == "smart2" and _remote_translation_selected(self):
-            # hymt_cascade_policy stored the original validated Smart2 method
-            # before the experimental/local cascade replaced it.
             base = getattr(self, "_phoenix_hymt_previous_translate", None)
             if callable(base):
                 try:
@@ -111,11 +124,8 @@ def install() -> None:
             return ()
         level = _normalize_smart_level(smart_level)
         if level == "smart2" and _remote_translation_selected(self):
-            # This is the route used by the last stable release: one Smart2
-            # batch call for a slide/paragraph unit, followed only by bounded
-            # per-row quality retries. It gives the remote model the untouched
-            # English source instead of asking it to polish a degraded local
-            # draft, while avoiding one API call per text box.
+            # Last stable release route: one Smart2 call per slide/paragraph
+            # batch, then bounded retry only for rows that fail validation.
             base = getattr(self, "_phoenix_hymt_previous_translate_segments", None)
             if callable(base):
                 try:
@@ -137,6 +147,90 @@ def install() -> None:
 
     cls.translate = translate
     cls.translate_segments = translate_segments
+
+    # Route-aware checkpoint reuse. Switching from local123 to API must not
+    # silently reuse local-final rows; switching back to local must not reuse
+    # qwen35 API rows. This makes the first test after changing compute mode
+    # genuinely exercise the selected route while preserving resume inside the
+    # same route.
+    try:
+        from . import office_translation as office
+        OfficeDocumentTranslator = office.OfficeDocumentTranslator
+        original_translate_document = OfficeDocumentTranslator.translate_document
+
+        def translate_document(self, *args, **kwargs):
+            previous = getattr(self, "_phoenix_selected_translation_route", None)
+            self._phoenix_selected_translation_route = (
+                "api" if _remote_translation_selected(self.engine) else "local"
+            )
+            try:
+                return original_translate_document(self, *args, **kwargs)
+            finally:
+                if previous is None:
+                    try:
+                        delattr(self, "_phoenix_selected_translation_route")
+                    except Exception:
+                        pass
+                else:
+                    self._phoenix_selected_translation_route = previous
+
+        def load_completed_unit(
+            self,
+            path,
+            unit,
+            *,
+            source_sha256: str,
+            target_language: str,
+            glossary_sha256: str,
+        ):
+            payload = office._read_json(path)
+            if not payload or payload.get("source_sha256") != source_sha256:
+                return None
+            if payload.get("target_language") != target_language:
+                return None
+            if payload.get("glossary_sha256") != glossary_sha256:
+                return None
+            rows = payload.get("translations")
+            if not isinstance(rows, list):
+                return None
+
+            expected = {segment.segment_id: segment.source for segment in unit.segments}
+            translated: dict[str, str] = {}
+            audits: list[dict] = []
+            route = str(getattr(self, "_phoenix_selected_translation_route", "") or "")
+
+            for row in rows:
+                if not isinstance(row, dict):
+                    return None
+                segment_id = str(row.get("id", ""))
+                if segment_id not in expected or row.get("source") != expected[segment_id]:
+                    return None
+                backend = str(row.get("backend", "") or "")
+
+                if route == "api":
+                    if _is_old_or_intermediate_local_backend(backend) or _is_local_final_backend(backend):
+                        return None
+                elif route == "local":
+                    if backend.startswith("qwen35_medical_translation"):
+                        return None
+                    if _is_old_or_intermediate_local_backend(backend):
+                        return None
+
+                translated[segment_id] = str(row.get("translated", ""))
+                audits.append(dict(row))
+
+            if set(translated) != set(expected):
+                return None
+            warnings = int(payload.get("warning_count", 0) or 0)
+            return translated, warnings, audits
+
+        OfficeDocumentTranslator.translate_document = translate_document
+        OfficeDocumentTranslator._load_completed_unit = load_completed_unit
+    except Exception as exc:
+        print(
+            f"[Phoenix][翻译路线] 路线化checkpoint安装失败: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
 
     print(
         "[Phoenix][翻译路线] 双路线已启用：选择API=上一稳定版Smart2批量精译；"
