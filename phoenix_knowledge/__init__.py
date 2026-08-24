@@ -47,6 +47,7 @@ from .translation_ssd_storage import install as _install_translation_ssd_storage
 from .translation_survival_memory import install as _install_translation_survival_memory
 from .translation_learning_maturity_gate import install as _install_translation_learning_maturity_gate
 from .translation_api_value_ledger import install as _install_translation_api_value_ledger
+from .translation_blank_student import install as _install_translation_blank_student
 
 _install_translation_recovery()
 _install_scholarly_pubmed()
@@ -78,6 +79,7 @@ _install_translation_ssd_storage()
 _install_translation_survival_memory()
 _install_translation_learning_maturity_gate()
 _install_translation_api_value_ledger()
+_install_translation_blank_student()
 
 # Production translation is context/terminology driven. Model1 prepares the
 # initial medical translation, failed/weak rows escalate to HY-MT model2 with
@@ -104,6 +106,13 @@ _install_translation_api_value_ledger()
 # estimates and later reuse counts. Pricing is never hard-coded: cost is only
 # estimated when the operator supplies current per-million-token prices. API
 # assets stay candidate_only and cannot automatically train or promote an expert.
+#
+# A separate blank student now learns in shadow from the first accepted
+# translation onward. It starts from random weights with a tiny byte-level GRU,
+# records every accepted teacher result, and performs only short bounded training
+# after a whole document finishes. It has no production translation entry point
+# and can never promote itself. Larger student capacity profiles can later replay
+# the same accumulated corpus without deleting the seed checkpoint.
 #
 # If every model and API route is unavailable, the English source is preserved
 # and queued for later translation instead of publishing refusal boilerplate.
