@@ -35,6 +35,7 @@ from .hymt_cascade_policy import install as _install_hymt_cascade_policy
 from .translation_cascade_v2 import install as _install_translation_cascade_v2
 from .translation_model3_inventory import install as _install_translation_model3_inventory
 from .translation_review_integration import install as _install_translation_review_integration
+from .translation_refusal_guard import install as _install_translation_refusal_guard
 
 _install_translation_recovery()
 _install_scholarly_pubmed()
@@ -54,6 +55,7 @@ _install_token_efficiency_hardening()
 
 _install_translation_stability_core()
 _install_workbench_stability_core()
+_install_translation_refusal_guard()
 
 # The multi-stage local cascade is retained as an experimental foundation, but
 # it must not replace the validated Smart2 batch route in normal releases. The
