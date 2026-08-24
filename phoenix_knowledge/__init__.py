@@ -39,6 +39,7 @@ from .translation_refusal_guard import install as _install_translation_refusal_g
 from .translation_local_first_release import install as _install_translation_local_first_release
 from .translation_quality_first_release import install as _install_translation_quality_first_release
 from .translation_dual_route_release import install as _install_translation_dual_route_release
+from .medical_terminology_core import install as _install_medical_terminology_core
 from .translation_ssd_storage import install as _install_translation_ssd_storage
 
 _install_translation_recovery()
@@ -63,6 +64,7 @@ _install_translation_refusal_guard()
 _install_translation_local_first_release()
 _install_translation_quality_first_release()
 _install_translation_dual_route_release()
+_install_medical_terminology_core()
 _install_translation_ssd_storage()
 
 # Production translation is context/terminology driven. Model1 prepares the
