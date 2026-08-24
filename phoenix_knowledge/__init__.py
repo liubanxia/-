@@ -44,6 +44,7 @@ from .translation_model3_audit_acceleration import install as _install_translati
 from .translation_portable_model3_runtime import install as _install_translation_portable_model3_runtime
 from .translation_portable_local_runtime import install as _install_translation_portable_local_runtime
 from .translation_ssd_storage import install as _install_translation_ssd_storage
+from .translation_survival_memory import install as _install_translation_survival_memory
 
 _install_translation_recovery()
 _install_scholarly_pubmed()
@@ -72,6 +73,7 @@ _install_translation_model3_audit_acceleration()
 _install_translation_portable_model3_runtime()
 _install_translation_portable_local_runtime()
 _install_translation_ssd_storage()
+_install_translation_survival_memory()
 
 # Production translation is context/terminology driven. Model1 prepares the
 # initial medical translation, failed/weak rows escalate to HY-MT model2 with
@@ -81,9 +83,15 @@ _install_translation_ssd_storage()
 # allowed. All local stages are hardware-adaptive: compatible CUDA is preferred,
 # while older/incompatible/failed CUDA automatically falls back to CPU without
 # changing the model order, prompts or quality gates. No GPU model is required.
-# A selected/ready Smart2 API is therefore still final fallback only. API
-# corrections are stored as learning candidates; model weights are never changed
-# online.
+#
+# Before API is spent, Phoenix now also has an offline survival layer: exact
+# translation memory, conservative high-frequency medical sentence rules,
+# guarded similar-memory drafts for model3, and an optional CPU-only ONNX
+# emergency translator. Accepted results are written back to translation memory.
+# If every model and API route is unavailable, the English source is preserved
+# and queued for later translation instead of publishing refusal boilerplate.
+# API corrections are stored as learning candidates; model weights are never
+# changed online.
 #
 # The old exhaustive page-review stack remains opt-in for developer comparison
 # only. It is intentionally outside the normal release path because whole-page
