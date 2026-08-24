@@ -45,6 +45,7 @@ from .translation_portable_model3_runtime import install as _install_translation
 from .translation_portable_local_runtime import install as _install_translation_portable_local_runtime
 from .translation_ssd_storage import install as _install_translation_ssd_storage
 from .translation_survival_memory import install as _install_translation_survival_memory
+from .translation_learning_maturity_gate import install as _install_translation_learning_maturity_gate
 
 _install_translation_recovery()
 _install_scholarly_pubmed()
@@ -74,6 +75,7 @@ _install_translation_portable_model3_runtime()
 _install_translation_portable_local_runtime()
 _install_translation_ssd_storage()
 _install_translation_survival_memory()
+_install_translation_learning_maturity_gate()
 
 # Production translation is context/terminology driven. Model1 prepares the
 # initial medical translation, failed/weak rows escalate to HY-MT model2 with
@@ -84,10 +86,15 @@ _install_translation_survival_memory()
 # while older/incompatible/failed CUDA automatically falls back to CPU without
 # changing the model order, prompts or quality gates. No GPU model is required.
 #
-# Before API is spent, Phoenix now also has an offline survival layer: exact
-# translation memory, conservative high-frequency medical sentence rules,
-# guarded similar-memory drafts for model3, and an optional CPU-only ONNX
-# emergency translator. Accepted results are written back to translation memory.
+# Phoenix collects accepted translations from the first book, but learned memory
+# is deliberately dormant until the corpus is mature: at least 10 distinct
+# completed PDF books AND at least 1000 verified translation-memory rows. Before
+# that point, memory only accumulates data and cannot alter production output.
+# Once mature, exact memory can bypass repeat work and guarded similar memory can
+# only seed model3 for source-grounded correction; it is never published directly.
+# Static medical terminology/rules, the normal 1->2->3 chain, CPU emergency ONNX,
+# and API fallback remain available regardless of maturity state.
+#
 # If every model and API route is unavailable, the English source is preserved
 # and queued for later translation instead of publishing refusal boilerplate.
 # API corrections are stored as learning candidates; model weights are never
