@@ -38,6 +38,7 @@ from .translation_review_integration import install as _install_translation_revi
 from .translation_refusal_guard import install as _install_translation_refusal_guard
 from .translation_local_first_release import install as _install_translation_local_first_release
 from .translation_quality_first_release import install as _install_translation_quality_first_release
+from .translation_dual_route_release import install as _install_translation_dual_route_release
 from .translation_ssd_storage import install as _install_translation_ssd_storage
 
 _install_translation_recovery()
@@ -61,12 +62,13 @@ _install_workbench_stability_core()
 _install_translation_refusal_guard()
 _install_translation_local_first_release()
 _install_translation_quality_first_release()
+_install_translation_dual_route_release()
 _install_translation_ssd_storage()
 
 # Optional experimental extras remain available for developers. The production
-# route above is already local-first and quality-first with API disabled by
-# default; this flag may additionally enable the legacy experimental policies
-# and the expensive full-page review path for explicit testing only.
+# route is now dual-mode: selecting a remote/API provider restores the validated
+# Smart2 batch translation path from the last stable release; offline/local use
+# keeps the model1 -> HY-MT -> local Qwen quality-first cascade. API is optional.
 _experimental_cascade = os.environ.get(
     "PHOENIX_EXPERIMENTAL_TRANSLATION_CASCADE",
     "",
