@@ -2,9 +2,13 @@ from __future__ import annotations
 
 """Explicit Phoenix production-runtime bootstrap.
 
-Low-level module imports must stay side-effect-light so tests, migrations and
+Low-level module imports stay side-effect-light so tests, migrations and
 maintenance tools can exercise their real semantics. Production monkey-patches
 are installed only when the application/workbench/GUI requests the full runtime.
+
+A failed bootstrap is process-fatal by design. Installers mutate class/function
+objects, so retrying after a partial failure could stack wrappers over a mixed
+runtime. The caller must restart the process after correcting the cause.
 """
 
 import os
@@ -13,7 +17,12 @@ import threading
 _LOCK = threading.RLock()
 _BOOTSTRAPPED = False
 _BOOTSTRAPPING = False
+_BOOTSTRAP_FAILURE: str | None = None
 _INSTALL_ORDER: tuple[str, ...] = ()
+
+
+class RuntimeBootstrapError(RuntimeError):
+    pass
 
 
 def runtime_bootstrapped() -> bool:
@@ -24,17 +33,33 @@ def runtime_install_order() -> tuple[str, ...]:
     return tuple(_INSTALL_ORDER)
 
 
+def runtime_bootstrap_failure() -> str | None:
+    return _BOOTSTRAP_FAILURE
+
+
+def _refuse_after_previous_failure() -> None:
+    if _BOOTSTRAP_FAILURE is None:
+        return
+    raise RuntimeBootstrapError(
+        "Phoenix生产运行时此前已部分安装失败；为避免重复monkey-patch，"
+        "当前进程禁止重试。请修复原因后重新启动程序。"
+        f" 首次错误={_BOOTSTRAP_FAILURE}"
+    )
+
+
 def bootstrap_runtime() -> tuple[str, ...]:
-    global _BOOTSTRAPPED, _BOOTSTRAPPING, _INSTALL_ORDER
+    global _BOOTSTRAPPED, _BOOTSTRAPPING, _BOOTSTRAP_FAILURE, _INSTALL_ORDER
 
     if _BOOTSTRAPPED:
         return tuple(_INSTALL_ORDER)
+    _refuse_after_previous_failure()
 
     with _LOCK:
         if _BOOTSTRAPPED:
             return tuple(_INSTALL_ORDER)
+        _refuse_after_previous_failure()
         if _BOOTSTRAPPING:
-            raise RuntimeError("Phoenix生产运行时发生递归启动。")
+            raise RuntimeBootstrapError("Phoenix生产运行时发生递归启动。")
         _BOOTSTRAPPING = True
 
         applied: list[str] = []
@@ -165,5 +190,19 @@ def bootstrap_runtime() -> tuple[str, ...]:
             _INSTALL_ORDER = tuple(applied)
             _BOOTSTRAPPED = True
             return tuple(_INSTALL_ORDER)
+        except BaseException as exc:
+            # Preserve what already ran for diagnosis, but never retry this
+            # partially-mutated process. A clean process restart is the only safe
+            # recovery from a failed global patch installation.
+            _INSTALL_ORDER = tuple(applied)
+            _BOOTSTRAP_FAILURE = f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            raise RuntimeBootstrapError(
+                "Phoenix生产运行时安装失败，当前进程已锁定为不可重试；"
+                "请修复后重新启动。"
+                f" 已完成={','.join(applied) or 'none'}；"
+                f" 错误={_BOOTSTRAP_FAILURE}"
+            ) from exc
         finally:
             _BOOTSTRAPPING = False
