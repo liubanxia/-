@@ -37,7 +37,8 @@ class TranslationLearningPool:
     def count(self) -> int:
         if not self.file.exists():
             return 0
-        return sum(1 for _ in self.file.open("r", encoding="utf-8"))
+        with self.file.open("r", encoding="utf-8") as handle:
+            return sum(1 for _ in handle)
 
     def export_training_pairs(self) -> list[dict[str, str]]:
         if not self.file.exists():
