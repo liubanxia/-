@@ -106,6 +106,49 @@ class RuntimeBootstrapIsolationTest(unittest.TestCase):
         )
         self.assertIn("PRODUCTION_SCOPE_CONTRACT=PASS", completed.stdout)
 
+    def test_partial_bootstrap_failure_latches_and_refuses_retry(self):
+        completed = self._run(
+            r'''
+            import phoenix_knowledge.runtime_bootstrap as runtime
+            import phoenix_knowledge.translation_recovery as recovery
+
+            calls = {"count": 0}
+
+            def fail_install():
+                calls["count"] += 1
+                raise RuntimeError("simulated installer failure")
+
+            recovery.install = fail_install
+
+            try:
+                runtime.bootstrap_runtime()
+            except runtime.RuntimeBootstrapError as exc:
+                first = str(exc)
+            else:
+                raise AssertionError("first bootstrap unexpectedly succeeded")
+
+            assert calls["count"] == 1
+            assert runtime.runtime_bootstrap_failure() is not None
+            assert "simulated installer failure" in runtime.runtime_bootstrap_failure()
+            assert not runtime.runtime_bootstrapped()
+
+            try:
+                runtime.bootstrap_runtime()
+            except runtime.RuntimeBootstrapError as exc:
+                second = str(exc)
+            else:
+                raise AssertionError("second bootstrap unexpectedly succeeded")
+
+            # The failed installer must never be invoked a second time in the
+            # partially-mutated process.
+            assert calls["count"] == 1
+            assert "禁止重试" in second
+            assert first != second
+            print("BOOTSTRAP_FAILURE_LATCH=PASS")
+            '''
+        )
+        self.assertIn("BOOTSTRAP_FAILURE_LATCH=PASS", completed.stdout)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
