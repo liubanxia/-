@@ -40,10 +40,13 @@ def install(gui_module) -> None:
                 if status.get("generator_deep_ready")
                 else "未就绪"
             )
+            # This is compute/provider readiness, not proof that local medical
+            # translation stages M1/M2/M3 ran. Keep the label explicit so the
+            # status bar cannot be mistaken for translation-route telemetry.
             text = (
                 f"资料 {status['documents']} 本 | "
                 f"知识块 {status['chunks']} | {semantic} | "
-                f"Smart2={smart2}"
+                f"算力Smart2={smart2}"
             )
             unresolved = int(
                 status.get("document_paths_unresolved", 0) or 0
@@ -61,21 +64,37 @@ def install(gui_module) -> None:
 
     def refresh_translation_models(self):
         try:
-            status = self.workbench.status()
-            quality = (
-                "可用"
-                if status.get("translation_backends")
-                else "未就绪"
+            from .translation_chain_enforcement_v3 import chain_status
+
+            engine = self.workbench.translator.engine
+            chain = chain_status(engine)
+            m1_names = chain.get("model1_names") or ()
+            m1 = (
+                "READY[" + ",".join(str(x) for x in m1_names) + "]"
+                if chain.get("model1_ready")
+                else "NOT READY"
             )
+            m2 = "READY" if chain.get("model2_ready") else "NOT READY"
+            m3 = "READY" if chain.get("model3_ready") else "NOT READY"
+            api = "READY" if chain.get("api_ready") else "NOT READY"
+
+            status = self.workbench.status()
             suffix = (
                 " | 商业版已禁用非商业模型"
                 if status.get("commercial_release")
                 else ""
             )
             self.translation_models_label.setText(
-                f"医学精译={quality}（Smart2质量模型、低推理） | "
-                f"全链路统一使用 Smart2 医学模型{suffix}"
+                "正式医学翻译链："
+                f"M1={m1} → M2={m2} → M3={m3} → "
+                f"Smart2/API={api}（仅本地链失败时兜底）{suffix}"
             )
+            tooltip = []
+            if chain.get("model2_path"):
+                tooltip.append("模型2：" + str(chain["model2_path"]))
+            if chain.get("model3_path"):
+                tooltip.append("模型3：" + str(chain["model3_path"]))
+            self.translation_models_label.setToolTip("\n".join(tooltip))
         except Exception:
             return original_refresh_translation_models(self)
 
