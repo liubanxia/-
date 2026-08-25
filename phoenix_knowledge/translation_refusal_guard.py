@@ -77,13 +77,14 @@ def _append_reason(existing: Iterable[str], reason: str) -> list[str]:
 
 
 def install() -> None:
-    """Prevent model refusal templates from entering medical deliverables.
+    """Enforce a final fail-safe publication gate for medical translation.
 
-    The shared validator marks refusal text invalid for every translation path.
-    Office delivery adds a second protection layer: the refusal is replaced by
-    the original source text, marked review-required, and never cached as a
-    valid translation. This keeps PPTX/DOCX usable for doctor correction while
-    preventing safety-template prose from contaminating the translated file.
+    The shared validator rejects model refusal templates. Office delivery adds a
+    stronger invariant at the last point before translated text is copied into
+    PPTX/DOCX: only quality-approved, non-review output may replace the source.
+    Every rejected candidate remains in the audit record but the deliverable
+    preserves the original source text. This prevents refusal prose, malformed
+    retries, and other unapproved model output from contaminating formal files.
     """
 
     global _INSTALLED
@@ -107,6 +108,7 @@ def install() -> None:
         )
         return QualityReport(False, 0.0, reasons)
 
+    validate._phoenix_refusal_validator = True
     TranslationValidator.validate = validate
 
     from .office_translation import OfficeDocumentTranslator
@@ -115,21 +117,48 @@ def install() -> None:
 
     def decision_audit(segment, decision) -> dict:
         row = original_audit(segment, decision)
-        translated = str(row.get("translated", "") or "").strip()
-        if not looks_like_model_refusal(translated):
+        candidate = str(row.get("translated", "") or "").strip()
+        refused = looks_like_model_refusal(candidate)
+        approved = (
+            bool(row.get("quality_ok", False))
+            and not bool(row.get("needs_review", True))
+            and bool(candidate)
+            and not refused
+        )
+        if approved:
+            row["publication_approved"] = True
             return row
 
-        row["refused_output"] = translated[:1200]
+        # Preserve the rejected candidate for diagnostics/learning but never put
+        # it into the formal Office deliverable.
+        if candidate and candidate != segment.source:
+            row["rejected_candidate"] = candidate[:4000]
+        if refused:
+            row["refused_output"] = candidate[:1200]
+
         row["translated"] = segment.source
         backend = str(row.get("backend", "") or "unknown")
-        row["backend"] = f"{backend}|refusal_guard_preserve_source"
+        guard_suffix = (
+            "refusal_guard_preserve_source"
+            if refused
+            else "quality_guard_preserve_source"
+        )
+        if guard_suffix not in backend:
+            row["backend"] = f"{backend}|{guard_suffix}"
         row["quality_ok"] = False
-        row["quality_score"] = 0.0
+        if refused:
+            row["quality_score"] = 0.0
         row["reasons"] = _append_reason(
             row.get("reasons") or (),
-            "模型返回安全拒答模板；已自动保留英文原文供医生修改",
+            (
+                "模型返回安全拒答模板；正式成品已自动保留英文原文"
+                if refused
+                else "译文未通过最终质量门；正式成品已自动保留原文"
+            ),
         )
         row["needs_review"] = True
+        row["publication_approved"] = False
         return row
 
+    decision_audit._phoenix_office_publication_guard = True
     OfficeDocumentTranslator._decision_audit = staticmethod(decision_audit)
