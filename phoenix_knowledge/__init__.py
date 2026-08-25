@@ -17,8 +17,13 @@ install_translation_sqlite_safety()
 
 
 def bootstrap_runtime() -> tuple[str, ...]:
+    # Configure stdout/stderr before any installer emits Chinese diagnostics.
+    # This prevents locale-specific Windows encoders (for example cp1252) from
+    # aborting application startup with UnicodeEncodeError.
+    from .console_runtime import configure_console_text
     from .runtime_bootstrap import bootstrap_runtime as _bootstrap
 
+    configure_console_text()
     return _bootstrap()
 
 
