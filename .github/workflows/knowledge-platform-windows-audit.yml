@@ -1,0 +1,57 @@
+name: Knowledge Platform Windows Audit
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - audit/knowledge-platform-hardening-20260825
+
+jobs:
+  windows-translation-contracts:
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-base.txt
+
+      - name: Install base runtime
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-base.txt
+
+      - name: Compile package
+        shell: pwsh
+        run: python -m compileall -q phoenix_knowledge app.py
+
+      - name: SQLite lifecycle contract
+        shell: pwsh
+        run: python -m unittest discover -s tests -p "test_sqlite_lifecycle_contract.py" -v
+
+      - name: Survival memory contract
+        shell: pwsh
+        run: python -m unittest discover -s tests -p "test_*survival*.py" -v
+
+      - name: Learning maturity contract
+        shell: pwsh
+        run: python -m unittest discover -s tests -p "test_*maturity*.py" -v
+
+      - name: Blank student contract
+        shell: pwsh
+        run: python -m unittest discover -s tests -p "test_blank_translation_student.py" -v
+
+      - name: API value ledger contract
+        shell: pwsh
+        run: python -m unittest discover -s tests -p "test_translation_api_value_ledger.py" -v
+
+      - name: Runtime bootstrap isolation contract
+        shell: pwsh
+        run: python -m unittest discover -s tests -p "test_runtime_bootstrap_isolation.py" -v
