@@ -3,12 +3,11 @@ from __future__ import annotations
 """Run Phoenix unittest files in isolated interpreters.
 
 Phoenix production runtime intentionally uses process-global monkey-patches.
-Running every test module inside one unittest-discovery interpreter allows a GUI
-or production-bootstrap test to mutate classes used by later low-level tests.
-That creates order-dependent false failures and can hide real isolation bugs.
-
-This runner preserves unittest discovery within each file while giving every
-file a fresh Python process and environment.
+Every historical product/regression test therefore runs in its own process with
+an explicit production bootstrap, matching the old eager-runtime semantics
+without allowing one file to mutate another. A small allowlist of infrastructure
+unit tests intentionally runs without production bootstrap so it can verify raw
+memory/database/bootstrap behavior.
 """
 
 import argparse
@@ -16,6 +15,16 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+_RAW_INFRASTRUCTURE_TESTS = {
+    "test_blank_translation_student.py",
+    "test_runtime_bootstrap_isolation.py",
+    "test_sqlite_lifecycle_contract.py",
+    "test_translation_api_value_ledger.py",
+    "test_translation_learning_maturity_gate.py",
+    "test_translation_learning_maturity_integration.py",
+    "test_translation_survival_memory.py",
+}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -38,22 +47,24 @@ def main() -> int:
     env.setdefault("PYTHONUTF8", "1")
     failures: list[str] = []
 
+    launcher = Path(__file__).with_name("run_one_unittest.py")
     for index, path in enumerate(files, start=1):
-        print(f"\n===== [{index}/{len(files)}] {path.name} =====", flush=True)
-        completed = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "unittest",
-                "discover",
-                "-s",
-                str(root),
-                "-p",
-                path.name,
-                "-v",
-            ],
-            env=env,
+        production = path.name not in _RAW_INFRASTRUCTURE_TESTS
+        mode = "PRODUCTION" if production else "RAW"
+        print(
+            f"\n===== [{index}/{len(files)}] {path.name} [{mode}] =====",
+            flush=True,
         )
+        command = [
+            sys.executable,
+            str(launcher),
+            path.name,
+            "--tests",
+            str(root),
+        ]
+        if production:
+            command.append("--bootstrap")
+        completed = subprocess.run(command, env=env)
         if completed.returncode != 0:
             failures.append(path.name)
 
