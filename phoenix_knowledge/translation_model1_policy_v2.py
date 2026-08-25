@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-"""Final production policy for Phoenix v3 model-1 candidates.
+"""Final production policy for Phoenix v3 model-1 and Smart2 candidates.
 
 The v3 chain deliberately uses Marian/NLLB only as draft generators before
-HY-MT/model3 validation. A folder on disk is not sufficient readiness, and
-NLLB must never enter a commercial runtime. Adapter tests/plugins that replace
-these concrete backends remain usable because runtime checks apply only to the
-real Phoenix Seq2Seq classes.
+HY-MT/model3 validation. A folder on disk is not sufficient readiness, NLLB
+must never enter a commercial runtime, and a remote Smart2 endpoint is never
+used unless API fallback was explicitly enabled. Lightweight local adapters
+that do not implement the full provider-hub interface remain supported.
 """
 
 _INSTALLED = False
@@ -45,6 +45,59 @@ def _backends(engine, target_language: str) -> list[object]:
     return result
 
 
+def _smart2_available(engine) -> bool:
+    from .translation_local_first_release import _api_fallback_allowed
+
+    qwen = getattr(engine, "qwen", None)
+    llm = getattr(qwen, "llm", None)
+    check = getattr(engine, "_backend_available", None)
+    if qwen is None or llm is None or not callable(check):
+        return False
+
+    backend_fn = getattr(llm, "backend", None)
+    if not callable(backend_fn):
+        # A lightweight in-process adapter is local by construction: it has no
+        # provider routing surface, so there is no remote privacy boundary to
+        # opt into. This keeps plugin/test adapters deterministic.
+        try:
+            return bool(check(qwen, "smart2"))
+        except TypeError:
+            return bool(check(qwen))
+        except Exception:
+            return False
+
+    try:
+        backend = str(backend_fn("translation") or "").strip().lower()
+    except Exception:
+        return False
+
+    remote = backend == "remote_server"
+    try:
+        compute = getattr(llm, "compute", None)
+        requested = getattr(compute, "requested_mode", None)
+        if callable(requested) and str(requested() or "").strip().lower() == "remote":
+            remote = True
+    except Exception:
+        pass
+    if remote and not _api_fallback_allowed():
+        return False
+
+    try:
+        return bool(check(qwen, "smart2"))
+    except TypeError:
+        try:
+            return bool(check(qwen))
+        except Exception:
+            return False
+    except Exception:
+        return False
+
+
+def _install_smart2_gate() -> None:
+    from . import hybrid_translation_policy as hybrid
+    hybrid._smart_available = _smart2_available
+
+
 def _install_acronym_gate() -> None:
     from .medical_acronyms import MedicalAcronymResolver
     from .translation_local_first_release import _api_fallback_allowed
@@ -53,8 +106,8 @@ def _install_acronym_gate() -> None:
         llm = getattr(self, "llm", None)
         if llm is None:
             return False
+        available = getattr(llm, "available", None)
         try:
-            available = getattr(llm, "available", None)
             if callable(available) and not bool(available("translation")):
                 return False
         except TypeError:
@@ -68,8 +121,6 @@ def _install_acronym_gate() -> None:
 
         backend_fn = getattr(llm, "backend", None)
         if not callable(backend_fn):
-            # Lightweight local adapters used by offline tools need not expose
-            # the full provider-hub interface.
             return True
         try:
             backend = str(backend_fn("translation") or "").strip().lower()
@@ -86,9 +137,33 @@ def _install_dual_route_model1() -> None:
     from . import translation_dual_route_release as dual
     from .translation_models import TranslationAttempt, translation_output_budget
 
+    def fast_local_ready(engine) -> bool:
+        qwen = getattr(engine, "qwen", None)
+        llm = getattr(qwen, "llm", None)
+        if qwen is None or llm is None:
+            return False
+        backend_fn = getattr(llm, "backend", None)
+        if callable(backend_fn):
+            try:
+                if str(backend_fn("fast") or "").strip().lower() == "remote_server":
+                    return False
+            except Exception:
+                return False
+        try:
+            return bool(engine._backend_available(qwen, "smart1"))
+        except TypeError:
+            try:
+                return bool(engine._backend_available(qwen))
+            except Exception:
+                return False
+        except Exception:
+            return False
+
+    dual._fast_local_ready = fast_local_ready
+
     def model1(engine, source: str, target: str, attempts: list, errors: list[str]):
         # Prefer the configured local fast LLM as the contextual draft stage.
-        if dual._fast_local_ready(engine):
+        if fast_local_ready(engine):
             try:
                 prompt = f"""你是 Phoenix 本地模型1：医学语境理解与初译器。
 先理解上一页/上一段与当前同页/同段组，再完整翻译当前英文原文为{target}。本阶段只是初稿。
@@ -165,6 +240,7 @@ def install() -> None:
     global _INSTALLED
     if _INSTALLED:
         return
+    _install_smart2_gate()
     _install_inventory_policy()
     _install_dual_route_model1()
     _install_acronym_gate()
