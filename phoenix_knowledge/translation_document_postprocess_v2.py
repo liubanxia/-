@@ -74,8 +74,23 @@ def install() -> None:
     # the final semantic extension instead of another public translation wrapper.
     from .translation_model1_policy_v2 import install as install_model1_policy_v2
     from .translation_final_contract_v2 import install as install_final_contract_v2
+    from .translation_chain_enforcement_v3 import install as install_translation_chain_enforcement_v3
 
     install_model1_policy_v2()
     install_final_contract_v2()
+
+    # FINAL ROUTING INVARIANT. This installer must run after every historical
+    # translation compatibility/release patch above. It closes the production
+    # gap that previously let formal documents fall directly into
+    # qwen35_medical_translation_source_only_emergency with no local candidate.
+    # From this point onward the only supported formal route is:
+    #
+    #   M1 (when available) -> HY-MT M2 (when available)
+    #   -> local Qwen M3 (when available, including source-only M3 translation)
+    #   -> Smart2/API only if the local chain still cannot publish safely.
+    #
+    # The emergency API source-only path therefore remains a true last resort,
+    # not a normal production shortcut.
+    install_translation_chain_enforcement_v3()
 
     _INSTALLED = True
