@@ -13,7 +13,7 @@ concurrency:
 jobs:
   windows-translation-contracts:
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 50
 
     steps:
       - name: Checkout
@@ -24,17 +24,19 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: requirements-base.txt
+          cache-dependency-path: |
+            requirements-base.txt
+            requirements-test.txt
 
-      - name: Install base runtime
+      - name: Install test runtime
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements-base.txt
+          python -m pip install -r requirements-test.txt
 
       - name: Compile package
         shell: pwsh
-        run: python -m compileall -q phoenix_knowledge app.py onsite_preflight.py
+        run: python -m compileall -q phoenix_knowledge app.py onsite_preflight.py tools
 
       - name: SQLite lifecycle contract
         shell: pwsh
@@ -60,9 +62,9 @@ jobs:
         shell: pwsh
         run: python -m unittest discover -s tests -p "test_runtime_bootstrap_isolation.py" -v
 
-      - name: Full Windows regression suite
+      - name: Full Windows regression suite isolated by test file
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen
           PYTHONUTF8: "1"
-        run: python -m unittest discover -s tests -p "test_*.py" -v
+        run: python tools/run_isolated_unittests.py
