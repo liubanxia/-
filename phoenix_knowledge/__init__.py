@@ -1,137 +1,77 @@
-import os
+from __future__ import annotations
 
-from .workbench import MedicalKnowledgeWorkbench
-from .translation_learning_pool import TranslationLearningPool, TranslationCorrectionSample
-from .translation_learning_collector import TranslationLearningCollector, TranslationLearningRecord
-from .translation_stability_core import (
-    capture_core as _capture_translation_core,
-    install_final as _install_translation_stability_core,
-)
-from .workbench_stability_core import (
-    capture_core as _capture_workbench_core,
-    install_final as _install_workbench_stability_core,
-)
+"""Phoenix medical knowledge platform package.
 
-_capture_workbench_core()
-_capture_translation_core()
+Importing a low-level module must not silently install the production translation
+wrapper stack. Only connection-lifecycle safety is enabled at package import.
+The full runtime is bootstrapped lazily when the public Workbench or GUI is used.
+"""
 
-from .translation_recovery import install as _install_translation_recovery
-from .scholarly_pubmed import install as _install_scholarly_pubmed
-from .scholarly_product_hardening import install as _install_scholarly_product_hardening
-from .translation_semantics import install as _install_translation_semantics
-from .translation_short_chinese import install as _install_translation_short_chinese
-from .release_hardening import install as _install_release_hardening
-from .release_memory_hardening import install as _install_release_memory_hardening
-from .release_runtime_hardening import install as _install_release_runtime_hardening
-from .release_portability import install as _install_release_portability
-from .translation_storage_hardening import install as _install_translation_storage_hardening
-from .translation_layout_compact import install as _install_translation_layout_compact
-from .provider_hub import install as _install_provider_hub
-from .provider_hub_compat import install as _install_provider_hub_compat
-from .provider_hub_v2 import install as _install_provider_hub_v2
-from .token_efficiency_hardening import install as _install_token_efficiency_hardening
-from .hybrid_translation_policy import install as _install_hybrid_translation_policy
-from .hymt_cascade_policy import install as _install_hymt_cascade_policy
-from .translation_cascade_v2 import install as _install_translation_cascade_v2
-from .translation_model3_inventory import install as _install_translation_model3_inventory
-from .translation_review_integration import install as _install_translation_review_integration
-from .translation_refusal_guard import install as _install_translation_refusal_guard
-from .translation_local_first_release import install as _install_translation_local_first_release
-from .translation_quality_first_release import install as _install_translation_quality_first_release
-from .translation_dual_route_release import install as _install_translation_dual_route_release
-from .medical_terminology_core import install as _install_medical_terminology_core
-from .translation_model3_audit_acceleration import install as _install_translation_model3_audit_acceleration
-from .translation_portable_model3_runtime import install as _install_translation_portable_model3_runtime
-from .translation_portable_local_runtime import install as _install_translation_portable_local_runtime
-from .translation_ssd_storage import install as _install_translation_ssd_storage
-from .translation_survival_memory import install as _install_translation_survival_memory
-from .translation_learning_maturity_gate import install as _install_translation_learning_maturity_gate
-from .translation_api_value_ledger import install as _install_translation_api_value_ledger
-from .translation_blank_student import install as _install_translation_blank_student
+import importlib
 
-_install_translation_recovery()
-_install_scholarly_pubmed()
-_install_scholarly_product_hardening()
-_install_translation_semantics()
-_install_translation_short_chinese()
-_install_release_hardening()
-_install_release_memory_hardening()
-_install_release_runtime_hardening()
-_install_release_portability()
-_install_translation_storage_hardening()
-_install_translation_layout_compact()
-_install_provider_hub()
-_install_provider_hub_compat()
-_install_provider_hub_v2()
-_install_token_efficiency_hardening()
+from .sqlite_runtime import install_translation_sqlite_safety
 
-_install_translation_stability_core()
-_install_workbench_stability_core()
-_install_translation_refusal_guard()
-_install_translation_local_first_release()
-_install_translation_quality_first_release()
-_install_translation_dual_route_release()
-_install_medical_terminology_core()
-_install_translation_model3_audit_acceleration()
-_install_translation_portable_model3_runtime()
-_install_translation_portable_local_runtime()
-_install_translation_ssd_storage()
-_install_translation_survival_memory()
-_install_translation_learning_maturity_gate()
-_install_translation_api_value_ledger()
-_install_translation_blank_student()
+# This is deliberately semantic-neutral. It only guarantees that short-lived
+# translation SQLite connections commit/rollback and then close on every path.
+install_translation_sqlite_safety()
 
-# Production translation is context/terminology driven. Model1 prepares the
-# initial medical translation, failed/weak rows escalate to HY-MT model2 with
-# English terminology support, local Qwen model3 performs a full source/context
-# audit but normally emits only PASS or exact PATCH edits. If that compact audit
-# cannot be applied safely, the proven full model3 refiner runs before API is
-# allowed. All local stages are hardware-adaptive: compatible CUDA is preferred,
-# while older/incompatible/failed CUDA automatically falls back to CPU without
-# changing the model order, prompts or quality gates. No GPU model is required.
-#
-# Phoenix collects accepted translations from the first book, but learned memory
-# is deliberately dormant until the corpus is mature: at least 10 distinct
-# completed PDF books AND at least 1000 verified translation-memory rows. Before
-# that point, memory only accumulates data and cannot alter production output.
-# Once mature, exact memory can bypass repeat work and guarded similar memory can
-# only seed model3 for source-grounded correction; it is never published directly.
-# Static medical terminology/rules, the normal 1->2->3 chain, CPU emergency ONNX,
-# and API fallback remain available regardless of maturity state.
-#
-# API is a paid teacher, not the workflow controller. Phoenix never spends an
-# extra API call merely to analyze an earlier API answer. Every API fallback that
-# already happened is recorded locally with the source, local model attempts,
-# API correction, likely error category, terminology/pattern candidates, token
-# estimates and later reuse counts. Pricing is never hard-coded: cost is only
-# estimated when the operator supplies current per-million-token prices. API
-# assets stay candidate_only and cannot automatically train or promote an expert.
-#
-# A separate blank student now learns in shadow from the first accepted
-# translation onward. It starts from random weights with a tiny byte-level GRU,
-# records every accepted teacher result, and performs only short bounded training
-# after a whole document finishes. It has no production translation entry point
-# and can never promote itself. Larger student capacity profiles can later replay
-# the same accumulated corpus without deleting the seed checkpoint.
-#
-# If every model and API route is unavailable, the English source is preserved
-# and queued for later translation instead of publishing refusal boilerplate.
-# API corrections are stored as learning candidates; model weights are never
-# changed online.
-#
-# The old exhaustive page-review stack remains opt-in for developer comparison
-# only. It is intentionally outside the normal release path because whole-page
-# model3 regeneration is too expensive for routine translation.
-_experimental_cascade = os.environ.get(
-    "PHOENIX_EXPERIMENTAL_TRANSLATION_CASCADE",
-    "",
-).strip().lower() in {"1", "true", "yes", "on"}
-if _experimental_cascade:
-    _install_hybrid_translation_policy()
-    _install_hymt_cascade_policy()
-    _install_translation_cascade_v2()
-    _install_translation_model3_inventory()
-    _install_translation_review_integration()
+
+def bootstrap_runtime() -> tuple[str, ...]:
+    from .runtime_bootstrap import bootstrap_runtime as _bootstrap
+
+    return _bootstrap()
+
+
+def runtime_bootstrapped() -> bool:
+    from .runtime_bootstrap import runtime_bootstrapped as _state
+
+    return bool(_state())
+
+
+def runtime_install_order() -> tuple[str, ...]:
+    from .runtime_bootstrap import runtime_install_order as _order
+
+    return tuple(_order())
+
+
+def __getattr__(name: str):
+    if name == "MedicalKnowledgeWorkbench":
+        bootstrap_runtime()
+        from .workbench import MedicalKnowledgeWorkbench
+
+        return MedicalKnowledgeWorkbench
+
+    if name == "TranslationLearningPool":
+        from .translation_learning_pool import TranslationLearningPool
+
+        return TranslationLearningPool
+
+    if name == "TranslationCorrectionSample":
+        from .translation_learning_pool import TranslationCorrectionSample
+
+        return TranslationCorrectionSample
+
+    if name == "TranslationLearningCollector":
+        from .translation_learning_collector import TranslationLearningCollector
+
+        return TranslationLearningCollector
+
+    if name == "TranslationLearningRecord":
+        from .translation_learning_collector import TranslationLearningRecord
+
+        return TranslationLearningRecord
+
+    # `from phoenix_knowledge import gui` is a public application entry path.
+    # Ensure translation/workbench production contracts are installed before the
+    # GUI module captures or constructs Workbench objects.
+    if name == "gui":
+        bootstrap_runtime()
+        module = importlib.import_module(f"{__name__}.gui")
+        globals()[name] = module
+        return module
+
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "MedicalKnowledgeWorkbench",
@@ -139,4 +79,7 @@ __all__ = [
     "TranslationCorrectionSample",
     "TranslationLearningCollector",
     "TranslationLearningRecord",
+    "bootstrap_runtime",
+    "runtime_bootstrapped",
+    "runtime_install_order",
 ]
