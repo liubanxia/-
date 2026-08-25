@@ -77,14 +77,14 @@ def _append_reason(existing: Iterable[str], reason: str) -> list[str]:
 
 
 def install() -> None:
-    """Enforce a final fail-safe publication gate for medical translation.
+    """Enforce the last publication gate for formal medical translation.
 
-    The shared validator rejects model refusal templates. Office delivery adds a
-    stronger invariant at the last point before translated text is copied into
-    PPTX/DOCX: only quality-approved, non-review output may replace the source.
-    Every rejected candidate remains in the audit record but the deliverable
-    preserves the original source text. This prevents refusal prose, malformed
-    retries, and other unapproved model output from contaminating formal files.
+    Shared validation rejects model refusal templates. Office delivery goes one
+    step further: only quality-approved, non-review output may replace source
+    text. Rejected candidates remain in audit JSON but never enter PPTX/DOCX.
+    If a document has translatable text and *no* segment passes this gate, the
+    newly built Office file is removed before the method returns and the task is
+    left failed/checkpointed instead of masquerading as a completed translation.
     """
 
     global _INSTALLED
@@ -111,8 +111,9 @@ def install() -> None:
     validate._phoenix_refusal_validator = True
     TranslationValidator.validate = validate
 
-    from .office_translation import OfficeDocumentTranslator
+    from . import office_translation as office
 
+    OfficeDocumentTranslator = office.OfficeDocumentTranslator
     original_audit = OfficeDocumentTranslator._decision_audit
 
     def decision_audit(segment, decision) -> dict:
@@ -162,3 +163,73 @@ def install() -> None:
 
     decision_audit._phoenix_office_publication_guard = True
     OfficeDocumentTranslator._decision_audit = staticmethod(decision_audit)
+
+    original_translate_document = OfficeDocumentTranslator.translate_document
+
+    def translate_document(self, source_path, *args, **kwargs):
+        result = original_translate_document(self, source_path, *args, **kwargs)
+        if bool(getattr(result, "paused", False)):
+            return result
+
+        try:
+            source = office.Path(source_path).resolve()
+            target = str(kwargs.get("target_language", "中文") or "中文")
+            digest = office._sha256_file(source)
+            root, units_root, _previews, checkpoint, final_output = self._task_paths(
+                source,
+                digest,
+                target,
+            )
+
+            audited = 0
+            approved = 0
+            for unit_file in sorted(units_root.glob("*.json")):
+                payload = office._read_json(unit_file)
+                for row in payload.get("translations") or ():
+                    if not isinstance(row, dict):
+                        continue
+                    audited += 1
+                    if bool(row.get("publication_approved", False)):
+                        approved += 1
+
+            # Zero audited rows means the document simply had no translatable
+            # text and is allowed to pass through unchanged. Any translatable
+            # document with zero approved translations is a hard failure.
+            if audited > 0 and approved == 0:
+                office.Path(final_output).unlink(missing_ok=True)
+                office.Path(getattr(result, "output_path", final_output)).unlink(
+                    missing_ok=True
+                )
+                state = office._read_json(checkpoint)
+                state.update(
+                    {
+                        "status": "failed",
+                        "review_required": True,
+                        "review_segments": audited,
+                        "error": "Office正式发布门：没有任何片段通过质量审核，已阻断成品输出。",
+                    }
+                )
+                office._write_json(checkpoint, state)
+                raise office.OfficeTranslationError(
+                    "Office医学翻译全部未通过最终质量门；已保留checkpoint/audit，"
+                    "未发布译本。"
+                )
+        except office.OfficeTranslationError:
+            raise
+        except Exception as exc:
+            # A failure in the safety audit itself must fail closed, not silently
+            # publish an unverifiable formal file.
+            try:
+                office.Path(getattr(result, "output_path", "")).unlink(
+                    missing_ok=True
+                )
+            except Exception:
+                pass
+            raise office.OfficeTranslationError(
+                "Office正式发布安全复核失败，已阻断成品输出："
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        return result
+
+    translate_document._phoenix_office_all_failed_guard = True
+    OfficeDocumentTranslator.translate_document = translate_document
