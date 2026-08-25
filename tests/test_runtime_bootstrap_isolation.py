@@ -76,6 +76,14 @@ class RuntimeBootstrapIsolationTest(unittest.TestCase):
             assert "translation_learning_maturity_gate" not in first
             assert "translation_api_value_ledger" not in first
 
+            # The final production router must be active after every historical
+            # release/compatibility installer. This specifically prevents the
+            # old source_only_emergency shortcut from bypassing M1/M2/M3.
+            from phoenix_knowledge import translation_cascade_v2 as cascade
+            from phoenix_knowledge import translation_chain_enforcement_v3 as enforced
+            assert cascade._run_local_cascade is enforced._run_quality_chain
+            assert getattr(cascade._translate, "_phoenix_chain_enforcement_v3", False)
+
             with tempfile.TemporaryDirectory() as td:
                 memory = TranslationMemory(Path(td) / "memory.sqlite3")
                 memory.store(
