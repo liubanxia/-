@@ -155,6 +155,7 @@ def bootstrap_runtime() -> tuple[str, ...]:
             from .translation_api_value_runtime_v2 import install as install_translation_api_value_runtime_v2
             from .translation_blank_student_runtime_v2 import install as install_translation_blank_student_runtime_v2
             from .translation_document_postprocess_v2 import install as install_translation_document_postprocess_v2
+            from .translation_runtime_contract_v4 import install as install_translation_runtime_contract_v4
 
             current = (
                 ("translation_refusal_guard", install_translation_refusal_guard),
@@ -172,6 +173,10 @@ def bootstrap_runtime() -> tuple[str, ...]:
                 ("translation_api_value_runtime_v2", install_translation_api_value_runtime_v2),
                 ("translation_blank_student_runtime_v2", install_translation_blank_student_runtime_v2),
                 ("translation_document_postprocess_v2", install_translation_document_postprocess_v2),
+                # This must remain the final production translation installer.
+                # Earlier release layers intentionally preserve compatibility;
+                # v4 collapses their readiness/routing decisions into one truth.
+                ("translation_runtime_contract_v4", install_translation_runtime_contract_v4),
             )
             for name, installer in current:
                 installer()
