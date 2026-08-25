@@ -90,9 +90,16 @@ def install() -> None:
     memory_cls.lookup_exact = lookup_exact
     memory_cls.lookup_similar = lookup_similar
 
-    # API efficiency is installed after the observational ledger so it can
-    # reduce redundant provider traffic without changing what the ledger counts
-    # as a real translation decision.
+    # Reassert the final local-first quality invariant after all historical
+    # release layers have installed. This repairs the v3 route regression where
+    # model2 became conditional and model3 source-only fallback could disappear.
+    from .translation_chain_enforcement_v3 import install as install_chain_enforcement_v3
+
+    install_chain_enforcement_v3()
+
+    # API efficiency is installed after the local-chain invariant so it can
+    # reduce redundant provider traffic without changing which local stages are
+    # required before remote fallback.
     from .translation_api_efficiency_v2 import install as install_api_efficiency_v2
 
     install_api_efficiency_v2()
