@@ -3,11 +3,9 @@ from __future__ import annotations
 """Run Phoenix unittest files in isolated interpreters.
 
 Phoenix production runtime intentionally uses process-global monkey-patches.
-Every historical product/regression test therefore runs in its own process with
-an explicit production bootstrap, matching the old eager-runtime semantics
-without allowing one file to mutate another. A small allowlist of infrastructure
-unit tests intentionally runs without production bootstrap so it can verify raw
-memory/database/bootstrap behavior.
+Production/regression tests therefore run in their own processes with explicit
+bootstrap. Low-level component tests run RAW so they validate the underlying
+class contract rather than an intentionally different production routing layer.
 """
 
 import argparse
@@ -24,6 +22,11 @@ _RAW_INFRASTRUCTURE_TESTS = {
     "test_translation_learning_maturity_gate.py",
     "test_translation_learning_maturity_integration.py",
     "test_translation_survival_memory.py",
+    # Component-level v2/base contracts. Production v3 routing is covered by
+    # contextual/cascade/release tests and must not rewrite these unit semantics.
+    "test_office_translation.py",
+    "test_translation_backend_priority.py",
+    "test_translation_product_v2.py",
 }
 
 
