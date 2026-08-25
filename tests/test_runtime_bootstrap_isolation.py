@@ -13,6 +13,8 @@ class RuntimeBootstrapIsolationTest(unittest.TestCase):
         completed = subprocess.run(
             [sys.executable, "-c", textwrap.dedent(script)],
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             env=env,
             timeout=120,
@@ -20,7 +22,7 @@ class RuntimeBootstrapIsolationTest(unittest.TestCase):
         self.assertEqual(
             completed.returncode,
             0,
-            msg=completed.stdout + "\n" + completed.stderr,
+            msg=(completed.stdout or "") + "\n" + (completed.stderr or ""),
         )
         return completed
 
