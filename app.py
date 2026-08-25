@@ -113,7 +113,7 @@ def main() -> int:
     args = _build_parser().parse_args()
     _apply_compute_cli(args)
     non_license_action = _non_license_cli_action(args)
-    license_action = _license_cli_action(args)
+    _license_cli_action(args)
 
     from phoenix_knowledge.config import get_paths
     from phoenix_knowledge.licensing import LicenseManager
@@ -144,8 +144,24 @@ def main() -> int:
             print(f"LICENSE_MESSAGE={current.message}")
             return 23
 
+    # Production runtime installation is an explicit application-boundary step.
+    # License-only headless commands remain lightweight and do not install the
+    # translation/workbench monkey-patch stack.
+    runtime_required = bool(non_license_action or not args.no_gui)
+    if runtime_required:
+        from phoenix_knowledge import bootstrap_runtime
+
+        try:
+            bootstrap_runtime()
+        except Exception as exc:
+            print(
+                f"RUNTIME_BOOTSTRAP_FATAL={type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            return 30
+
     if non_license_action:
-        from phoenix_knowledge import MedicalKnowledgeWorkbench
+        from phoenix_knowledge.workbench import MedicalKnowledgeWorkbench
 
         workbench = MedicalKnowledgeWorkbench(paths)
         try:
@@ -265,7 +281,9 @@ def main() -> int:
         if not ensure_gui_activation(paths.project_root):
             return 23
 
-    from phoenix_knowledge import gui as gui_module
+    # Runtime is already fully installed above. Import GUI directly instead of
+    # depending on package-level attribute import semantics.
+    import phoenix_knowledge.gui as gui_module
     from phoenix_knowledge.gui_bootstrap import install_gui_stack
 
     try:
