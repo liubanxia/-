@@ -130,6 +130,17 @@ def bootstrap_runtime() -> tuple[str, ...]:
             install_workbench_stability_core()
             applied.append("workbench_stability_core")
 
+            # Snapshot the dedicated radiology resolver before the broader
+            # cross-specialty terminology core extends it. Existing curated
+            # one-sense meanings stay deterministic; new abbreviations are kept.
+            from .medical_acronym_seed_policy_v2 import (
+                capture as capture_medical_acronym_seed,
+                install as install_medical_acronym_seed_policy_v2,
+            )
+
+            capture_medical_acronym_seed()
+            applied.append("medical_acronym_seed_capture")
+
             from .translation_refusal_guard import install as install_translation_refusal_guard
             from .translation_local_first_release import install as install_translation_local_first_release
             from .translation_quality_first_release import install as install_translation_quality_first_release
@@ -151,6 +162,7 @@ def bootstrap_runtime() -> tuple[str, ...]:
                 ("translation_quality_first_release", install_translation_quality_first_release),
                 ("translation_dual_route_release", install_translation_dual_route_release),
                 ("medical_terminology_core", install_medical_terminology_core),
+                ("medical_acronym_seed_policy_v2", install_medical_acronym_seed_policy_v2),
                 ("translation_model3_audit_acceleration", install_translation_model3_audit_acceleration),
                 ("translation_portable_model3_runtime", install_translation_portable_model3_runtime),
                 ("translation_portable_local_runtime", install_translation_portable_local_runtime),
