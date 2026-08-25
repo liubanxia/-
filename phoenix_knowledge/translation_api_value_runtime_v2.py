@@ -90,6 +90,13 @@ def install() -> None:
     memory_cls.lookup_exact = lookup_exact
     memory_cls.lookup_similar = lookup_similar
 
+    # API efficiency is installed after the observational ledger so it can
+    # reduce redundant provider traffic without changing what the ledger counts
+    # as a real translation decision.
+    from .translation_api_efficiency_v2 import install as install_api_efficiency_v2
+
+    install_api_efficiency_v2()
+
     _INSTALLED = True
     print(
         "[Phoenix][API价值账本] v2已启用：只观察已发生API纠错，"
