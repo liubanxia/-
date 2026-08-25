@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import closing
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -42,9 +44,8 @@ class TranslationSurvivalMemoryTest(unittest.TestCase):
             memory = TranslationMemory(path)
             memory.enqueue_pending("Rare medical sentence.", "中文", "offline")
             memory.enqueue_pending("Rare medical sentence.", "中文", "offline again")
-            import sqlite3
 
-            with sqlite3.connect(str(path)) as db:
+            with closing(sqlite3.connect(str(path))) as db:
                 row = db.execute(
                     "SELECT attempts FROM pending_translation"
                 ).fetchone()
