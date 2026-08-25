@@ -4,7 +4,7 @@ import importlib
 from collections.abc import Callable
 
 
-GUI_CONTRACT_VERSION = 5
+GUI_CONTRACT_VERSION = 6
 GUI_INSTALL_ORDER = (
     "gui_enhancements",
     "compute_gui",
@@ -14,6 +14,7 @@ GUI_INSTALL_ORDER = (
     "translation_drag_drop_gui",
     "release_gui_hardening",
     "release_gui_truth",
+    "startup_performance_gui",
 )
 
 
@@ -31,9 +32,10 @@ def install_gui_stack(
     """Install the complete GUI stack once, in the only supported order.
 
     Compatibility/product extensions run first. Release hardening and visible
-    truth run last so no later installer can silently replace their guarded
-    entry points. Both the real app and onsite preflight use this function;
-    tests must never maintain a second handwritten installer sequence.
+    truth finalize guarded behavior. The final startup-performance layer only
+    defers status/hardware probing and wraps window construction; it does not
+    replace guarded task entry points. Both the real app and onsite preflight
+    use this function; tests must never maintain a second handwritten sequence.
     """
 
     loader = module_loader or importlib.import_module
