@@ -68,4 +68,14 @@ def install() -> None:
     translate_book.__module__ = "phoenix_knowledge.workbench_stability_core"
     MedicalKnowledgeWorkbench.translate_book = translate_book
 
+    # Current v3 installers intentionally change routing internals, but the last
+    # production step must re-assert licensing/runtime policy and the one stable
+    # PDF publication boundary. Keeping this here makes document-learning hooks
+    # the final semantic extension instead of another public translation wrapper.
+    from .translation_model1_policy_v2 import install as install_model1_policy_v2
+    from .translation_final_contract_v2 import install as install_final_contract_v2
+
+    install_model1_policy_v2()
+    install_final_contract_v2()
+
     _INSTALLED = True
