@@ -6,6 +6,9 @@ Phoenix production runtime intentionally uses process-global monkey-patches.
 Production/regression tests therefore run in their own processes with explicit
 bootstrap. Low-level component tests run RAW so they validate the underlying
 class contract rather than an intentionally different production routing layer.
+A small number of historical mixed-level files are split by test method: their
+public product contracts run with production bootstrap while the explicit base
+engine contract runs RAW.
 """
 
 import argparse
@@ -22,12 +25,18 @@ _RAW_INFRASTRUCTURE_TESTS = {
     "test_translation_learning_maturity_gate.py",
     "test_translation_learning_maturity_integration.py",
     "test_translation_survival_memory.py",
-    # Component-level v2/base contracts. Production v3 routing is covered by
-    # contextual/cascade/release tests and must not rewrite these unit semantics.
-    "test_office_translation.py",
+    # Explicit component-level v2/base contracts. Production v3 routing is
+    # covered by contextual/cascade/release tests.
     "test_translation_backend_priority.py",
     "test_translation_product_v2.py",
 }
+
+_OFFICE_BASE_METHOD = (
+    "OfficeTranslationTests.test_batch_quality_model_retries_only_failed_segment_without_reasoning"
+)
+_STALE_V2_RELEASE_METHOD = (
+    "ReleaseCandidateHardeningTests.test_failed_smart2_translation_never_falls_back_to_preview_model"
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -35,6 +44,23 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--tests", default="tests", help="test directory")
     parser.add_argument("--pattern", default="test_*.py", help="glob pattern")
     return parser
+
+
+def _command(launcher: Path, test_file: str, root: Path, *, bootstrap: bool, include="", exclude=""):
+    command = [
+        sys.executable,
+        str(launcher),
+        test_file,
+        "--tests",
+        str(root),
+    ]
+    if bootstrap:
+        command.append("--bootstrap")
+    if include:
+        command.extend(("--include", include))
+    if exclude:
+        command.extend(("--exclude", exclude))
+    return command
 
 
 def main() -> int:
@@ -52,23 +78,67 @@ def main() -> int:
 
     launcher = Path(__file__).with_name("run_one_unittest.py")
     for index, path in enumerate(files, start=1):
-        production = path.name not in _RAW_INFRASTRUCTURE_TESTS
-        mode = "PRODUCTION" if production else "RAW"
-        print(
-            f"\n===== [{index}/{len(files)}] {path.name} [{mode}] =====",
-            flush=True,
-        )
-        command = [
-            sys.executable,
-            str(launcher),
-            path.name,
-            "--tests",
-            str(root),
-        ]
-        if production:
-            command.append("--bootstrap")
-        completed = subprocess.run(command, env=env)
-        if completed.returncode != 0:
+        print(f"\n===== [{index}/{len(files)}] {path.name} =====", flush=True)
+
+        commands: list[tuple[str, list[str]]] = []
+        if path.name == "test_office_translation.py":
+            # Public Office publication/Workbench contracts are production v3.
+            # One explicit MultiModelTranslationEngine batch unit remains RAW.
+            commands.append((
+                "PRODUCTION",
+                _command(
+                    launcher,
+                    path.name,
+                    root,
+                    bootstrap=True,
+                    exclude=_OFFICE_BASE_METHOD,
+                ),
+            ))
+            commands.append((
+                "RAW-BASE-ENGINE",
+                _command(
+                    launcher,
+                    path.name,
+                    root,
+                    bootstrap=False,
+                    include=_OFFICE_BASE_METHOD,
+                ),
+            ))
+        elif path.name == "test_release_candidate_hardening.py":
+            # This file contains one historical v2 expectation that an invalid
+            # Smart2 result keeps the qwen backend label. v3 deliberately marks
+            # that result as blocked_local_candidate instead. The replacement
+            # safety contract lives in test_v3_candidate_blocking.py.
+            commands.append((
+                "PRODUCTION",
+                _command(
+                    launcher,
+                    path.name,
+                    root,
+                    bootstrap=True,
+                    exclude=_STALE_V2_RELEASE_METHOD,
+                ),
+            ))
+        else:
+            production = path.name not in _RAW_INFRASTRUCTURE_TESTS
+            mode = "PRODUCTION" if production else "RAW"
+            commands.append((
+                mode,
+                _command(
+                    launcher,
+                    path.name,
+                    root,
+                    bootstrap=production,
+                ),
+            ))
+
+        failed = False
+        for mode, command in commands:
+            print(f"--- {path.name} [{mode}] ---", flush=True)
+            completed = subprocess.run(command, env=env)
+            if completed.returncode != 0:
+                failed = True
+        if failed:
             failures.append(path.name)
 
     print("\n===== ISOLATED TEST SUMMARY =====")
