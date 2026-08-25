@@ -4,11 +4,12 @@ import importlib
 from collections.abc import Callable
 
 
-GUI_CONTRACT_VERSION = 6
+GUI_CONTRACT_VERSION = 7
 GUI_INSTALL_ORDER = (
     "gui_enhancements",
     "compute_gui",
     "translation_api_consent_gui",
+    "compute_api_hardening_v2",
     "document_gui",
     "translation_storage_gui",
     "translation_drag_drop_gui",
@@ -31,8 +32,10 @@ def install_gui_stack(
 ) -> tuple[str, ...]:
     """Install the complete GUI stack once, in the only supported order.
 
-    Compatibility/product extensions run first. Release hardening and visible
-    truth finalize guarded behavior. The final startup-performance layer only
+    Compatibility/product extensions run first. API-dialog hardening finalizes
+    the staged provider/key probe and QThread lifetime contract immediately
+    after the compatibility consent bridge. Release hardening and visible truth
+    then finalize guarded behavior. The final startup-performance layer only
     defers status/hardware probing and wraps window construction; it does not
     replace guarded task entry points. Both the real app and onsite preflight
     use this function; tests must never maintain a second handwritten sequence.
