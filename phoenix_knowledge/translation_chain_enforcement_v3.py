@@ -4,13 +4,13 @@ from __future__ import annotations
 
 The v3 contextual route had accidentally weakened the preceding quality-first
 contract in two ways: model2 only ran after a model1 failure, and model3 could be
-skipped entirely when model1/model2 produced no draft.  This module restores the
+skipped entirely when model1/model2 produced no draft. This module restores the
 intended production invariant:
 
     model1 (when available) -> model2 (when available) -> model3 (when available)
     -> Smart2/API only after the local chain cannot publish safely.
 
-All models remain lazy-loaded.  Readiness checks inspect local model inventory;
+All models remain lazy-loaded. Readiness checks inspect local model inventory;
 weights are loaded only when a translation actually reaches that stage.
 """
 
@@ -52,9 +52,6 @@ def _run_quality_chain(
     from . import translation_cascade_v2 as cascade
     from . import translation_dual_route_release as dual
 
-    # Stage 1: use the configured local model1 route when present.  Under a
-    # remote provider selection this intentionally does not repurpose DeepSeek
-    # as model1; only genuinely local backends count here.
     model1 = dual._model1(
         engine,
         source,
@@ -63,9 +60,8 @@ def _run_quality_chain(
         errors,
     )
 
-    # Stage 2: quality-first means model2 gets a chance whenever its local model
-    # is installed, even when model1 already passed a heuristic score.  HY-MT
-    # can also translate source-only when model1 is unavailable.
+    # Model2 is a quality stage, not merely a model1 failure fallback. If its
+    # local weights exist, every formal medical segment must pass through it.
     model2 = hymt._run_model2(
         engine,
         source,
@@ -81,8 +77,7 @@ def _run_quality_chain(
         else model1
     )
 
-    # Stage 3: never skip an installed model3 merely because the previous stages
-    # were absent.  It has a source-only path specifically for that situation.
+    # An installed model3 must never be skipped because M1/M2 produced no draft.
     if not cascade._model3_available(engine):
         if base is None:
             return None, "quality_no_local_draft"
@@ -135,10 +130,8 @@ def _classify_attempts(result) -> tuple[bool, bool, bool, bool]:
     return model1, model2, model3, api
 
 
-def _report_inventory(engine) -> None:
-    if bool(getattr(engine, "_phoenix_chain_inventory_reported_v3", False)):
-        return
-    engine._phoenix_chain_inventory_reported_v3 = True
+def chain_status(engine) -> dict:
+    """Return cheap readiness truth without loading model weights."""
 
     from . import hybrid_translation_policy as hybrid
     from . import hymt_cascade_policy as hymt
@@ -177,19 +170,37 @@ def _report_inventory(engine) -> None:
     except Exception:
         api_ready = False
 
-    m1_text = "READY[" + ",".join(m1_names) + "]" if m1_names else "NOT READY"
-    m2_text = "READY" if m2_ready else "NOT READY"
-    m3_text = "READY" if m3_ready else "NOT READY"
-    api_text = "READY" if api_ready else "NOT READY"
+    return {
+        "model1_ready": bool(m1_names),
+        "model1_names": tuple(m1_names),
+        "model2_ready": m2_ready,
+        "model2_path": m2_path,
+        "model3_ready": m3_ready,
+        "model3_path": m3_path,
+        "api_ready": api_ready,
+    }
+
+
+def _report_inventory(engine) -> None:
+    if bool(getattr(engine, "_phoenix_chain_inventory_reported_v3", False)):
+        return
+    engine._phoenix_chain_inventory_reported_v3 = True
+
+    status = chain_status(engine)
+    names = status["model1_names"]
+    m1_text = "READY[" + ",".join(names) + "]" if names else "NOT READY"
     print(
         "[Phoenix][本地翻译链状态] "
-        f"M1={m1_text} | M2={m2_text} | M3={m3_text} | Smart2/API={api_text}",
+        f"M1={m1_text} | "
+        f"M2={'READY' if status['model2_ready'] else 'NOT READY'} | "
+        f"M3={'READY' if status['model3_ready'] else 'NOT READY'} | "
+        f"Smart2/API={'READY' if status['api_ready'] else 'NOT READY'}",
         flush=True,
     )
-    if m2_path:
-        print(f"[Phoenix][模型2路径] {m2_path}", flush=True)
-    if m3_path:
-        print(f"[Phoenix][模型3路径] {m3_path}", flush=True)
+    if status["model2_path"]:
+        print(f"[Phoenix][模型2路径] {status['model2_path']}", flush=True)
+    if status["model3_path"]:
+        print(f"[Phoenix][模型3路径] {status['model3_path']}", flush=True)
 
 
 def _report_route(engine, result) -> None:
@@ -199,8 +210,6 @@ def _report_route(engine, result) -> None:
     final_backend = str(getattr(result, "backend", "") or "unknown")
     score = float(getattr(getattr(result, "quality", None), "score", 0.0) or 0.0)
 
-    # Keep the console readable on large books: show the first ten units, every
-    # 25th unit thereafter, and every unit that had to reach the API.
     if count <= 10 or count % 25 == 0 or api:
         print(
             f"[Phoenix][翻译链实况] #{count} "
@@ -221,11 +230,7 @@ def install() -> None:
     from . import translation_cascade_v2 as cascade
     from .translation_models import _normalize_smart_level
 
-    # This assignment intentionally comes after local-first/quality-first/v3
-    # release installers.  It is the final production invariant and must not be
-    # weakened again by an older compatibility layer.
     cascade._run_local_cascade = _run_quality_chain
-
     old_translate = cascade._translate
 
     def translate(
