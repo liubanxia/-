@@ -138,11 +138,12 @@ def bootstrap_runtime() -> tuple[str, ...]:
             from .translation_model3_audit_acceleration import install as install_translation_model3_audit_acceleration
             from .translation_portable_model3_runtime import install as install_translation_portable_model3_runtime
             from .translation_portable_local_runtime import install as install_translation_portable_local_runtime
-            from .translation_ssd_storage import install as install_translation_ssd_storage
+            from .translation_ssd_storage_runtime_v2 import install as install_translation_ssd_storage_runtime_v2
             from .translation_survival_memory import install as install_translation_survival_memory
             from .translation_maturity_runtime_v2 import install as install_translation_maturity_runtime_v2
             from .translation_api_value_runtime_v2 import install as install_translation_api_value_runtime_v2
-            from .translation_blank_student import install as install_translation_blank_student
+            from .translation_blank_student_runtime_v2 import install as install_translation_blank_student_runtime_v2
+            from .translation_document_postprocess_v2 import install as install_translation_document_postprocess_v2
 
             current = (
                 ("translation_refusal_guard", install_translation_refusal_guard),
@@ -153,11 +154,12 @@ def bootstrap_runtime() -> tuple[str, ...]:
                 ("translation_model3_audit_acceleration", install_translation_model3_audit_acceleration),
                 ("translation_portable_model3_runtime", install_translation_portable_model3_runtime),
                 ("translation_portable_local_runtime", install_translation_portable_local_runtime),
-                ("translation_ssd_storage", install_translation_ssd_storage),
+                ("translation_ssd_storage_runtime_v2", install_translation_ssd_storage_runtime_v2),
                 ("translation_survival_memory", install_translation_survival_memory),
                 ("translation_maturity_runtime_v2", install_translation_maturity_runtime_v2),
                 ("translation_api_value_runtime_v2", install_translation_api_value_runtime_v2),
-                ("translation_blank_student", install_translation_blank_student),
+                ("translation_blank_student_runtime_v2", install_translation_blank_student_runtime_v2),
+                ("translation_document_postprocess_v2", install_translation_document_postprocess_v2),
             )
             for name, installer in current:
                 installer()
