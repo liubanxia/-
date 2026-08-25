@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import sqlite3
 import tempfile
 import unittest
@@ -56,7 +57,7 @@ class APIValueLedgerTest(unittest.TestCase):
             self.assertEqual(stats.calls, 1)
             self.assertEqual(stats.accepted_calls, 1)
             self.assertEqual(stats.reusable_assets, 1)
-            with sqlite3.connect(str(ledger.path)) as db:
+            with closing(sqlite3.connect(str(ledger.path))) as db:
                 row = db.execute(
                     "SELECT training_status, reviewed, expert_eligible "
                     "FROM api_learning_assets"
