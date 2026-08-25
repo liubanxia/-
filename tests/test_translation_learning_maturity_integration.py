@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from phoenix_knowledge import translation_document_postprocess_v2 as postprocess_v2
 from phoenix_knowledge import translation_learning_maturity_gate as maturity
 from phoenix_knowledge import translation_maturity_runtime_v2 as runtime_v2
 
@@ -35,10 +36,10 @@ class TranslationLearningMaturityIntegrationTest(unittest.TestCase):
 
     def test_tracking_failure_is_nonfatal_contract(self):
         base_code = Path(maturity.__file__).read_text(encoding="utf-8")
-        runtime_code = Path(runtime_v2.__file__).read_text(encoding="utf-8")
+        postprocess_code = Path(postprocess_v2.__file__).read_text(encoding="utf-8")
 
         self.assertIn("正常翻译链继续运行", base_code)
-        self.assertIn("完成书籍计数失败，但不影响译文", runtime_code)
+        self.assertIn("完成书籍计数失败，但不影响已验收译文", postprocess_code)
 
 
 if __name__ == "__main__":
