@@ -7,6 +7,9 @@ all instances. That made low-level memory objects unusable in tests, migration,
 maintenance, and diagnostics until the production corpus reached 10 books and
 1000 verified rows. This runtime keeps the conservative production rule while
 leaving ordinary TranslationMemory instances semantically correct.
+
+Completed-book accounting is intentionally handled by the single Workbench
+post-translation aggregator, not by wrapping PDFTranslator again.
 """
 
 _INSTALLED = False
@@ -17,12 +20,8 @@ def install() -> None:
     if _INSTALLED:
         return
 
-    from pathlib import Path
-
     from . import translation_learning_maturity_gate as maturity
     from . import translation_survival_memory as survival
-    from .pdf_parser import sha256_file
-    from .translator import PDFTranslator
 
     memory_cls = survival.TranslationMemory
     old_exact = memory_cls.lookup_exact
@@ -69,34 +68,6 @@ def install() -> None:
 
     try_exact_or_rule._phoenix_maturity_reporting_v2 = True
     survival._try_exact_or_rule = try_exact_or_rule
-
-    # A completed, non-paused PDF advances the distinct-book counter exactly once
-    # by SHA-256. Failed/paused translations never advance the gate.
-    old_book = PDFTranslator.translate_book
-
-    def translate_book(self, *args, **kwargs):
-        result = old_book(self, *args, **kwargs)
-        try:
-            if not bool(getattr(result, "paused", False)):
-                source_path = Path(getattr(result, "source_path", ""))
-                if source_path.is_file():
-                    memory = survival._memory_for_engine(self.engine)
-                    tracker = maturity._tracker_for_memory(memory)
-                    tracker.record_completed_book(
-                        sha256_file(source_path),
-                        str(source_path),
-                    )
-                    maturity._report(self.engine, tracker.stats())
-        except Exception as exc:
-            print(
-                "[Phoenix][学习成熟度] 完成书籍计数失败，但不影响译文："
-                f"{type(exc).__name__}: {exc}",
-                flush=True,
-            )
-        return result
-
-    translate_book._phoenix_maturity_book_counter_v2 = True
-    PDFTranslator.translate_book = translate_book
 
     _INSTALLED = True
     print(
