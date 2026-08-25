@@ -4,10 +4,11 @@ import importlib
 from collections.abc import Callable
 
 
-GUI_CONTRACT_VERSION = 4
+GUI_CONTRACT_VERSION = 5
 GUI_INSTALL_ORDER = (
     "gui_enhancements",
     "compute_gui",
+    "translation_api_consent_gui",
     "document_gui",
     "translation_storage_gui",
     "translation_drag_drop_gui",
