@@ -7,6 +7,7 @@ This runtime is deliberately conservative:
 - refusal-like responses are never cached;
 - duplicate source strings inside one batch are translated once;
 - PDF/Office remote batches are moderately enlarged to reduce prompt overhead;
+- remote source/batch prompts keep the same medical invariants in a compact form;
 - a second Smart2 correction is kept for structural/safety failures, while a
   purely non-safety repeat reuses the first correction instead of paying for an
   equivalent second request.
@@ -168,10 +169,28 @@ def _retry_is_safety_critical(reasons) -> bool:
     return any(marker in text for marker in _HARD_RETRY_MARKERS)
 
 
+def _safe_batch_for_cache(values: dict[str, str]) -> bool:
+    if not values:
+        return False
+    try:
+        from .translation_refusal_guard import looks_like_model_refusal
+
+        return all(
+            str(value or "").strip() and not looks_like_model_refusal(value)
+            for value in values.values()
+        )
+    except Exception:
+        return all(str(value or "").strip() for value in values.values())
+
+
 def _install_backend_cache() -> None:
-    from .translation_models import QwenMedicalTranslationBackend
+    from .translation_models import (
+        QwenMedicalTranslationBackend,
+        translation_output_budget,
+    )
 
     old_translate = QwenMedicalTranslationBackend.translate
+    old_translate_segments = QwenMedicalTranslationBackend.translate_segments
     old_retry = QwenMedicalTranslationBackend.retry_translation
 
     def translate(
@@ -200,14 +219,102 @@ def _install_backend_cache() -> None:
         cached = _cache_get(self, cache_key)
         if cached is not None:
             return cached
-        result = old_translate(
-            self,
-            source,
-            target_language,
-            smart_level=smart_level,
+
+        glossary = str(self.glossary_prompt(source) or "").strip()
+        glossary_section = f"\n固定缩写表：\n{glossary}\n" if glossary else ""
+        prompt = (
+            f"医学教材精译：把英文逐句完整译成{target_language}。使用规范医学术语；"
+            "严格保留数字、单位、正负号、侧别、否定、分级、诊断确定性、医学缩写、"
+            "图表/参考文献编号；作者、期刊、DOI、URL不改写。缩写按固定表，独立缩写写成"
+            "“规范中文（缩写）”。OCR/原文确实损坏才标[原文不清]。禁止总结、删减、扩写、"
+            "解释或添加原文没有的信息，只输出译文。"
+            f"{glossary_section}\n原文：\n{source}"
         )
+        result = self.llm.generate(
+            prompt,
+            max_new_tokens=translation_output_budget(source, smart_level),
+            profile="translation",
+        ).strip()
         _stats(self)["remote_calls"] += 1
         _cache_put(self, cache_key, result)
+        return result
+
+    def translate_segments(
+        self,
+        sources: list[str],
+        target_language: str = "中文",
+    ) -> dict[str, str]:
+        if not _remote_backend(self):
+            return old_translate_segments(self, sources, target_language)
+
+        values = [str(source or "").strip() for source in sources]
+        joined = "\n".join(values)
+        cache_key = _key(
+            "batch",
+            _provider_signature(self),
+            target_language,
+            _glossary_signature(self, joined),
+            json.dumps(values, ensure_ascii=False, separators=(",", ":")),
+        )
+        cached = _cache_get(self, cache_key)
+        if cached is not None:
+            try:
+                payload = json.loads(cached)
+                if isinstance(payload, dict):
+                    return {str(k): str(v) for k, v in payload.items()}
+            except Exception:
+                pass
+
+        rows = [
+            {"id": f"S{index:04d}", "text": source}
+            for index, source in enumerate(values, start=1)
+        ]
+        source_json = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+        glossary = str(self.glossary_prompt(joined) or "").strip()
+        glossary_section = f"\n固定缩写表：\n{glossary}\n" if glossary else ""
+        prompt = (
+            f"医学文献批量精译：逐项把JSON里的text完整译成{target_language}；id、数量、顺序不变。"
+            "使用规范医学术语；严格保留数字、单位、正负号、侧别、否定、诊断确定性、医学缩写、"
+            "图表/参考文献编号；禁止总结、删减、扩写或合并条目。相邻项只可用于消歧。"
+            "只输出JSON数组，每项仅含id和translation。"
+            f"{glossary_section}\n输入JSON：\n{source_json}"
+        )
+        max_tokens = max(
+            640,
+            min(
+                3200,
+                translation_output_budget(joined, "smart2") + 36 * len(rows),
+            ),
+        )
+        raw = self.llm.generate(
+            prompt,
+            max_new_tokens=max_tokens,
+            profile="translation",
+        ).strip()
+        _stats(self)["remote_calls"] += 1
+        try:
+            result = self._parse_segment_json(raw)
+        except Exception:
+            repair_prompt = (
+                "仅把下列输出修复成合法JSON数组；不得重新翻译、总结或添加内容；"
+                "保留全部id，每项只能含id和translation。\n"
+                f"输入id：{source_json}\n待修复：{raw}\n只输出JSON数组。"
+            )
+            repaired = self.llm.generate(
+                repair_prompt,
+                max_new_tokens=max_tokens,
+                profile="translation",
+            ).strip()
+            _stats(self)["remote_calls"] += 1
+            result = self._parse_segment_json(repaired)
+
+        expected = {f"S{index:04d}" for index in range(1, len(rows) + 1)}
+        if set(result) == expected and _safe_batch_for_cache(result):
+            _cache_put(
+                self,
+                cache_key,
+                json.dumps(result, ensure_ascii=False, separators=(",", ":")),
+            )
         return result
 
     def retry_translation(
@@ -266,8 +373,10 @@ def _install_backend_cache() -> None:
         return result
 
     translate._phoenix_api_efficiency_v2 = True
+    translate_segments._phoenix_api_efficiency_v2 = True
     retry_translation._phoenix_api_efficiency_v2 = True
     QwenMedicalTranslationBackend.translate = translate
+    QwenMedicalTranslationBackend.translate_segments = translate_segments
     QwenMedicalTranslationBackend.retry_translation = retry_translation
 
 
@@ -408,6 +517,6 @@ def install() -> None:
     _INSTALLED = True
     print(
         "[Phoenix][API节流] v2已启用：会话精确缓存、重复段去重、远程批次放大、"
-        "非安全型二次纠错节流；医学质量门与10本/1000条成熟度门保持不变。",
+        "精简等价医学提示、非安全型二次纠错节流；医学质量门与10本/1000条成熟度门保持不变。",
         flush=True,
     )
