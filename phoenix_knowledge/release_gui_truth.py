@@ -64,7 +64,10 @@ def install(gui_module) -> None:
 
     def refresh_translation_models(self):
         try:
-            from .translation_chain_enforcement_v3 import chain_status
+            # v4 is the single production source of truth used by the actual
+            # PDF/Office preflight and translation cascade.  The GUI must read
+            # exactly the same readiness state.
+            from .translation_runtime_contract_v4 import chain_status
 
             engine = self.workbench.translator.engine
             chain = chain_status(engine)
