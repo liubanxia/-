@@ -91,6 +91,19 @@ jobs:
         working-directory: ios/PhoenixRealtimeVisionAssist
         run: xcodebuild -project PhoenixRealtimeVisionAssist.xcodeproj -list
 
+      - name: Run deterministic pipeline simulation tests
+        working-directory: ios/PhoenixRealtimeVisionAssist
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project PhoenixRealtimeVisionAssist.xcodeproj \
+            -scheme PhoenixRealtimeVisionAssist \
+            -sdk iphonesimulator \
+            -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            test | tee xcodebuild-tests.log
+
       - name: Build iOS Simulator
         working-directory: ios/PhoenixRealtimeVisionAssist
         run: |
@@ -165,5 +178,6 @@ jobs:
           name: liteview-xcodebuild-logs
           path: |
             ios/PhoenixRealtimeVisionAssist/xcodebuild.log
+            ios/PhoenixRealtimeVisionAssist/xcodebuild-tests.log
             ios/PhoenixRealtimeVisionAssist/xcodebuild-device.log
           if-no-files-found: ignore
