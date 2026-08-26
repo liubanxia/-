@@ -74,6 +74,11 @@ targets:
           fi
     info:
       path: Sources/Broadcast/Info.plist
+      properties:
+        CFBundleDisplayName: Phoenix Broadcast
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.broadcast-services-upload
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).BroadcastSampleHandler"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.phoenix.realtimevisionassist.broadcast
