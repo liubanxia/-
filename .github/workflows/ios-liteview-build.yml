@@ -9,6 +9,9 @@ on:
       - '.github/workflows/ios-liteview-build.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   simulator-build:
     runs-on: macos-15
@@ -170,6 +173,79 @@ jobs:
           echo "DEVICE_APP=$APP"
           echo "DEVICE_EXT=$EXT"
           du -sh "$APP" "$EXT" "$APP/yolo11n.mlmodelc" "$EXT/yolo11n.mlmodelc"
+
+      - name: Package unsigned sideload IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRODUCTS="$RUNNER_TEMP/LiteViewDeviceDerivedData/Build/Products/Release-iphoneos"
+          APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
+          PAYLOAD="$RUNNER_TEMP/LiteViewSideload/Payload"
+          IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
+
+          rm -rf "${PAYLOAD%/Payload}" "$IPA" "$MANIFEST"
+          mkdir -p "$PAYLOAD"
+          cp -R "$APP" "$PAYLOAD/"
+
+          APP_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
+          EXT="$APP/PlugIns/PhoenixBroadcastExtension.appex"
+          EXT_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$EXT/Info.plist")"
+          EXT_POINT="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$EXT/Info.plist")"
+
+          test "$APP_ID" = 'com.phoenix.realtimevisionassist'
+          test "$EXT_ID" = 'com.phoenix.realtimevisionassist.broadcast'
+          test "$EXT_POINT" = 'com.apple.broadcast-services-upload'
+          test -d "$EXT/yolo11n.mlmodelc"
+
+          (
+            cd "${PAYLOAD%/Payload}"
+            /usr/bin/zip -qry "$IPA" Payload
+          )
+
+          cat > "$MANIFEST" <<EOF
+          LiteView unsigned sideload package
+          commit=${GITHUB_SHA}
+          app_bundle_id=${APP_ID}
+          extension_bundle_id=${EXT_ID}
+          extension_point=${EXT_POINT}
+          app_group=group.com.phoenix.realtimevisionassist
+          signing=unsigned; SideStore/Feather must re-sign the app and embedded Broadcast Extension
+          EOF
+
+          test -s "$IPA"
+          unzip -l "$IPA" | grep -Fq 'Payload/PhoenixRealtimeVisionAssist.app/PlugIns/PhoenixBroadcastExtension.appex/'
+          unzip -l "$IPA" | grep -Fq 'Payload/PhoenixRealtimeVisionAssist.app/yolo11n.mlmodelc/'
+          unzip -l "$IPA" | grep -Fq 'Payload/PhoenixRealtimeVisionAssist.app/PlugIns/PhoenixBroadcastExtension.appex/yolo11n.mlmodelc/'
+          ls -lh "$IPA" "$MANIFEST"
+
+      - name: Upload sideload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-unsigned-sideload
+          path: |
+            ${{ runner.temp }}/LiteView-unsigned-sideload.ipa
+            ${{ runner.temp }}/LiteView-sideload-manifest.txt
+          if-no-files-found: error
+
+      - name: Publish public sideload release
+        if: github.ref == 'refs/heads/feature/ios-realtime-vision-assist'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG='liteview-sideload-latest'
+          IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
+          else
+            gh release create "$TAG" "$IPA" "$MANIFEST" \
+              --title 'LiteView unsigned sideload test package' \
+              --notes 'Unsigned iPhone test package for local re-signing with SideStore/Feather. Includes the ReplayKit Broadcast Extension and Core ML resources.'
+          fi
 
       - name: Upload build logs on failure
         if: failure()
