@@ -1,0 +1,87 @@
+name: LiteView CoreML Export
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/ios-realtime-vision-assist
+    paths:
+      - '.github/workflows/liteview-coreml-export.yml'
+
+jobs:
+  export-coreml:
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ultralytics coremltools
+
+      - name: Download YOLO11n with fallback routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/models
+          MODEL=build/models/yolo11n.pt
+          URLS=(
+            'https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt'
+            'https://ghproxy.net/https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt'
+            'https://ghfast.top/https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt'
+          )
+          ok=0
+          for url in "${URLS[@]}"; do
+            echo ">>> $url"
+            if curl -fL -C - \
+              --retry 8 \
+              --retry-delay 3 \
+              --retry-all-errors \
+              --connect-timeout 20 \
+              --speed-time 90 \
+              --speed-limit 1024 \
+              -o "$MODEL" "$url"; then
+              if [[ -s "$MODEL" ]]; then ok=1; break; fi
+            fi
+          done
+          [[ "$ok" -eq 1 ]] || { echo 'ERROR: model download failed'; exit 2; }
+          ls -lh "$MODEL"
+
+      - name: Export Core ML
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd build/models
+          python - <<'PY'
+          from ultralytics import YOLO
+          model = YOLO('yolo11n.pt')
+          result = model.export(format='coreml', imgsz=640, nms=True, half=True)
+          print('EXPORT_RESULT=', result)
+          PY
+          find . -maxdepth 2 \( -name '*.mlpackage' -o -name '*.mlmodel' \) -print
+
+      - name: Package exported model
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact
+          find build/models -maxdepth 2 -name '*.mlpackage' -exec cp -R {} artifact/ \;
+          find build/models -maxdepth 2 -name '*.mlmodel' -exec cp {} artifact/ \;
+          test -n "$(find artifact -mindepth 1 -maxdepth 1 -print -quit)" || { echo 'ERROR: no Core ML output found'; exit 3; }
+          du -sh artifact/*
+
+      - name: Upload Core ML artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-yolo11n-coreml
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 7
