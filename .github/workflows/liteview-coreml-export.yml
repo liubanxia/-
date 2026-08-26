@@ -25,7 +25,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install ultralytics coremltools
+          python -m pip install 'numpy<=2.3.5' 'coremltools>=9.0' 'ultralytics[export-coreml]'
+          python - <<'PY'
+          import numpy, coremltools, ultralytics
+          print('numpy=', numpy.__version__)
+          print('coremltools=', coremltools.__version__)
+          print('ultralytics=', ultralytics.__version__)
+          PY
 
       - name: Download YOLO11n with fallback routes
         shell: bash
@@ -61,9 +67,11 @@ jobs:
           set -euo pipefail
           cd build/models
           python - <<'PY'
+          import numpy as np
           from ultralytics import YOLO
+          print('numpy before export=', np.__version__)
           model = YOLO('yolo11n.pt')
-          result = model.export(format='coreml', imgsz=640, nms=True, half=True)
+          result = model.export(format='coreml', imgsz=640, nms=False)
           print('EXPORT_RESULT=', result)
           PY
           find . -maxdepth 2 \( -name '*.mlpackage' -o -name '*.mlmodel' \) -print
