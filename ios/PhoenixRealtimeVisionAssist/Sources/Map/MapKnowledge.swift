@@ -75,8 +75,12 @@ final class MapKnowledgeStore: @unchecked Sendable {
     private let lock = NSLock()
     private var maps: [DeltaMapID: MapKnowledge]
 
-    init(seed: [MapKnowledge] = DeltaMapID.allCases.map(MapKnowledge.empty)) {
-        self.maps = Dictionary(uniqueKeysWithValues: seed.map { ($0.mapID, $0) })
+    init(seed: [MapKnowledge] = DeltaMapSeeds.all) {
+        var merged = Dictionary(uniqueKeysWithValues: DeltaMapID.allCases.map { ($0, MapKnowledge.empty($0)) })
+        for knowledge in seed {
+            merged[knowledge.mapID] = knowledge
+        }
+        self.maps = merged
     }
 
     func knowledge(for mapID: DeltaMapID) -> MapKnowledge {
