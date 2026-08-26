@@ -82,3 +82,25 @@ targets:
         APPLICATION_EXTENSION_API_ONLY: YES
     entitlements:
       path: Config/Broadcast.entitlements
+  PhoenixRealtimeVisionAssistTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+      - path: Sources/Core/RuntimeConfiguration.swift
+      - path: Sources/Map
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.phoenix.realtimevisionassist.tests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  PhoenixRealtimeVisionAssist:
+    build:
+      targets:
+        PhoenixRealtimeVisionAssist: all
+        PhoenixBroadcastExtension: all
+        PhoenixRealtimeVisionAssistTests:
+          - test
+    test:
+      targets:
+        - PhoenixRealtimeVisionAssistTests
