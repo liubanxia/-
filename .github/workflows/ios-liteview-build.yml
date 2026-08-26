@@ -26,6 +26,36 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Stage Core ML release model
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          MODEL_DIR="$ROOT/Resources/Models"
+          ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
+          UNZIP_DIR="$RUNNER_TEMP/liteview-yolo11n-coreml"
+          URL='https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
+
+          rm -rf "$MODEL_DIR" "$UNZIP_DIR"
+          mkdir -p "$MODEL_DIR" "$UNZIP_DIR"
+
+          curl -fL \
+            --retry 8 \
+            --retry-delay 2 \
+            --retry-all-errors \
+            --connect-timeout 20 \
+            -o "$ZIP" \
+            "$URL"
+
+          unzip -q "$ZIP" -d "$UNZIP_DIR"
+          SRC="$(find "$UNZIP_DIR" -type d -name 'yolo11n.mlpackage' -print -quit)"
+          test -n "$SRC"
+          cp -R "$SRC" "$MODEL_DIR/yolo11n.mlpackage"
+
+          test -f "$MODEL_DIR/yolo11n.mlpackage/Manifest.json"
+          test -f "$MODEL_DIR/yolo11n.mlpackage/Data/com.apple.CoreML/model.mlmodel"
+          du -sh "$MODEL_DIR/yolo11n.mlpackage"
+
       - name: Generate project
         working-directory: ios/PhoenixRealtimeVisionAssist
         run: xcodegen generate
@@ -38,13 +68,36 @@ jobs:
         working-directory: ios/PhoenixRealtimeVisionAssist
         run: |
           set -o pipefail
+          rm -rf "$RUNNER_TEMP/LiteViewDerivedData"
           xcodebuild \
             -project PhoenixRealtimeVisionAssist.xcodeproj \
             -scheme PhoenixRealtimeVisionAssist \
             -sdk iphonesimulator \
             -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/LiteViewDerivedData" \
             CODE_SIGNING_ALLOWED=NO \
             build | tee xcodebuild.log
+
+      - name: Verify compiled Core ML resource
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRODUCTS="$RUNNER_TEMP/LiteViewDerivedData/Build/Products/Debug-iphonesimulator"
+          APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
+          EXT="$PRODUCTS/PhoenixBroadcastExtension.appex"
+
+          test -d "$APP"
+          test -d "$EXT"
+
+          APP_MODEL="$(find "$APP" -type d -name 'yolo11n.mlmodelc' -print -quit)"
+          EXT_MODEL="$(find "$EXT" -type d -name 'yolo11n.mlmodelc' -print -quit)"
+
+          test -n "$APP_MODEL"
+          test -n "$EXT_MODEL"
+
+          echo "APP_MODEL=$APP_MODEL"
+          echo "EXT_MODEL=$EXT_MODEL"
+          du -sh "$APP_MODEL" "$EXT_MODEL"
 
       - name: Upload build log on failure
         if: failure()
