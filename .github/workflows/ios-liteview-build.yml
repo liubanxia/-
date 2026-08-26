@@ -110,10 +110,44 @@ jobs:
           echo "EXT_MODEL=$EXT_MODEL"
           du -sh "$APP_MODEL" "$EXT_MODEL"
 
-      - name: Upload build log on failure
+      - name: Build unsigned iPhone device target
+        working-directory: ios/PhoenixRealtimeVisionAssist
+        run: |
+          set -o pipefail
+          rm -rf "$RUNNER_TEMP/LiteViewDeviceDerivedData"
+          xcodebuild \
+            -project PhoenixRealtimeVisionAssist.xcodeproj \
+            -scheme PhoenixRealtimeVisionAssist \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/LiteViewDeviceDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build | tee xcodebuild-device.log
+
+      - name: Verify unsigned device bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRODUCTS="$RUNNER_TEMP/LiteViewDeviceDerivedData/Build/Products/Release-iphoneos"
+          APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
+          EXT="$APP/PlugIns/PhoenixBroadcastExtension.appex"
+
+          test -d "$APP"
+          test -d "$EXT"
+          test -d "$APP/yolo11n.mlmodelc"
+          test -d "$EXT/yolo11n.mlmodelc"
+
+          echo "DEVICE_APP=$APP"
+          echo "DEVICE_EXT=$EXT"
+          du -sh "$APP" "$EXT" "$APP/yolo11n.mlmodelc" "$EXT/yolo11n.mlmodelc"
+
+      - name: Upload build logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-xcodebuild-log
-          path: ios/PhoenixRealtimeVisionAssist/xcodebuild.log
+          name: liteview-xcodebuild-logs
+          path: |
+            ios/PhoenixRealtimeVisionAssist/xcodebuild.log
+            ios/PhoenixRealtimeVisionAssist/xcodebuild-device.log
           if-no-files-found: ignore
