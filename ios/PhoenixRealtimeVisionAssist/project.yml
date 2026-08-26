@@ -7,6 +7,10 @@ settings:
   base:
     SWIFT_VERSION: 5.10
     IPHONEOS_DEPLOYMENT_TARGET: 17.0
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: 0.1.0
 targets:
   PhoenixRealtimeVisionAssist:
     type: application
@@ -22,6 +26,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.phoenix.realtimevisionassist
+        GENERATE_INFOPLIST_FILE: NO
     entitlements:
       path: Config/App.entitlements
     dependencies:
@@ -40,5 +45,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.phoenix.realtimevisionassist.broadcast
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
     entitlements:
       path: Config/Broadcast.entitlements
