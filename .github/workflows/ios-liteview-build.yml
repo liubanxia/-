@@ -26,18 +26,21 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Stage Core ML release model
+      - name: Stage and compile Core ML release model
         shell: bash
         run: |
           set -euo pipefail
           ROOT='ios/PhoenixRealtimeVisionAssist'
           MODEL_DIR="$ROOT/Resources/Models"
+          PACKAGE="$MODEL_DIR/yolo11n.mlpackage"
+          COMPILED="$MODEL_DIR/yolo11n.mlmodelc"
           ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
           UNZIP_DIR="$RUNNER_TEMP/liteview-yolo11n-coreml"
+          COMPILE_DIR="$RUNNER_TEMP/liteview-coreml-compiled"
           URL='https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
 
-          rm -rf "$MODEL_DIR" "$UNZIP_DIR"
-          mkdir -p "$MODEL_DIR" "$UNZIP_DIR"
+          rm -rf "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
+          mkdir -p "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
 
           curl -fL \
             --retry 8 \
@@ -50,11 +53,19 @@ jobs:
           unzip -q "$ZIP" -d "$UNZIP_DIR"
           SRC="$(find "$UNZIP_DIR" -type d -name 'yolo11n.mlpackage' -print -quit)"
           test -n "$SRC"
-          cp -R "$SRC" "$MODEL_DIR/yolo11n.mlpackage"
+          cp -R "$SRC" "$PACKAGE"
 
-          test -f "$MODEL_DIR/yolo11n.mlpackage/Manifest.json"
-          test -f "$MODEL_DIR/yolo11n.mlpackage/Data/com.apple.CoreML/model.mlmodel"
-          du -sh "$MODEL_DIR/yolo11n.mlpackage"
+          test -f "$PACKAGE/Manifest.json"
+          test -f "$PACKAGE/Data/com.apple.CoreML/model.mlmodel"
+
+          xcrun coremlc compile "$PACKAGE" "$COMPILE_DIR"
+          SRC_COMPILED="$(find "$COMPILE_DIR" -type d -name '*.mlmodelc' -print -quit)"
+          test -n "$SRC_COMPILED"
+          cp -R "$SRC_COMPILED" "$COMPILED"
+
+          test -d "$COMPILED"
+          find "$COMPILED" -maxdepth 2 -type f -print
+          du -sh "$PACKAGE" "$COMPILED"
 
       - name: Generate project
         working-directory: ios/PhoenixRealtimeVisionAssist
