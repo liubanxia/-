@@ -1,0 +1,55 @@
+name: LiteView iOS Build
+
+on:
+  push:
+    branches:
+      - feature/ios-realtime-vision-assist
+    paths:
+      - 'ios/PhoenixRealtimeVisionAssist/**'
+      - '.github/workflows/ios-liteview-build.yml'
+  workflow_dispatch:
+
+jobs:
+  simulator-build:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        working-directory: ios/PhoenixRealtimeVisionAssist
+        run: xcodegen generate
+
+      - name: List schemes
+        working-directory: ios/PhoenixRealtimeVisionAssist
+        run: xcodebuild -project PhoenixRealtimeVisionAssist.xcodeproj -list
+
+      - name: Build iOS Simulator
+        working-directory: ios/PhoenixRealtimeVisionAssist
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project PhoenixRealtimeVisionAssist.xcodeproj \
+            -scheme PhoenixRealtimeVisionAssist \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee xcodebuild.log
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-xcodebuild-log
+          path: ios/PhoenixRealtimeVisionAssist/xcodebuild.log
+          if-no-files-found: ignore
