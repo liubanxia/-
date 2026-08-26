@@ -13,8 +13,8 @@ struct DotOverlayView: View {
                 Color.clear
                 ForEach(state.targets) { target in
                     Circle()
-                        .fill(Color.red.opacity(0.35 + 0.65 * target.audioProximity))
-                        .frame(width: 8, height: 8)
+                        .fill(Color.red.opacity(0.28 + 0.72 * target.audioProximity))
+                        .frame(width: 4, height: 4)
                         .position(
                             x: geometry.size.width * target.point.x,
                             y: geometry.size.height * target.point.y
