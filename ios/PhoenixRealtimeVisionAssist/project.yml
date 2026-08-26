@@ -26,6 +26,17 @@ targets:
       - path: Resources/Models/yolo11n.mlmodelc
         optional: true
         type: folder
+    postBuildScripts:
+      - name: Copy LiteView Core ML model
+        script: |
+          set -e
+          SRC="${SRCROOT}/Resources/Models/yolo11n.mlmodelc"
+          DST="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/yolo11n.mlmodelc"
+          if [ -d "$SRC" ]; then
+            rm -rf "$DST"
+            mkdir -p "$(dirname "$DST")"
+            cp -R "$SRC" "$DST"
+          fi
     info:
       path: Sources/App/Info.plist
     settings:
@@ -50,6 +61,17 @@ targets:
       - path: Resources/Models/yolo11n.mlmodelc
         optional: true
         type: folder
+    postBuildScripts:
+      - name: Copy LiteView Core ML model
+        script: |
+          set -e
+          SRC="${SRCROOT}/Resources/Models/yolo11n.mlmodelc"
+          DST="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/yolo11n.mlmodelc"
+          if [ -d "$SRC" ]; then
+            rm -rf "$DST"
+            mkdir -p "$(dirname "$DST")"
+            cp -R "$SRC" "$DST"
+          fi
     info:
       path: Sources/Broadcast/Info.plist
     settings:
