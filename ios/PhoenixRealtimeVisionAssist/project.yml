@@ -23,8 +23,9 @@ targets:
       - path: Sources/Map
       - path: Sources/Overlay
     resources:
-      - path: Resources/Models/yolo11n.mlpackage
+      - path: Resources/Models/yolo11n.mlmodelc
         optional: true
+        type: folder
     info:
       path: Sources/App/Info.plist
     settings:
@@ -46,8 +47,9 @@ targets:
       - path: Sources/Audio
       - path: Sources/Map
     resources:
-      - path: Resources/Models/yolo11n.mlpackage
+      - path: Resources/Models/yolo11n.mlmodelc
         optional: true
+        type: folder
     info:
       path: Sources/Broadcast/Info.plist
     settings:
