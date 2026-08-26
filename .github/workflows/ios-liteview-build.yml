@@ -26,6 +26,22 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Validate ReplayKit and future Mac prep
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          APP_ENT="$ROOT/Config/App.entitlements"
+          EXT_ENT="$ROOT/Config/Broadcast.entitlements"
+          EXT_PLIST="$ROOT/Sources/Broadcast/Info.plist"
+          PREP="$ROOT/scripts/macos_prepare_xcode.sh"
+
+          bash -n "$PREP"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' "$APP_ENT")" = 'group.com.phoenix.realtimevisionassist'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' "$EXT_ENT")" = 'group.com.phoenix.realtimevisionassist'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$EXT_PLIST")" = 'com.apple.broadcast-services-upload'
+          /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT_PLIST" | grep -Fq 'BroadcastSampleHandler'
+
       - name: Stage and compile Core ML release model
         shell: bash
         run: |
