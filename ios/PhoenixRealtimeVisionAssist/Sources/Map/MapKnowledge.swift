@@ -6,6 +6,7 @@ enum DeltaMapID: String, Codable, CaseIterable, Sendable {
     case layaliGrove
     case brakkesh
     case tidePrison
+    case az3
 }
 
 enum FloorRelation: String, Codable, Sendable {
