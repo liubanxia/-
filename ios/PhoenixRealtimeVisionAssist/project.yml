@@ -20,6 +20,7 @@ targets:
       - path: Sources/Core
       - path: Sources/Vision
       - path: Sources/Audio
+      - path: Sources/Map
       - path: Sources/Overlay
     info:
       path: Sources/App/Info.plist
@@ -40,6 +41,7 @@ targets:
       - path: Sources/Core
       - path: Sources/Vision
       - path: Sources/Audio
+      - path: Sources/Map
     info:
       path: Sources/Broadcast/Info.plist
     settings:
