@@ -183,8 +183,9 @@ jobs:
           PAYLOAD="$RUNNER_TEMP/LiteViewSideload/Payload"
           IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
           MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
+          VERIFY="$RUNNER_TEMP/LiteViewSideloadVerify"
 
-          rm -rf "${PAYLOAD%/Payload}" "$IPA" "$MANIFEST"
+          rm -rf "${PAYLOAD%/Payload}" "$IPA" "$MANIFEST" "$VERIFY"
           mkdir -p "$PAYLOAD"
           cp -R "$APP" "$PAYLOAD/"
 
@@ -214,9 +215,29 @@ jobs:
           EOF
 
           test -s "$IPA"
-          unzip -l "$IPA" | grep -Fq 'Payload/PhoenixRealtimeVisionAssist.app/PlugIns/PhoenixBroadcastExtension.appex/'
-          unzip -l "$IPA" | grep -Fq 'Payload/PhoenixRealtimeVisionAssist.app/yolo11n.mlmodelc/'
-          unzip -l "$IPA" | grep -Fq 'Payload/PhoenixRealtimeVisionAssist.app/PlugIns/PhoenixBroadcastExtension.appex/yolo11n.mlmodelc/'
+          mkdir -p "$VERIFY"
+          /usr/bin/unzip -q "$IPA" -d "$VERIFY"
+
+          VAPP="$VERIFY/Payload/PhoenixRealtimeVisionAssist.app"
+          VEXT="$VAPP/PlugIns/PhoenixBroadcastExtension.appex"
+
+          test -f "$VAPP/Info.plist"
+          test -f "$VEXT/Info.plist"
+          test -d "$VAPP/yolo11n.mlmodelc"
+          test -d "$VEXT/yolo11n.mlmodelc"
+
+          VAPP_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$VAPP/Info.plist")"
+          VEXT_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$VEXT/Info.plist")"
+          VEXT_POINT="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$VEXT/Info.plist")"
+
+          test "$VAPP_ID" = 'com.phoenix.realtimevisionassist'
+          test "$VEXT_ID" = 'com.phoenix.realtimevisionassist.broadcast'
+          test "$VEXT_POINT" = 'com.apple.broadcast-services-upload'
+
+          echo "IPA_APP=$VAPP_ID"
+          echo "IPA_EXTENSION=$VEXT_ID"
+          echo "IPA_EXTENSION_POINT=$VEXT_POINT"
+          du -sh "$VAPP" "$VEXT" "$VAPP/yolo11n.mlmodelc" "$VEXT/yolo11n.mlmodelc"
           ls -lh "$IPA" "$MANIFEST"
 
       - name: Upload sideload IPA artifact
