@@ -2,6 +2,7 @@ import SwiftUI
 
 final class OverlayState: ObservableObject {
     @Published var targets: [RealtimeTarget] = []
+    @Published var soundIndicators: [SoundIndicatorObservation] = []
 }
 
 struct DotOverlayView: View {
@@ -33,8 +34,37 @@ struct DotOverlayView: View {
                             )
                     }
                 }
+
+                ForEach(Array(state.soundIndicators.prefix(2).enumerated()), id: \.offset) { _, indicator in
+                    soundCue(indicator, size: geometry.size)
+                }
             }
             .allowsHitTesting(false)
         }
+    }
+
+    @ViewBuilder
+    private func soundCue(_ indicator: SoundIndicatorObservation, size: CGSize) -> some View {
+        let normalizedX = min(0.96, max(0.04, 0.5 + indicator.horizontal * 0.46))
+        let diameter: CGFloat
+        switch indicator.distance {
+        case .near: diameter = 5
+        case .medium: diameter = 4
+        case .far: diameter = 3
+        }
+
+        let opacity = min(0.92, max(0.35, indicator.confidence))
+        let cueColor: Color = indicator.kind == .gunfire ? .red : .white
+
+        Circle()
+            .fill(cueColor.opacity(opacity))
+            .frame(width: diameter, height: diameter)
+            .overlay(
+                Circle().stroke(Color.black.opacity(0.42), lineWidth: 0.5)
+            )
+            .position(
+                x: size.width * normalizedX,
+                y: max(8, size.height * 0.055)
+            )
     }
 }
