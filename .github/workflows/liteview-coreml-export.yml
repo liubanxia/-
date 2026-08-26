@@ -8,6 +8,9 @@ on:
     paths:
       - '.github/workflows/liteview-coreml-export.yml'
 
+permissions:
+  contents: write
+
 jobs:
   export-coreml:
     runs-on: macos-15
@@ -84,7 +87,8 @@ jobs:
           find build/models -maxdepth 2 -name '*.mlpackage' -exec cp -R {} artifact/ \;
           find build/models -maxdepth 2 -name '*.mlmodel' -exec cp {} artifact/ \;
           test -n "$(find artifact -mindepth 1 -maxdepth 1 -print -quit)" || { echo 'ERROR: no Core ML output found'; exit 3; }
-          du -sh artifact/*
+          ditto -c -k --sequesterRsrc --keepParent artifact liteview-yolo11n-coreml.zip
+          du -sh artifact/* liteview-yolo11n-coreml.zip
 
       - name: Upload Core ML artifact
         uses: actions/upload-artifact@v4
@@ -93,3 +97,19 @@ jobs:
           path: artifact/
           if-no-files-found: error
           retention-days: 7
+
+      - name: Publish public release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='liteview-coreml-latest'
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" liteview-yolo11n-coreml.zip --clobber
+          else
+            gh release create "$TAG" liteview-yolo11n-coreml.zip \
+              --title 'LiteView Core ML latest' \
+              --notes 'Automatically exported Core ML model for LiteView.' \
+              --target "${GITHUB_SHA}"
+          fi
