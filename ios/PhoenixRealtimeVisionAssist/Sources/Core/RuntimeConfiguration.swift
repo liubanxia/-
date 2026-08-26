@@ -7,6 +7,11 @@ struct RuntimeConfiguration: Sendable {
     var minimumConfidence: Float = 0.45
     var audioWindowMilliseconds: Double = 160
     var useHeadBiasedPoint: Bool = true
+    var predictionCount: Int = 2
+    var predictionStepSeconds: Double = 0.18
+    var predictionHoldSeconds: Double = 0.45
+    var predictionMatchRadius: Double = 0.18
+    var maxPredictionOffsetPerStep: Double = 0.10
 
     static let `default` = RuntimeConfiguration()
 }
@@ -38,6 +43,8 @@ struct RealtimeTarget: Codable, Sendable, Equatable, Identifiable {
     let point: NormalizedPoint
     let confidence: Double
     let audioProximity: Double
+    let isVisible: Bool
+    let predictedPoints: [NormalizedPoint]
     let timestamp: TimeInterval
 
     init(
@@ -45,12 +52,16 @@ struct RealtimeTarget: Codable, Sendable, Equatable, Identifiable {
         point: NormalizedPoint,
         confidence: Double,
         audioProximity: Double = 0,
+        isVisible: Bool = true,
+        predictedPoints: [NormalizedPoint] = [],
         timestamp: TimeInterval = ProcessInfo.processInfo.systemUptime
     ) {
         self.id = id
         self.point = point
         self.confidence = confidence
         self.audioProximity = min(max(audioProximity, 0), 1)
+        self.isVisible = isVisible
+        self.predictedPoints = predictedPoints
         self.timestamp = timestamp
     }
 }

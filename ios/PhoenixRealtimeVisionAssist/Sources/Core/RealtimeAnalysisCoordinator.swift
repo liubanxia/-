@@ -22,6 +22,7 @@ final class RealtimeAnalysisCoordinator {
     }
 
     func reset() {
+        detector.reset()
         audioAnalyzer.reset()
     }
 }
