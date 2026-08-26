@@ -18,6 +18,7 @@ final class RealtimePersonDetector {
     private var mapContext: MapPredictionContext?
     private let configuration: RuntimeConfiguration
     private let mapPredictionEngine: MapPredictionEngine
+    private let coreMLDetector = CoreMLPersonDetector()
 
     init(
         configuration: RuntimeConfiguration = .default,
@@ -46,34 +47,25 @@ final class RealtimePersonDetector {
         queue.async { [weak self] in
             guard let self else { return }
 
-            let request = VNDetectHumanRectanglesRequest()
-            request.upperBodyOnly = false
-            let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
-
-            do {
-                try handler.perform([request])
-                let observations = (request.results ?? []).filter { $0.confidence >= self.configuration.minimumConfidence }
-                let detections = observations.map { observation -> (Double, Double, Double) in
-                    let box = observation.boundingBox
-                    let x = Double(box.midX)
-                    let rawY: Double
-                    if self.configuration.useHeadBiasedPoint {
-                        rawY = Double(box.minY + box.height * 0.78)
-                    } else {
-                        rawY = Double(box.midY)
-                    }
-                    return (x, 1.0 - rawY, Double(observation.confidence))
-                }
-
-                let targets = self.updateTracks(
-                    detections: detections,
-                    timestamp: now,
-                    audioProximity: audioProximity
-                )
-                completion(targets)
-            } catch {
-                completion([])
+            let detections: [(Double, Double, Double)]
+            if self.coreMLDetector.isAvailable,
+               let modelDetections = try? self.coreMLDetector.detect(
+                pixelBuffer: pixelBuffer,
+                minimumConfidence: self.configuration.minimumConfidence,
+                useHeadBiasedPoint: self.configuration.useHeadBiasedPoint
+               ),
+               !modelDetections.isEmpty {
+                detections = modelDetections
+            } else {
+                detections = self.detectWithAppleVision(pixelBuffer: pixelBuffer)
             }
+
+            let targets = self.updateTracks(
+                detections: detections,
+                timestamp: now,
+                audioProximity: audioProximity
+            )
+            completion(targets)
         }
     }
 
@@ -96,6 +88,31 @@ final class RealtimePersonDetector {
             self?.tracks.removeAll(keepingCapacity: false)
             self?.lastAnalysisTime = 0
             self?.mapContext = nil
+        }
+    }
+
+    private func detectWithAppleVision(pixelBuffer: CVPixelBuffer) -> [(Double, Double, Double)] {
+        let request = VNDetectHumanRectanglesRequest()
+        request.upperBodyOnly = false
+        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+
+        do {
+            try handler.perform([request])
+            return (request.results ?? [])
+                .filter { $0.confidence >= configuration.minimumConfidence }
+                .map { observation -> (Double, Double, Double) in
+                    let box = observation.boundingBox
+                    let x = Double(box.midX)
+                    let rawY: Double
+                    if configuration.useHeadBiasedPoint {
+                        rawY = Double(box.minY + box.height * 0.78)
+                    } else {
+                        rawY = Double(box.midY)
+                    }
+                    return (x, 1.0 - rawY, Double(observation.confidence))
+                }
+        } catch {
+            return []
         }
     }
 
