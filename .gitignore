@@ -47,6 +47,9 @@ inspect_yunpacs*
 *.hdf5
 *.engine
 *.plan
+*.mlmodel
+*.mlpackage/
+*.mlmodelc/
 
 # Logs / outputs / caches
 *.log
