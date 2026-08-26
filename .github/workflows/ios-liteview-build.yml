@@ -97,6 +97,31 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build | tee xcodebuild-device.log
 
+      - name: Preserve ReplayKit metadata in unsigned extension bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          SOURCE_PLIST="$ROOT/Sources/Broadcast/Info.plist"
+          PRODUCTS="$RUNNER_TEMP/LiteViewDeviceDerivedData/Build/Products/Release-iphoneos"
+          APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
+          EXT="$APP/PlugIns/PhoenixBroadcastExtension.appex"
+          BUILT_PLIST="$EXT/Info.plist"
+
+          test -f "$SOURCE_PLIST"
+          test -f "$BUILT_PLIST"
+
+          EXT_POINT="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$SOURCE_PLIST")"
+          EXT_CLASS="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$SOURCE_PLIST")"
+
+          /usr/libexec/PlistBuddy -c 'Delete :NSExtension' "$BUILT_PLIST" >/dev/null 2>&1 || true
+          /usr/libexec/PlistBuddy -c 'Add :NSExtension dict' "$BUILT_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :NSExtension:NSExtensionPointIdentifier string $EXT_POINT" "$BUILT_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :NSExtension:NSExtensionPrincipalClass string $EXT_CLASS" "$BUILT_PLIST"
+
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$BUILT_PLIST")" = 'com.apple.broadcast-services-upload'
+          /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$BUILT_PLIST" | grep -Fq 'BroadcastSampleHandler'
+
       - name: Verify unsigned device bundle
         shell: bash
         run: |
@@ -113,10 +138,12 @@ jobs:
           APP_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
           EXT_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$EXT/Info.plist")"
           EXT_POINT="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$EXT/Info.plist")"
+          EXT_CLASS="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT/Info.plist")"
 
           test "$APP_ID" = 'com.phoenix.realtimevisionassist'
           test "$EXT_ID" = 'com.phoenix.realtimevisionassist.broadcast'
           test "$EXT_POINT" = 'com.apple.broadcast-services-upload'
+          echo "$EXT_CLASS" | grep -Fq 'BroadcastSampleHandler'
 
           echo "DEVICE_APP=$APP"
           echo "DEVICE_EXT=$EXT"
@@ -156,10 +183,12 @@ jobs:
           VAPP_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$VAPP/Info.plist")"
           VEXT_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$VEXT/Info.plist")"
           VEXT_POINT="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$VEXT/Info.plist")"
+          VEXT_CLASS="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$VEXT/Info.plist")"
 
           test "$VAPP_ID" = 'com.phoenix.realtimevisionassist'
           test "$VEXT_ID" = 'com.phoenix.realtimevisionassist.broadcast'
           test "$VEXT_POINT" = 'com.apple.broadcast-services-upload'
+          echo "$VEXT_CLASS" | grep -Fq 'BroadcastSampleHandler'
 
           cat > "$MANIFEST" <<EOF
           LiteView unsigned sideload package
@@ -167,6 +196,7 @@ jobs:
           app_bundle_id=${VAPP_ID}
           extension_bundle_id=${VEXT_ID}
           extension_point=${VEXT_POINT}
+          extension_class=${VEXT_CLASS}
           app_group=group.com.phoenix.realtimevisionassist
           signing=unsigned; SideStore/Feather must re-sign the app and embedded Broadcast Extension
           EOF
@@ -174,6 +204,7 @@ jobs:
           echo "IPA_APP=$VAPP_ID"
           echo "IPA_EXTENSION=$VEXT_ID"
           echo "IPA_EXTENSION_POINT=$VEXT_POINT"
+          echo "IPA_EXTENSION_CLASS=$VEXT_CLASS"
           ls -lh "$IPA" "$MANIFEST"
 
       - name: Upload sideload IPA artifact
