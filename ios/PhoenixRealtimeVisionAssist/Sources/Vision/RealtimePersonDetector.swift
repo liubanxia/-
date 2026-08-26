@@ -51,7 +51,7 @@ final class RealtimePersonDetector {
             if self.coreMLDetector.isAvailable,
                let modelDetections = try? self.coreMLDetector.detect(
                 pixelBuffer: pixelBuffer,
-                minimumConfidence: self.configuration.minimumConfidence,
+                minimumConfidence: Double(self.configuration.minimumConfidence),
                 useHeadBiasedPoint: self.configuration.useHeadBiasedPoint
                ),
                !modelDetections.isEmpty {
