@@ -1,4 +1,5 @@
 import CoreMedia
+import Foundation
 
 final class RealtimeAnalysisCoordinator {
     private let detector: RealtimePersonDetector
@@ -19,6 +20,18 @@ final class RealtimeAnalysisCoordinator {
 
     func consumeAudio(_ sampleBuffer: CMSampleBuffer) {
         audioAnalyzer.consume(sampleBuffer: sampleBuffer)
+    }
+
+    func updateMapContext(_ context: MapPredictionContext?) {
+        detector.updateMapContext(context)
+    }
+
+    func replaceMapKnowledge(_ knowledge: MapKnowledge) {
+        detector.replaceMapKnowledge(knowledge)
+    }
+
+    func loadMapKnowledgeJSON(_ data: Data) throws {
+        try detector.loadMapKnowledgeJSON(data)
     }
 
     func reset() {

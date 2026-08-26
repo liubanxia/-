@@ -15,10 +15,16 @@ final class RealtimePersonDetector {
     private let queue = DispatchQueue(label: "phoenix.vision.detector", qos: .userInitiated)
     private var lastAnalysisTime: TimeInterval = 0
     private var tracks: [MotionTrack] = []
+    private var mapContext: MapPredictionContext?
     private let configuration: RuntimeConfiguration
+    private let mapPredictionEngine: MapPredictionEngine
 
-    init(configuration: RuntimeConfiguration = .default) {
+    init(
+        configuration: RuntimeConfiguration = .default,
+        mapPredictionEngine: MapPredictionEngine = MapPredictionEngine()
+    ) {
         self.configuration = configuration
+        self.mapPredictionEngine = mapPredictionEngine
     }
 
     func analyze(
@@ -71,10 +77,25 @@ final class RealtimePersonDetector {
         }
     }
 
+    func updateMapContext(_ context: MapPredictionContext?) {
+        queue.async { [weak self] in
+            self?.mapContext = context
+        }
+    }
+
+    func replaceMapKnowledge(_ knowledge: MapKnowledge) {
+        mapPredictionEngine.replaceKnowledge(knowledge)
+    }
+
+    func loadMapKnowledgeJSON(_ data: Data) throws {
+        try mapPredictionEngine.loadKnowledgeJSON(data)
+    }
+
     func reset() {
         queue.async { [weak self] in
             self?.tracks.removeAll(keepingCapacity: false)
             self?.lastAnalysisTime = 0
+            self?.mapContext = nil
         }
     }
 
@@ -154,18 +175,17 @@ final class RealtimePersonDetector {
         let age = max(timestamp - track.lastSeen, 0)
         let basePoint = projectedPoint(track, after: visible ? 0 : age)
         let count = max(configuration.predictionCount, 0)
-        let predictedPoints: [NormalizedPoint]
 
-        if count == 0 {
-            predictedPoints = []
-        } else {
-            predictedPoints = (1...count).map { step in
-                projectedPoint(
-                    track,
-                    after: age + configuration.predictionStepSeconds * Double(step)
-                )
-            }
-        }
+        let predictedPoints = mapPredictionEngine.predict(
+            from: basePoint,
+            velocityX: track.velocityX,
+            velocityY: track.velocityY,
+            context: mapContext,
+            count: count,
+            stepSeconds: configuration.predictionStepSeconds,
+            maxOffsetPerStep: configuration.maxPredictionOffsetPerStep
+        )
+        .map(\.point)
 
         return RealtimeTarget(
             id: track.id,
