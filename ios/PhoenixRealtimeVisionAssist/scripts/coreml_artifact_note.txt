@@ -1,0 +1,3 @@
+Core ML export artifact name: liteview-yolo11n-coreml
+Workflow: .github/workflows/liteview-coreml-export.yml
+The artifact is temporary CI output and model weights are not committed to Git.
