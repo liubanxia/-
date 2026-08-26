@@ -43,20 +43,13 @@ struct DotOverlayView: View {
         }
     }
 
-    @ViewBuilder
     private func soundCue(_ indicator: SoundIndicatorObservation, size: CGSize) -> some View {
         let normalizedX = min(0.96, max(0.04, 0.5 + indicator.horizontal * 0.46))
-        let diameter: CGFloat
-        switch indicator.distance {
-        case .near: diameter = 5
-        case .medium: diameter = 4
-        case .far: diameter = 3
-        }
-
+        let diameter = soundCueDiameter(indicator.distance)
         let opacity = min(0.92, max(0.35, indicator.confidence))
         let cueColor: Color = indicator.kind == .gunfire ? .red : .white
 
-        Circle()
+        return Circle()
             .fill(cueColor.opacity(opacity))
             .frame(width: diameter, height: diameter)
             .overlay(
@@ -66,5 +59,13 @@ struct DotOverlayView: View {
                 x: size.width * normalizedX,
                 y: max(8, size.height * 0.055)
             )
+    }
+
+    private func soundCueDiameter(_ distance: SoundIndicatorObservation.DistanceBand) -> CGFloat {
+        switch distance {
+        case .near: return 5
+        case .medium: return 4
+        case .far: return 3
+        }
     }
 }
