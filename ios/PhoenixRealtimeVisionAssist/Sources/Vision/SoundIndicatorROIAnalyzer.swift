@@ -1,10 +1,11 @@
 import CoreImage
 import CoreMedia
 import Foundation
+import QuartzCore
 
 struct SoundIndicatorObservation: Sendable, Equatable {
-    enum Kind: Sendable { case footsteps, gunfire }
-    enum DistanceBand: Sendable { case near, medium, far }
+    enum Kind: Sendable, Equatable, Hashable { case footsteps, gunfire }
+    enum DistanceBand: Sendable, Equatable, Hashable { case near, medium, far }
 
     let kind: Kind
     let horizontal: Double
@@ -27,8 +28,6 @@ final class SoundIndicatorROIAnalyzer: @unchecked Sendable {
         let extent = image.extent
         guard extent.width > 0, extent.height > 0 else { return [] }
 
-        // Mobile sound indicators sit directly below the compass. Analyze only a narrow
-        // top-center strip; never retain the source frame.
         let roi = CGRect(
             x: extent.minX + extent.width * 0.18,
             y: extent.minY + extent.height * 0.76,
@@ -47,14 +46,17 @@ final class SoundIndicatorROIAnalyzer: @unchecked Sendable {
         guard width > 8, height > 4 else { return [] }
 
         var rgba = [UInt8](repeating: 0, count: width * height * 4)
-        context.render(
-            cropped,
-            toBitmap: &rgba,
-            rowBytes: width * 4,
-            bounds: outputRect,
-            format: .RGBA8,
-            colorSpace: CGColorSpaceCreateDeviceRGB()
-        )
+        rgba.withUnsafeMutableBytes { bytes in
+            guard let baseAddress = bytes.baseAddress else { return }
+            context.render(
+                cropped,
+                toBitmap: baseAddress,
+                rowBytes: width * 4,
+                bounds: outputRect,
+                format: .RGBA8,
+                colorSpace: CGColorSpaceCreateDeviceRGB()
+            )
+        }
 
         return extractObservations(rgba: rgba, width: width, height: height)
     }
@@ -66,11 +68,8 @@ final class SoundIndicatorROIAnalyzer: @unchecked Sendable {
             var redCount = 0
             var whiteCount = 0
             var xSum = 0.0
-            var ySum = 0.0
         }
 
-        // Three coarse sectors are sufficient for a low-cost HUD cue. We intentionally
-        // avoid reconstructing hidden-player coordinates.
         var buckets = [Bucket(), Bucket(), Bucket()]
         let totalPixels = max(width * height, 1)
 
@@ -92,7 +91,6 @@ final class SoundIndicatorROIAnalyzer: @unchecked Sendable {
                 if isRed { buckets[sector].redCount += 1 }
                 if isWhite { buckets[sector].whiteCount += 1 }
                 buckets[sector].xSum += Double(x)
-                buckets[sector].ySum += Double(y)
             }
         }
 
@@ -101,8 +99,15 @@ final class SoundIndicatorROIAnalyzer: @unchecked Sendable {
             let count = max(bucket.redCount, bucket.whiteCount)
             guard count >= max(5, totalPixels / 1400) else { continue }
 
+            let totalClassified = max(bucket.redCount + bucket.whiteCount, 1)
             let kind: SoundIndicatorObservation.Kind = bucket.redCount >= bucket.whiteCount ? .gunfire : .footsteps
-            let horizontal = min(1, max(-1, ((bucket.xSum / Double(max(bucket.redCount + bucket.whiteCount, 1))) / Double(width - 1)) * 2 - 1))
+            let horizontal = min(
+                1,
+                max(
+                    -1,
+                    ((bucket.xSum / Double(totalClassified)) / Double(max(width - 1, 1))) * 2 - 1
+                )
+            )
             let occupancy = Double(count) / Double(totalPixels)
             let distance: SoundIndicatorObservation.DistanceBand
             if occupancy >= 0.018 { distance = .near }
