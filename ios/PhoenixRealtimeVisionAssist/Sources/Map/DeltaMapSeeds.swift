@@ -8,7 +8,7 @@ enum DeltaMapSeeds {
     // Runtime consumes only public map geometry/route relationships.
     static let az3 = MapKnowledge(
         mapID: .az3,
-        version: 3,
+        version: 4,
         nodes: [
             // West / outer sector.
             n("az3.west.drainage", 0.12, 0.48, 0, "area"),
@@ -34,7 +34,7 @@ enum DeltaMapSeeds {
             n("az3.turbine.3f", 0.43, 0.40, 2, "corridor"),
             n("az3.turbine.3f_machine", 0.46, 0.40, 2, "machine_room"),
 
-            // Core reactor. Public guides consistently document 2F/3F and upper control spaces.
+            // Core reactor.
             n("az3.reactor.1f", 0.53, 0.50, 0, "building"),
             n("az3.reactor.stair", 0.52, 0.48, 0, "stairs"),
             n("az3.reactor.2f", 0.52, 0.45, 1, "corridor"),
@@ -61,7 +61,6 @@ enum DeltaMapSeeds {
             n("az3.east.wastewater", 0.87, 0.32, 0, "area")
         ],
         edges: [
-            // West routes.
             bi("az3.west.drainage", "az3.west.admin", 0.65, 0, ["outdoor"]),
             bi("az3.west.drainage", "az3.west.reprocessing.1f", 0.72, 0, ["west_route"]),
             bi("az3.west.reprocessing.1f", "az3.west.red_factory", 0.82, 0, ["nearby"]),
@@ -79,7 +78,6 @@ enum DeltaMapSeeds {
             bi("az3.west.admin", "az3.core.west_gate", 0.72, 0, ["core_approach"]),
             bi("az3.west.reprocessing.1f", "az3.core.west_gate", 0.78, 0, ["core_approach"]),
 
-            // Core turbine vertical chain.
             bi("az3.core.west_gate", "az3.turbine.1f", 0.94, 0, ["choke", "core"]),
             e("az3.turbine.1f", "az3.turbine.stair", 0.96, 0, ["stairs"]),
             e("az3.turbine.stair", "az3.turbine.2f", 0.99, 1, ["stairs", "vertical"]),
@@ -89,7 +87,6 @@ enum DeltaMapSeeds {
             e("az3.turbine.3f", "az3.turbine.2f", 0.95, -1, ["stairs", "vertical"]),
             bi("az3.turbine.3f", "az3.turbine.3f_machine", 0.91, 0, ["machine_room"]),
 
-            // Reactor vertical chain and core crossings.
             bi("az3.turbine.1f", "az3.reactor.1f", 0.97, 0, ["core", "high_traffic"]),
             e("az3.reactor.1f", "az3.reactor.stair", 0.97, 0, ["stairs"]),
             e("az3.reactor.stair", "az3.reactor.2f", 0.99, 1, ["stairs", "vertical"]),
@@ -99,11 +96,10 @@ enum DeltaMapSeeds {
             e("az3.reactor.3f", "az3.reactor.2f", 0.97, -1, ["stairs", "vertical"]),
             bi("az3.reactor.3f", "az3.reactor.master_control", 0.97, 0, ["control"]),
             bi("az3.reactor.1f", "az3.reactor.south_warehouse", 0.83, 0, ["south"]),
-            bi("az3.reactor.south_warehouse", "az3.reactor.rail_passage", 0.91, 0, ["rail", "passage"]),
+            bi("az3.reactor.south_warehouse", "az3.reactor.rail_passage", 0.91, 0, ["rail", "passage", "shortcut"]),
             bi("az3.reactor.south_warehouse", "az3.core.canteen", 0.70, 0, ["south_route"]),
             bi("az3.reactor.1f", "az3.core.east_gate", 0.94, 0, ["choke", "core"]),
 
-            // East routes and vertical spaces.
             bi("az3.core.east_gate", "az3.east.substation", 0.72, 0, ["east_route"]),
             bi("az3.core.east_gate", "az3.east.pwr.1f", 0.85, 0, ["east_route"]),
             e("az3.east.pwr.1f", "az3.east.pwr.stair", 0.95, 0, ["stairs"]),
