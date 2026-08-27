@@ -170,6 +170,10 @@ jobs:
           cp -R "$APP" "$PAYLOAD/"
           (cd "$ROOT" && /usr/bin/zip -qry "$IPA" Payload)
           test -s "$IPA"
+
+          IPA_SIZE_BYTES="$(stat -f%z "$IPA")"
+          test "$IPA_SIZE_BYTES" -le 1073741824
+
           /usr/bin/unzip -q "$IPA" -d "$VERIFY"
 
           VAPP="$VERIFY/Payload/PhoenixRealtimeVisionAssist.app"
@@ -191,10 +195,14 @@ jobs:
           extension_bundle_id=com.phoenix.realtimevisionassist.broadcast
           extension_point=com.apple.broadcast-services-upload
           app_group=group.com.phoenix.realtimevisionassist
+          package_size_budget_bytes=1073741824
+          broadcast_extension_size_budget_bytes=12582912
           broadcast_extension_model=none
           broadcast_extension_analysis=adaptive Vision human rectangles plus direct BGRA sound-cue sampling
           lifecycle=Darwin heartbeat plus App Group snapshot plus ReplayKit picker rebuild
           main_app_coreml=yolo11n.mlmodelc
+          main_app_model_loading=lazy on first analysis request
+          runtime_policy=large offline package allowed; ReplayKit extension stays model-free and under 12 MiB
           signing=unsigned; re-sign main app and embedded Broadcast Extension without removing PlugIns
           EOF
 
@@ -220,11 +228,13 @@ jobs:
           IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
           MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
 
+          NOTES='Start → stop → start-again lifecycle rebuilt as a state machine. Package resources may grow up to 1 GiB, while the Broadcast Extension stays model-free, below 12 MiB, and uses adaptive lightweight analysis with entitlement-free heartbeat fallback. Main-app Core ML is loaded lazily.'
+
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
-            gh release edit "$TAG" --title 'LiteView 0.2.0 stable restart sideload package' --notes 'Start → stop → start-again lifecycle rebuilt as a state machine. The extension keeps adaptive lightweight analysis, App Group snapshots, entitlement-free heartbeats, stale-session recovery, and no frame retention. Re-sign the app and embedded Broadcast Extension without removing PlugIns.'
+            gh release edit "$TAG" --title 'LiteView 0.2.0 lightweight-runtime sideload package' --notes "$NOTES"
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" \
-              --title 'LiteView 0.2.0 stable restart sideload package' \
-              --notes 'Start → stop → start-again lifecycle rebuilt as a state machine. The extension keeps adaptive lightweight analysis, App Group snapshots, entitlement-free heartbeats, stale-session recovery, and no frame retention. Re-sign the app and embedded Broadcast Extension without removing PlugIns.'
+              --title 'LiteView 0.2.0 lightweight-runtime sideload package' \
+              --notes "$NOTES"
           fi
