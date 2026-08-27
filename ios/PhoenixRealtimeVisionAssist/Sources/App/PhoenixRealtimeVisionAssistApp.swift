@@ -13,9 +13,9 @@ struct PhoenixRealtimeVisionAssistApp: App {
 }
 
 private enum BroadcastSignalName {
-    static let started = "com.phoenix.realtimevisionassist.broadcast.started" as CFString
-    static let heartbeat = "com.phoenix.realtimevisionassist.broadcast.heartbeat" as CFString
-    static let finished = "com.phoenix.realtimevisionassist.broadcast.finished" as CFString
+    static let started = "com.phoenix.realtimevisionassist.broadcast.started"
+    static let heartbeat = "com.phoenix.realtimevisionassist.broadcast.heartbeat"
+    static let finished = "com.phoenix.realtimevisionassist.broadcast.finished"
 }
 
 private final class DarwinBroadcastMonitor {
@@ -30,7 +30,13 @@ private final class DarwinBroadcastMonitor {
 
     init() {
         let observer = Unmanaged.passUnretained(self).toOpaque()
-        for name in [BroadcastSignalName.started, BroadcastSignalName.heartbeat, BroadcastSignalName.finished] {
+        let names = [
+            BroadcastSignalName.started,
+            BroadcastSignalName.heartbeat,
+            BroadcastSignalName.finished,
+        ]
+
+        for name in names {
             CFNotificationCenterAddObserver(
                 center,
                 observer,
@@ -41,7 +47,7 @@ private final class DarwinBroadcastMonitor {
                         .takeUnretainedValue()
                     monitor.receive(notificationName.rawValue as String)
                 },
-                name,
+                name as CFString,
                 nil,
                 .deliverImmediately
             )
@@ -58,11 +64,11 @@ private final class DarwinBroadcastMonitor {
     private func receive(_ name: String) {
         let event: Event?
         switch name {
-        case BroadcastSignalName.started as String:
+        case BroadcastSignalName.started:
             event = .started
-        case BroadcastSignalName.heartbeat as String:
+        case BroadcastSignalName.heartbeat:
             event = .heartbeat
-        case BroadcastSignalName.finished as String:
+        case BroadcastSignalName.finished:
             event = .finished
         default:
             event = nil
@@ -109,8 +115,9 @@ final class RuntimeStatusModel: ObservableObject {
     }
 
     func appBecameActive() {
-        guard !isBroadcastActive else { return }
-        rebuildPicker()
+        if !isBroadcastActive {
+            rebuildPicker()
+        }
     }
 
     private func handle(_ event: DarwinBroadcastMonitor.Event) {
@@ -119,19 +126,25 @@ final class RuntimeStatusModel: ObservableObject {
             lastBroadcastSignalUptime = ProcessInfo.processInfo.systemUptime
             isBroadcastActive = true
         case .finished:
-            lastBroadcastSignalUptime = nil
-            isBroadcastActive = false
-            rebuildPicker()
+            markBroadcastInactiveAndRebuildPicker()
         }
     }
 
     private func refresh() {
-        guard isBroadcastActive, let lastBroadcastSignalUptime else { return }
-        if ProcessInfo.processInfo.systemUptime - lastBroadcastSignalUptime > 2.5 {
-            lastBroadcastSignalUptime = nil
-            isBroadcastActive = false
-            rebuildPicker()
+        guard isBroadcastActive,
+              let lastSignal = lastBroadcastSignalUptime else {
+            return
         }
+
+        if ProcessInfo.processInfo.systemUptime - lastSignal > 2.5 {
+            markBroadcastInactiveAndRebuildPicker()
+        }
+    }
+
+    private func markBroadcastInactiveAndRebuildPicker() {
+        lastBroadcastSignalUptime = nil
+        isBroadcastActive = false
+        rebuildPicker()
     }
 
     private func rebuildPicker() {
@@ -163,7 +176,7 @@ struct ContentView: View {
                 .id(status.pickerGeneration)
                 .frame(width: 260, height: 64)
 
-            Text("每次停止、失败或返回 App 后都会重建系统广播控件，避免出现停止后再也点不回直播。")
+            Text("每次停止、失败或返回 App 后都会重建系统广播控件，避免停止后无法再次启动。")
                 .font(.footnote)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
