@@ -13,10 +13,8 @@ struct PhoenixRealtimeVisionAssistApp: App {
 
 @MainActor
 final class RuntimeStatusModel: ObservableObject {
-    @Published private(set) var snapshot: SharedRealtimeSnapshot?
     @Published private(set) var isScreenCaptured = false
 
-    private let store = SharedRealtimeStateStore()
     private var timer: Timer?
 
     func start() {
@@ -35,7 +33,6 @@ final class RuntimeStatusModel: ObservableObject {
     }
 
     private func refresh() {
-        snapshot = store.read()
         isScreenCaptured = UIScreen.main.isCaptured
     }
 }
@@ -48,20 +45,26 @@ struct ContentView: View {
             Text("Phoenix Realtime Vision Assist")
                 .font(.title2.bold())
 
-            Text("实时、零留存、低占用。启动系统屏幕广播后，Broadcast Extension 在内存中分析视频；不保存录像、截图或历史。")
+            Text("兼容测试版：Broadcast Extension 只保持 ReplayKit 广播，不加载 Vision、Core ML 或 App Group。")
                 .font(.body)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 
+            Text("不用进控制中心，直接点下面的系统广播按钮")
+                .font(.headline)
+                .multilineTextAlignment(.center)
+
             BroadcastPicker()
-                .frame(width: 56, height: 56)
+                .frame(width: 84, height: 84)
 
-            RuntimeStatusView(
-                snapshot: status.snapshot,
-                isScreenCaptured: status.isScreenCaptured
-            )
+            Text("点按钮后，按 iOS 系统提示确认“开始广播”。")
+                .font(.footnote)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
 
-            Text("iOS 不允许普通 App 在其他 App 上任意绘制悬浮层。本原型用于验证授权采集、通用实时视觉分析和热降频。")
+            RuntimeStatusView(isScreenCaptured: status.isScreenCaptured)
+
+            Text("iOS 出于隐私限制，不允许普通 App 在无用户确认的情况下静默开启全屏录制。这个版本先验证广播是否能够稳定保持。")
                 .font(.footnote)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
@@ -73,21 +76,13 @@ struct ContentView: View {
 }
 
 struct RuntimeStatusView: View {
-    let snapshot: SharedRealtimeSnapshot?
     let isScreenCaptured: Bool
 
     var body: some View {
         Group {
-            if isScreenCaptured, let snapshot {
-                HStack(spacing: 16) {
-                    Label("视觉 \(snapshot.targetCount)", systemImage: "viewfinder")
-                    Label("声音 \(snapshot.soundIndicatorCount)", systemImage: "waveform")
-                }
-                .font(.caption.monospacedDigit())
-            } else if isScreenCaptured {
+            if isScreenCaptured {
                 Label("屏幕广播已启动", systemImage: "record.circle")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
             } else {
                 Text("等待屏幕广播")
                     .font(.caption)
