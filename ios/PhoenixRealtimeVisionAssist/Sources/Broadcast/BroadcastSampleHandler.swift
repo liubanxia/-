@@ -5,8 +5,9 @@ import ReplayKit
 
 /// ReplayKit upload handler tuned for extension memory limits.
 ///
-/// The extension keeps only counters and the current visible-content result. Frames are
-/// processed at a deliberately low adaptive rate, never encoded, written to disk, or retained.
+/// The extension keeps only counters and the current visible-content result. Heavy detection is
+/// infrequent; once a visible target is locked, the analyzer mainly uses a fast object tracker.
+/// Frames are never encoded, written to disk, or retained after the current work item finishes.
 final class BroadcastSampleHandler: RPBroadcastSampleHandler {
     private struct Metrics {
         let generation: UInt64
@@ -135,9 +136,11 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
         generation &+= 1
         stateLock.unlock()
 
-        // Publish the final state before the generation changes invalidate future work.
         publishFinished(metrics)
         BroadcastSignalName.post(BroadcastSignalName.finished)
+        analysisQueue.async { [weak self] in
+            self?.analyzer.releaseResources()
+        }
     }
 
     override func processSampleBuffer(
@@ -265,10 +268,15 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
         lastAnalysisSucceeded = result.succeeded
         attemptedLaneCount = result.attemptedLaneCount
         successfulLaneCount = result.successfulLaneCount
+
         if result.succeeded {
             successfulAnalysisFrameCount &+= 1
             targetCount = result.targetCount
-            primaryTarget = result.primaryTarget.map {
+
+            // The published point is the short visible-motion lead when available; otherwise it
+            // is the current stabilized point. Prediction is never held after visibility is lost.
+            let displayPoint = result.predictedTarget ?? result.primaryTarget
+            primaryTarget = displayPoint.map {
                 SharedNormalizedPoint(x: $0.x, y: $0.y)
             }
             primaryTargetConfidence = result.primaryTargetConfidence
@@ -366,23 +374,32 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
     }
 
     private func adaptiveVisionIntervalLocked() -> TimeInterval {
-        let thermalInterval: TimeInterval
+        let hasVisibleLock = primaryTarget != nil && stableTargetFrameCount > 0
+        let baseInterval: TimeInterval
+
         switch ProcessInfo.processInfo.thermalState {
         case .nominal:
-            thermalInterval = 0.85
+            baseInterval = hasVisibleLock ? 0.22 : 0.65
         case .fair:
-            thermalInterval = 1.35
+            baseInterval = hasVisibleLock ? 0.36 : 0.90
         case .serious:
-            thermalInterval = 2.5
+            baseInterval = hasVisibleLock ? 0.75 : 1.50
         case .critical:
             return .infinity
         @unknown default:
-            thermalInterval = 2.5
+            baseInterval = 1.50
         }
 
-        let powerInterval: TimeInterval = ProcessInfo.processInfo.isLowPowerModeEnabled ? 2.5 : 0
-        let latencyInterval = min(3.5, analysisLatencyMilliseconds / 1_000 * 2.0)
-        return max(thermalInterval, powerInterval, latencyInterval)
+        let powerInterval: TimeInterval
+        if ProcessInfo.processInfo.isLowPowerModeEnabled {
+            powerInterval = hasVisibleLock ? 0.75 : 1.50
+        } else {
+            powerInterval = 0
+        }
+
+        // If one analysis takes a long time, automatically yield more foreground CPU/GPU time.
+        let latencyInterval = min(2.0, analysisLatencyMilliseconds / 1_000 * 2.75)
+        return max(baseInterval, powerInterval, latencyInterval)
     }
 
     private func videoOrientation(of sampleBuffer: CMSampleBuffer) -> CGImagePropertyOrientation {

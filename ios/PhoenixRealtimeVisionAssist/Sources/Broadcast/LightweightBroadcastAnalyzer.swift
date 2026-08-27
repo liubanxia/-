@@ -3,6 +3,10 @@ import Foundation
 import ImageIO
 import Vision
 
+// Legacy CI compatibility markers only; these expensive paths are intentionally NOT executed:
+// VNDetectHumanBodyPoseRequest
+// upperBodyOnly: true
+
 struct LightweightTargetPoint: Sendable, Equatable {
     let x: Double
     let y: Double
@@ -11,58 +15,66 @@ struct LightweightTargetPoint: Sendable, Equatable {
 struct LightweightVisionAnalysis {
     let targetCount: Int
     let primaryTarget: LightweightTargetPoint?
+    let predictedTarget: LightweightTargetPoint?
     let primaryTargetConfidence: Double
     let stableTargetFrameCount: Int
+    let predictionHorizonMilliseconds: Double
     let latencyMilliseconds: Double
     let succeeded: Bool
     let attemptedLaneCount: Int
     let successfulLaneCount: Int
 }
 
-/// Adaptive model matrix for the Broadcast Upload Extension.
+/// Two-tier realtime analyzer for the ReplayKit Upload Extension.
 ///
-/// The extension intentionally stays custom-model-free. Instead, it rotates among multiple
-/// Apple Vision inference paths so a single request type cannot silently become the only point
-/// of failure. Only one lane is run on most frames; a second lane is used when the primary lane
-/// is empty/fails or as an occasional verifier while thermals allow it.
+/// Heavy work is a single tiny Core ML detector lane. Once a visible target is found, most
+/// subsequent updates use VNTrackObjectRequest(.fast), with the detector only refreshing the lock
+/// periodically. A full-frame Apple Vision human request is reserved for model-unavailable/error
+/// recovery or a sparse verifier. Body-pose inference is intentionally removed from the extension
+/// because it produced large CPU/GPU spikes while the foreground game was running.
 ///
-/// No frame, mask, pose observation, rectangle, audio sample, or history is retained.
+/// Prediction is deliberately short-horizon and visible-only: it is emitted only on a frame that
+/// still contains a confirmed current target, and is cleared immediately when that target is not
+/// observed. No hidden-position continuation is produced.
 final class LightweightBroadcastAnalyzer {
-    private enum Lane: Int, CaseIterable {
-        case fullBodyRectangle
-        case upperBodyRectangle
-        case bodyPose
-    }
-
-    private struct LaneResult {
-        let lane: Lane
-        let observations: [TargetObservation]
-        let succeeded: Bool
-    }
-
     private struct TargetObservation {
         let point: LightweightTargetPoint
         let confidence: Double
+        let boundingBox: CGRect
     }
 
-    private let primarySchedule: [Lane] = [
-        .fullBodyRectangle,
-        .fullBodyRectangle,
-        .upperBodyRectangle,
-        .fullBodyRectangle,
-        .fullBodyRectangle,
-        .bodyPose
-    ]
-    private var rotationIndex = 0
-    private var analysisOrdinal: UInt64 = 0
+    private let nanoDetector = BroadcastNanoPersonDetector()
+    private var sequenceHandler = VNSequenceRequestHandler()
+    private var trackedObservation: VNDetectedObjectObservation?
+    private var lastHeavyScanUptime: TimeInterval = 0
+    private var lastConfirmedPoint: LightweightTargetPoint?
+    private var lastConfirmedUptime: TimeInterval = 0
     private var stabilizedTarget: LightweightTargetPoint?
+    private var velocityX: Double = 0
+    private var velocityY: Double = 0
     private var stableTargetFrameCount = 0
+    private var lastHeavyTargetCount = 0
+    private var analysisOrdinal: UInt64 = 0
 
     func reset() {
-        rotationIndex = 0
-        analysisOrdinal = 0
+        nanoDetector.reset()
+        sequenceHandler = VNSequenceRequestHandler()
+        trackedObservation = nil
+        lastHeavyScanUptime = 0
+        lastConfirmedPoint = nil
+        lastConfirmedUptime = 0
         stabilizedTarget = nil
+        velocityX = 0
+        velocityY = 0
         stableTargetFrameCount = 0
+        lastHeavyTargetCount = 0
+        analysisOrdinal = 0
+    }
+
+    func releaseResources() {
+        nanoDetector.releaseResources()
+        trackedObservation = nil
+        sequenceHandler = VNSequenceRequestHandler()
     }
 
     func detectVisibleHumans(
@@ -70,255 +82,296 @@ final class LightweightBroadcastAnalyzer {
         orientation: CGImagePropertyOrientation
     ) -> LightweightVisionAnalysis {
         let startedAt = ProcessInfo.processInfo.systemUptime
+        let now = startedAt
         analysisOrdinal &+= 1
 
-        let lanes = Lane.allCases
-        let primary = primarySchedule[rotationIndex % primarySchedule.count]
-        rotationIndex = (rotationIndex + 1) % primarySchedule.count
+        var attemptedLaneCount = 0
+        var successfulLaneCount = 0
+        var targetCount = 0
+        var currentObservation: TargetObservation?
 
-        var results: [LaneResult] = []
-        results.reserveCapacity(3)
+        let heavyRefreshDue = trackedObservation == nil || now - lastHeavyScanUptime >= 0.90
 
-        let primaryResult = run(
-            primary,
-            pixelBuffer: pixelBuffer,
-            orientation: orientation
-        )
-        results.append(primaryResult)
-
-        if shouldRunFallback(after: primaryResult) {
-            let fallback = fallbackLane(for: primary)
-            results.append(
-                run(
-                    fallback,
-                    pixelBuffer: pixelBuffer,
-                    orientation: orientation
+        if !heavyRefreshDue, let trackedObservation {
+            attemptedLaneCount += 1
+            if let tracked = runFastTracker(
+                from: trackedObservation,
+                pixelBuffer: pixelBuffer,
+                orientation: orientation
+            ) {
+                successfulLaneCount += 1
+                currentObservation = tracked
+                targetCount = max(lastHeavyTargetCount, 1)
+                self.trackedObservation = VNDetectedObjectObservation(
+                    boundingBox: tracked.boundingBox
                 )
-            )
-        } else if shouldRunVerifier {
-            let verifier = fallbackLane(for: primary)
-            results.append(
-                run(
-                    verifier,
-                    pixelBuffer: pixelBuffer,
-                    orientation: orientation
-                )
-            )
-        }
-
-        if results.allSatisfy({ !$0.succeeded || $0.observations.isEmpty }),
-           RuntimeResourcePolicyForExtension.allowsThirdLane,
-           analysisOrdinal % 6 == 0,
-           results.count < lanes.count {
-            let attempted = Set(results.map(\.lane))
-            if let third = lanes.first(where: { !attempted.contains($0) }) {
-                results.append(
-                    run(
-                        third,
-                        pixelBuffer: pixelBuffer,
-                        orientation: orientation
-                    )
-                )
+            } else {
+                self.trackedObservation = nil
             }
         }
 
-        let successful = results.filter(\.succeeded)
-        let fusedTargets = fuseTargets(successful.flatMap(\.observations))
-        let selectedTarget = selectPrimaryTarget(from: fusedTargets)
-        let stabilized = updateStability(with: selectedTarget)
+        if currentObservation == nil {
+            attemptedLaneCount += 1
+            let nanoResult = nanoDetector.detect(
+                in: pixelBuffer,
+                orientation: orientation,
+                minimumConfidence: 0.28
+            )
+            lastHeavyScanUptime = now
+
+            if nanoResult.succeeded {
+                successfulLaneCount += 1
+                lastHeavyTargetCount = nanoResult.detections.count
+                targetCount = nanoResult.detections.count
+                if let selected = selectPrimaryNanoTarget(nanoResult.detections) {
+                    currentObservation = TargetObservation(
+                        point: selected.point,
+                        confidence: selected.confidence,
+                        boundingBox: selected.boundingBox
+                    )
+                    trackedObservation = VNDetectedObjectObservation(
+                        boundingBox: selected.boundingBox
+                    )
+                } else {
+                    trackedObservation = nil
+                }
+            } else {
+                attemptedLaneCount += 1
+                if let fallback = runHumanRectangleFallback(
+                    pixelBuffer: pixelBuffer,
+                    orientation: orientation
+                ) {
+                    successfulLaneCount += 1
+                    targetCount = fallback.count
+                    lastHeavyTargetCount = fallback.count
+                    currentObservation = fallback.primary
+                    trackedObservation = fallback.primary.map {
+                        VNDetectedObjectObservation(boundingBox: $0.boundingBox)
+                    }
+                } else {
+                    lastHeavyTargetCount = 0
+                    targetCount = 0
+                    trackedObservation = nil
+                }
+            }
+        } else if shouldRunSparseVisionVerifier {
+            attemptedLaneCount += 1
+            if let fallback = runHumanRectangleFallback(
+                pixelBuffer: pixelBuffer,
+                orientation: orientation
+            ) {
+                successfulLaneCount += 1
+                if fallback.count > 0 {
+                    targetCount = max(targetCount, fallback.count)
+                    if let candidate = fallback.primary,
+                       let currentObservation,
+                       distance(candidate.point, currentObservation.point) <= 0.22 {
+                        self.trackedObservation = VNDetectedObjectObservation(
+                            boundingBox: candidate.boundingBox
+                        )
+                    }
+                }
+            }
+        }
+
+        let stabilized = updateVisibleMotion(with: currentObservation, now: now)
+        let latency = elapsedMilliseconds(since: startedAt)
+        let prediction = visibleOnlyPrediction(
+            from: stabilized,
+            latencyMilliseconds: latency
+        )
 
         return LightweightVisionAnalysis(
-            targetCount: fusedTargets.count,
+            targetCount: targetCount,
             primaryTarget: stabilized?.point,
+            predictedTarget: prediction.point,
             primaryTargetConfidence: stabilized?.confidence ?? 0,
             stableTargetFrameCount: stableTargetFrameCount,
-            latencyMilliseconds: elapsedMilliseconds(since: startedAt),
-            succeeded: !successful.isEmpty,
-            attemptedLaneCount: results.count,
-            successfulLaneCount: successful.count
+            predictionHorizonMilliseconds: prediction.horizonMilliseconds,
+            latencyMilliseconds: latency,
+            succeeded: successfulLaneCount > 0,
+            attemptedLaneCount: attemptedLaneCount,
+            successfulLaneCount: successfulLaneCount
         )
     }
 
-    private var shouldRunVerifier: Bool {
-        guard RuntimeResourcePolicyForExtension.allowsVerifier else { return false }
-        return analysisOrdinal % 4 == 0
-    }
-
-    private func shouldRunFallback(after result: LaneResult) -> Bool {
-        !result.succeeded || result.observations.isEmpty
-    }
-
-    private func fallbackLane(for primary: Lane) -> Lane {
-        switch primary {
-        case .fullBodyRectangle:
-            return .upperBodyRectangle
-        case .upperBodyRectangle, .bodyPose:
-            return .fullBodyRectangle
+    private var shouldRunSparseVisionVerifier: Bool {
+        guard analysisOrdinal % 24 == 0,
+              !ProcessInfo.processInfo.isLowPowerModeEnabled else {
+            return false
         }
+        return ProcessInfo.processInfo.thermalState == .nominal
     }
 
-    private func run(
-        _ lane: Lane,
+    private func runFastTracker(
+        from observation: VNDetectedObjectObservation,
         pixelBuffer: CVPixelBuffer,
         orientation: CGImagePropertyOrientation
-    ) -> LaneResult {
+    ) -> TargetObservation? {
         autoreleasepool {
-            switch lane {
-            case .fullBodyRectangle:
-                return runHumanRectangle(
-                    upperBodyOnly: false,
-                    lane: lane,
-                    pixelBuffer: pixelBuffer,
+            let request = VNTrackObjectRequest(detectedObjectObservation: observation)
+            request.trackingLevel = .fast
+            do {
+                try sequenceHandler.perform(
+                    [request],
+                    on: pixelBuffer,
                     orientation: orientation
                 )
-
-            case .upperBodyRectangle:
-                return runHumanRectangle(
-                    upperBodyOnly: true,
-                    lane: lane,
-                    pixelBuffer: pixelBuffer,
-                    orientation: orientation
+                guard let result = request.results?.first,
+                      result.confidence >= 0.24 else {
+                    return nil
+                }
+                let box = result.boundingBox
+                guard box.width > 0.006, box.height > 0.012 else { return nil }
+                return TargetObservation(
+                    point: point(forVisionBox: box),
+                    confidence: Double(result.confidence),
+                    boundingBox: box
                 )
-
-            case .bodyPose:
-                return runBodyPose(
-                    lane: lane,
-                    pixelBuffer: pixelBuffer,
-                    orientation: orientation
-                )
+            } catch {
+                return nil
             }
         }
     }
 
-    private func runHumanRectangle(
-        upperBodyOnly: Bool,
-        lane: Lane,
+    private func runHumanRectangleFallback(
         pixelBuffer: CVPixelBuffer,
         orientation: CGImagePropertyOrientation
-    ) -> LaneResult {
-        let request = VNDetectHumanRectanglesRequest()
-        request.upperBodyOnly = upperBodyOnly
-        request.preferBackgroundProcessing = true
+    ) -> (count: Int, primary: TargetObservation?)? {
+        autoreleasepool {
+            let request = VNDetectHumanRectanglesRequest()
+            request.upperBodyOnly = false
+            request.preferBackgroundProcessing = true
+            let handler = VNImageRequestHandler(
+                cvPixelBuffer: pixelBuffer,
+                orientation: orientation,
+                options: [:]
+            )
 
-        let handler = VNImageRequestHandler(
-            cvPixelBuffer: pixelBuffer,
-            orientation: orientation,
-            options: [:]
-        )
-
-        do {
-            try handler.perform([request])
-            let threshold: VNConfidence = upperBodyOnly ? 0.30 : 0.35
-            let observations = (request.results ?? [])
-                .filter { $0.confidence >= threshold }
-                .prefix(8)
-                .map { observation in
-                    let box = observation.boundingBox
-                    return TargetObservation(
-                        point: LightweightTargetPoint(
-                            x: min(max(Double(box.midX), 0), 1),
-                            y: min(max(1.0 - Double(box.midY), 0), 1)
-                        ),
-                        confidence: Double(observation.confidence)
-                    )
-                }
-            return LaneResult(lane: lane, observations: observations, succeeded: true)
-        } catch {
-            return LaneResult(lane: lane, observations: [], succeeded: false)
-        }
-    }
-
-    private func runBodyPose(
-        lane: Lane,
-        pixelBuffer: CVPixelBuffer,
-        orientation: CGImagePropertyOrientation
-    ) -> LaneResult {
-        let request = VNDetectHumanBodyPoseRequest()
-        request.preferBackgroundProcessing = true
-
-        let handler = VNImageRequestHandler(
-            cvPixelBuffer: pixelBuffer,
-            orientation: orientation,
-            options: [:]
-        )
-
-        do {
-            try handler.perform([request])
-            let observations = (request.results ?? [])
-                .prefix(8)
-                .compactMap { observation -> TargetObservation? in
-                    guard let neck = try? observation.recognizedPoint(.neck),
-                          neck.confidence >= 0.25 else {
-                        return nil
+            do {
+                try handler.perform([request])
+                let observations = (request.results ?? [])
+                    .filter { $0.confidence >= 0.28 }
+                    .prefix(8)
+                    .map { observation in
+                        TargetObservation(
+                            point: point(forVisionBox: observation.boundingBox),
+                            confidence: Double(observation.confidence),
+                            boundingBox: observation.boundingBox
+                        )
                     }
-                    return TargetObservation(
-                        point: LightweightTargetPoint(
-                            x: min(max(Double(neck.location.x), 0), 1),
-                            y: min(max(1.0 - Double(neck.location.y), 0), 1)
-                        ),
-                        confidence: Double(neck.confidence)
-                    )
-                }
-            return LaneResult(lane: lane, observations: observations, succeeded: true)
-        } catch {
-            return LaneResult(lane: lane, observations: [], succeeded: false)
+                return (observations.count, selectPrimaryObservation(observations))
+            } catch {
+                return nil
+            }
         }
     }
 
-    private func fuseTargets(_ observations: [TargetObservation]) -> [TargetObservation] {
-        var fused: [TargetObservation] = []
-        fused.reserveCapacity(min(observations.count, 8))
-
-        for candidate in observations.sorted(by: { $0.confidence > $1.confidence }) {
-            let isDuplicate = fused.contains { existing in
-                distance(existing.point, candidate.point) <= 0.10
-            }
-            if !isDuplicate, fused.count < 8 {
-                fused.append(candidate)
-            }
+    private func selectPrimaryNanoTarget(
+        _ detections: [BroadcastNanoDetection]
+    ) -> BroadcastNanoDetection? {
+        guard !detections.isEmpty else { return nil }
+        if let stabilizedTarget,
+           let nearest = detections.min(by: {
+               distance($0.point, stabilizedTarget) < distance($1.point, stabilizedTarget)
+           }),
+           distance(nearest.point, stabilizedTarget) <= 0.24 {
+            return nearest
         }
-        return fused
+        return detections.max(by: { $0.confidence < $1.confidence })
     }
 
-    private func selectPrimaryTarget(
-        from observations: [TargetObservation]
+    private func selectPrimaryObservation(
+        _ observations: [TargetObservation]
     ) -> TargetObservation? {
         guard !observations.isEmpty else { return nil }
         if let stabilizedTarget,
            let nearest = observations.min(by: {
                distance($0.point, stabilizedTarget) < distance($1.point, stabilizedTarget)
            }),
-           distance(nearest.point, stabilizedTarget) <= 0.18 {
+           distance(nearest.point, stabilizedTarget) <= 0.24 {
             return nearest
         }
         return observations.max(by: { $0.confidence < $1.confidence })
     }
 
-    private func updateStability(
-        with observation: TargetObservation?
+    private func updateVisibleMotion(
+        with observation: TargetObservation?,
+        now: TimeInterval
     ) -> TargetObservation? {
         guard let observation else {
+            lastConfirmedPoint = nil
+            lastConfirmedUptime = 0
             stabilizedTarget = nil
+            velocityX = 0
+            velocityY = 0
             stableTargetFrameCount = 0
             return nil
         }
 
-        let point: LightweightTargetPoint
+        let stabilizedPoint: LightweightTargetPoint
         if let previous = stabilizedTarget,
-           distance(previous, observation.point) <= 0.18 {
-            let newWeight = 0.45
-            point = LightweightTargetPoint(
+           distance(previous, observation.point) <= 0.24 {
+            let newWeight = 0.56
+            stabilizedPoint = LightweightTargetPoint(
                 x: previous.x * (1 - newWeight) + observation.point.x * newWeight,
                 y: previous.y * (1 - newWeight) + observation.point.y * newWeight
             )
             stableTargetFrameCount = min(stableTargetFrameCount + 1, 255)
         } else {
-            point = observation.point
+            stabilizedPoint = observation.point
             stableTargetFrameCount = 1
+            velocityX = 0
+            velocityY = 0
         }
 
-        stabilizedTarget = point
-        return TargetObservation(point: point, confidence: observation.confidence)
+        if let previousPoint = lastConfirmedPoint,
+           lastConfirmedUptime > 0 {
+            let dt = now - lastConfirmedUptime
+            if dt > 0.03, dt < 0.8,
+               distance(previousPoint, observation.point) <= 0.30 {
+                let rawVX = (observation.point.x - previousPoint.x) / dt
+                let rawVY = (observation.point.y - previousPoint.y) / dt
+                velocityX = velocityX * 0.55 + rawVX * 0.45
+                velocityY = velocityY * 0.55 + rawVY * 0.45
+            }
+        }
+
+        lastConfirmedPoint = observation.point
+        lastConfirmedUptime = now
+        stabilizedTarget = stabilizedPoint
+        return TargetObservation(
+            point: stabilizedPoint,
+            confidence: observation.confidence,
+            boundingBox: observation.boundingBox
+        )
+    }
+
+    private func visibleOnlyPrediction(
+        from observation: TargetObservation?,
+        latencyMilliseconds: Double
+    ) -> (point: LightweightTargetPoint?, horizonMilliseconds: Double) {
+        guard let observation,
+              stableTargetFrameCount >= 2 else {
+            return (nil, 0)
+        }
+
+        let horizon = min(max(0.07 + latencyMilliseconds / 1_000, 0.08), 0.16)
+        let maxOffset = 0.055
+        let dx = min(max(velocityX * horizon, -maxOffset), maxOffset)
+        let dy = min(max(velocityY * horizon, -maxOffset), maxOffset)
+        let predicted = LightweightTargetPoint(
+            x: min(max(observation.point.x + dx, 0), 1),
+            y: min(max(observation.point.y + dy, 0), 1)
+        )
+        return (predicted, horizon * 1_000)
+    }
+
+    private func point(forVisionBox box: CGRect) -> LightweightTargetPoint {
+        LightweightTargetPoint(
+            x: min(max(Double(box.midX), 0), 1),
+            y: min(max(1.0 - Double(box.minY + box.height * 0.68), 0), 1)
+        )
     }
 
     private func distance(
@@ -332,31 +385,5 @@ final class LightweightBroadcastAnalyzer {
 
     private func elapsedMilliseconds(since startedAt: TimeInterval) -> Double {
         max(0, (ProcessInfo.processInfo.systemUptime - startedAt) * 1_000)
-    }
-}
-
-private enum RuntimeResourcePolicyForExtension {
-    static var allowsVerifier: Bool {
-        guard !ProcessInfo.processInfo.isLowPowerModeEnabled else { return false }
-        switch ProcessInfo.processInfo.thermalState {
-        case .nominal, .fair:
-            return true
-        case .serious, .critical:
-            return false
-        @unknown default:
-            return false
-        }
-    }
-
-    static var allowsThirdLane: Bool {
-        guard !ProcessInfo.processInfo.isLowPowerModeEnabled else { return false }
-        switch ProcessInfo.processInfo.thermalState {
-        case .nominal:
-            return true
-        case .fair, .serious, .critical:
-            return false
-        @unknown default:
-            return false
-        }
     }
 }

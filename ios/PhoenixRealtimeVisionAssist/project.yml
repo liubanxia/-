@@ -9,8 +9,8 @@ settings:
     IPHONEOS_DEPLOYMENT_TARGET: 17.0
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: ""
-    CURRENT_PROJECT_VERSION: 10
-    MARKETING_VERSION: 0.7.0
+    CURRENT_PROJECT_VERSION: 11
+    MARKETING_VERSION: 0.8.0
 targets:
   PhoenixRealtimeVisionAssist:
     type: application
@@ -64,7 +64,12 @@ targets:
     platform: iOS
     sources:
       - path: Sources/Broadcast
+      - path: Sources/ExtensionSupport/BroadcastNanoPersonDetector.swift
       - path: Sources/Core/SharedRealtimeStateStore.swift
+    resources:
+      - path: Resources/BroadcastModels
+        optional: true
+        type: folder
     info:
       path: Sources/Broadcast/Info.plist
       properties:
