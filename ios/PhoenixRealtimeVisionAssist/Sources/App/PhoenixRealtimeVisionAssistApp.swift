@@ -41,23 +41,25 @@ struct ContentView: View {
     @StateObject private var status = RuntimeStatusModel()
 
     var body: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 20) {
             Text("Phoenix Realtime Vision Assist")
                 .font(.title2.bold())
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
 
             Text("兼容测试版：Broadcast Extension 只保持 ReplayKit 广播，不加载 Vision、Core ML 或 App Group。")
                 .font(.body)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 
-            Text("不用进控制中心，直接点下面的系统广播按钮")
+            Text("不用进控制中心，直接点下面的按钮")
                 .font(.headline)
                 .multilineTextAlignment(.center)
 
-            BroadcastPicker()
-                .frame(width: 84, height: 84)
+            DirectBroadcastButton()
+                .frame(width: 260, height: 64)
 
-            Text("点按钮后，按 iOS 系统提示确认“开始广播”。")
+            Text("点“开始屏幕广播”后，按 iOS 系统提示确认“开始广播”。")
                 .font(.footnote)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
@@ -81,8 +83,9 @@ struct RuntimeStatusView: View {
     var body: some View {
         Group {
             if isScreenCaptured {
-                Label("屏幕广播已启动", systemImage: "record.circle")
-                    .font(.caption)
+                Label("屏幕广播已启动", systemImage: "record.circle.fill")
+                    .font(.caption.bold())
+                    .foregroundStyle(.green)
             } else {
                 Text("等待屏幕广播")
                     .font(.caption)
@@ -93,13 +96,39 @@ struct RuntimeStatusView: View {
     }
 }
 
-struct BroadcastPicker: UIViewRepresentable {
+/// A large, obvious button backed by Apple's RPSystemBroadcastPickerView.
+/// The transparent system picker remains on top and receives the actual tap,
+/// so iOS still presents its required broadcast confirmation sheet.
+struct DirectBroadcastButton: View {
+    var body: some View {
+        ZStack {
+            Label("开始屏幕广播", systemImage: "record.circle")
+                .font(.headline)
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.accentColor)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+            SystemBroadcastPicker()
+                .opacity(0.02)
+        }
+        .contentShape(Rectangle())
+        .accessibilityLabel("开始屏幕广播")
+    }
+}
+
+struct SystemBroadcastPicker: UIViewRepresentable {
     func makeUIView(context: Context) -> RPSystemBroadcastPickerView {
         let view = RPSystemBroadcastPickerView(frame: .zero)
         view.preferredExtension = "com.phoenix.realtimevisionassist.broadcast"
         view.showsMicrophoneButton = false
+        view.tintColor = .systemBlue
+        view.backgroundColor = .clear
         return view
     }
 
-    func updateUIView(_ uiView: RPSystemBroadcastPickerView, context: Context) {}
+    func updateUIView(_ uiView: RPSystemBroadcastPickerView, context: Context) {
+        uiView.preferredExtension = "com.phoenix.realtimevisionassist.broadcast"
+        uiView.showsMicrophoneButton = false
+    }
 }
