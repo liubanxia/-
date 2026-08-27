@@ -433,6 +433,12 @@ struct DirectBroadcastButton: View {
 
     var body: some View {
         ZStack {
+            if !isRecovering {
+                SystemBroadcastPicker()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .allowsHitTesting(true)
+            }
+
             Label(
                 label,
                 systemImage: isBroadcastActive ? "record.circle.fill" : "record.circle"
@@ -440,34 +446,81 @@ struct DirectBroadcastButton: View {
             .font(.headline)
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(isRecovering ? Color.indigo : Color.accentColor)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-            if !isRecovering {
-                SystemBroadcastPicker()
-                    .opacity(0.02)
-            }
+            .allowsHitTesting(false)
         }
+        .background(isRecovering ? Color.indigo : Color.accentColor)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .contentShape(Rectangle())
         .accessibilityLabel(label)
     }
 }
 
+private final class BroadcastPickerHostView: UIView {
+    private let picker = RPSystemBroadcastPickerView(frame: .zero)
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        isOpaque = false
+        isUserInteractionEnabled = true
+
+        picker.translatesAutoresizingMaskIntoConstraints = false
+        picker.preferredExtension = "com.phoenix.realtimevisionassist.broadcast"
+        picker.showsMicrophoneButton = false
+        picker.tintColor = .clear
+        picker.backgroundColor = .clear
+        picker.isUserInteractionEnabled = true
+
+        addSubview(picker)
+        NSLayoutConstraint.activate([
+            picker.leadingAnchor.constraint(equalTo: leadingAnchor),
+            picker.trailingAnchor.constraint(equalTo: trailingAnchor),
+            picker.topAnchor.constraint(equalTo: topAnchor),
+            picker.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        expandButtonHitTargets(in: picker)
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        setNeedsLayout()
+        layoutIfNeeded()
+        expandButtonHitTargets(in: picker)
+    }
+
+    func refreshConfiguration() {
+        picker.preferredExtension = "com.phoenix.realtimevisionassist.broadcast"
+        picker.showsMicrophoneButton = false
+        picker.tintColor = .clear
+        setNeedsLayout()
+    }
+
+    private func expandButtonHitTargets(in view: UIView) {
+        for subview in view.subviews {
+            if let button = subview as? UIButton {
+                button.frame = view.bounds
+                button.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                button.isUserInteractionEnabled = true
+            }
+            expandButtonHitTargets(in: subview)
+        }
+    }
+}
+
 struct SystemBroadcastPicker: UIViewRepresentable {
-    func makeUIView(context: Context) -> RPSystemBroadcastPickerView {
-        let view = RPSystemBroadcastPickerView(frame: .zero)
-        configure(view)
-        return view
+    func makeUIView(context: Context) -> BroadcastPickerHostView {
+        BroadcastPickerHostView(frame: .zero)
     }
 
-    func updateUIView(_ uiView: RPSystemBroadcastPickerView, context: Context) {
-        configure(uiView)
-    }
-
-    private func configure(_ view: RPSystemBroadcastPickerView) {
-        view.preferredExtension = "com.phoenix.realtimevisionassist.broadcast"
-        view.showsMicrophoneButton = false
-        view.tintColor = .systemBlue
-        view.backgroundColor = .clear
+    func updateUIView(_ uiView: BroadcastPickerHostView, context: Context) {
+        uiView.refreshConfiguration()
     }
 }
