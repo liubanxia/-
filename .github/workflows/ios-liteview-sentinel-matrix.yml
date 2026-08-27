@@ -120,6 +120,7 @@ jobs:
           UNPACK="$RUNNER_TEMP/liteview-sentinel-unpack"
           PRODUCTS="$RUNNER_TEMP/LiteViewSentinelDerivedData/Build/Products/Release-iphoneos"
           FRESH_EXT="$PRODUCTS/PhoenixRealtimeVisionAssist.app/PlugIns/PhoenixBroadcastExtension.appex"
+          STAGED_MODELS='ios/PhoenixRealtimeVisionAssist/Resources/BroadcastModels'
           APP="$UNPACK/Payload/PhoenixRealtimeVisionAssist.app"
           EXT="$APP/PlugIns/PhoenixBroadcastExtension.appex"
 
@@ -128,6 +129,13 @@ jobs:
           unzip -q "$BASE_IPA" -d "$UNPACK"
           test -d "$APP"
           test -d "$FRESH_EXT"
+
+          # Xcode does not reliably copy already-compiled .mlmodelc folders from a generated
+          # app-extension resource group. Stage them explicitly into a known bundle subdirectory.
+          rm -rf "$FRESH_EXT/BroadcastModels"
+          mkdir -p "$FRESH_EXT/BroadcastModels"
+          cp -R "$STAGED_MODELS/yolo11n.mlmodelc" "$FRESH_EXT/BroadcastModels/"
+          cp -R "$STAGED_MODELS/YOLOv3TinyInt8LUT.mlmodelc" "$FRESH_EXT/BroadcastModels/"
 
           rm -rf "$EXT"
           mkdir -p "$APP/PlugIns"
