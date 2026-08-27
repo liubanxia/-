@@ -78,6 +78,7 @@ private final class DarwinBroadcastMonitor {
 @MainActor
 final class RuntimeStatusModel: ObservableObject {
     @Published private(set) var isBroadcastActive = false
+    @Published private(set) var pickerGeneration = 0
 
     private var lastBroadcastSignalUptime: TimeInterval?
     private var timer: Timer?
@@ -107,6 +108,11 @@ final class RuntimeStatusModel: ObservableObject {
         timer = nil
     }
 
+    func appBecameActive() {
+        guard !isBroadcastActive else { return }
+        rebuildPicker()
+    }
+
     private func handle(_ event: DarwinBroadcastMonitor.Event) {
         switch event {
         case .started, .heartbeat:
@@ -115,18 +121,26 @@ final class RuntimeStatusModel: ObservableObject {
         case .finished:
             lastBroadcastSignalUptime = nil
             isBroadcastActive = false
+            rebuildPicker()
         }
     }
 
     private func refresh() {
         guard isBroadcastActive, let lastBroadcastSignalUptime else { return }
         if ProcessInfo.processInfo.systemUptime - lastBroadcastSignalUptime > 2.5 {
+            lastBroadcastSignalUptime = nil
             isBroadcastActive = false
+            rebuildPicker()
         }
+    }
+
+    private func rebuildPicker() {
+        pickerGeneration &+= 1
     }
 }
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var status = RuntimeStatusModel()
 
     var body: some View {
@@ -141,21 +155,22 @@ struct ContentView: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 
-            Text("直接点下面的按钮启动")
+            Text(status.isBroadcastActive ? "广播运行中；停止后可再次直接点按钮启动" : "直接点下面的按钮启动")
                 .font(.headline)
                 .multilineTextAlignment(.center)
 
-            DirectBroadcastButton()
+            DirectBroadcastButton(isBroadcastActive: status.isBroadcastActive)
+                .id(status.pickerGeneration)
                 .frame(width: 260, height: 64)
 
-            Text("点“开始屏幕广播”后，按 iOS 系统提示确认“开始广播”。")
+            Text("每次停止、失败或返回 App 后都会重建系统广播控件，避免出现停止后再也点不回直播。")
                 .font(.footnote)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 
             RuntimeStatusView(isBroadcastActive: status.isBroadcastActive)
 
-            Text("状态由 Broadcast Extension 的实时心跳确认，不再依赖 UIScreen.isCaptured，也不需要 App Group。")
+            Text("状态由 Broadcast Extension 的实时心跳确认，不依赖 UIScreen.isCaptured，也不需要 App Group。")
                 .font(.footnote)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
@@ -163,6 +178,11 @@ struct ContentView: View {
         .padding(24)
         .onAppear { status.start() }
         .onDisappear { status.stop() }
+        .onChange(of: scenePhase) { _, newValue in
+            if newValue == .active {
+                status.appBecameActive()
+            }
+        }
     }
 }
 
@@ -186,20 +206,25 @@ struct RuntimeStatusView: View {
 }
 
 struct DirectBroadcastButton: View {
+    let isBroadcastActive: Bool
+
     var body: some View {
         ZStack {
-            Label("开始屏幕广播", systemImage: "record.circle")
-                .font(.headline)
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.accentColor)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            Label(
+                isBroadcastActive ? "打开广播控制" : "开始屏幕广播",
+                systemImage: isBroadcastActive ? "record.circle.fill" : "record.circle"
+            )
+            .font(.headline)
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.accentColor)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 
             SystemBroadcastPicker()
                 .opacity(0.02)
         }
         .contentShape(Rectangle())
-        .accessibilityLabel("开始屏幕广播")
+        .accessibilityLabel(isBroadcastActive ? "打开广播控制" : "开始屏幕广播")
     }
 }
 
