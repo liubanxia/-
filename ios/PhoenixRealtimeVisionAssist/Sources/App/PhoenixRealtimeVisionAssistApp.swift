@@ -341,7 +341,8 @@ struct ContentView: View {
                 BroadcastStatusCard(
                     phase: status.phase,
                     isUsingCaptureFallback: status.isUsingCaptureFallback,
-                    extensionHeartbeatConfirmed: status.extensionHeartbeatConfirmed
+                    extensionHeartbeatConfirmed: status.extensionHeartbeatConfirmed,
+                    snapshot: status.snapshot
                 )
 
                 DirectBroadcastButton(
@@ -366,7 +367,7 @@ struct ContentView: View {
 
                 VStack(spacing: 8) {
                     if status.extensionHeartbeatConfirmed {
-                        Label("扩展心跳已确认", systemImage: "checkmark.circle.fill")
+                        Label("扩展通信已确认；是否成功以帧与 AI 指标为准", systemImage: "antenna.radiowaves.left.and.right")
                             .foregroundStyle(.green)
                     } else if status.isUsingCaptureFallback {
                         Label("系统广播已确认；扩展状态回传暂不可读", systemImage: "exclamationmark.triangle.fill")
@@ -413,6 +414,7 @@ private struct BroadcastStatusCard: View {
     let phase: BroadcastLifecyclePhase
     let isUsingCaptureFallback: Bool
     let extensionHeartbeatConfirmed: Bool
+    let snapshot: SharedRealtimeSnapshot?
 
     private var title: String {
         switch phase {
@@ -424,8 +426,26 @@ private struct BroadcastStatusCard: View {
     }
 
     private var detail: String {
+        if phase == .running, let snapshot {
+            switch snapshot.visionPipelineStage {
+            case .waitingForFrames:
+                return "扩展已启动，正在等待 ReplayKit 视频帧"
+            case .framesReceived:
+                return "视频帧正在增长，等待第一次 AI 推理"
+            case .inferenceFailed:
+                return "AI 已执行，但最近一次推理失败，自动切换独立通道"
+            case .noVisibleTarget:
+                return "AI 正在执行；当前画面未检出可见目标"
+            case .targetDetected:
+                return "已检出可见目标；跨进程坐标通道暂不可读"
+            case .coordinateReady:
+                return "已输出目标坐标，正在做连续帧稳定融合"
+            case .stableTarget:
+                return "目标坐标已连续帧稳定"
+            }
+        }
         if phase == .running, extensionHeartbeatConfirmed {
-            return "扩展心跳已确认；广播运行正常"
+            return "扩展已启动；等待视频帧与 AI 执行证据"
         }
         if isUsingCaptureFallback {
             return "系统广播正在运行；扩展状态通道暂未回传，不再阻塞运行状态"
@@ -475,17 +495,64 @@ private struct RealtimeMetricsCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("实时状态")
+            Text("实时视觉证据")
                 .font(.headline)
 
-            HStack(spacing: 12) {
-                metric("视觉", value: snapshot.map { String($0.targetCount) } ?? "—", icon: "viewfinder")
-                metric("声纹标记", value: snapshot.map { String($0.soundIndicatorCount) } ?? "—", icon: "waveform")
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 88))], spacing: 12) {
                 metric(
-                    "画面",
+                    "视频帧",
+                    value: snapshot.map { String($0.videoFrameCount) } ?? "—",
+                    icon: "film.stack"
+                )
+                metric(
+                    "AI 执行",
+                    value: snapshot.map { String($0.analysisFrameCount) } ?? "—",
+                    icon: "cpu"
+                )
+                metric(
+                    "可见目标",
+                    value: snapshot.map { String($0.targetCount) } ?? "—",
+                    icon: "viewfinder"
+                )
+                metric(
+                    "画面速率",
                     value: snapshot.map { String(format: "%.0f fps", $0.videoFramesPerSecond) } ?? "—",
                     icon: "speedometer"
                 )
+                metric(
+                    "稳定帧",
+                    value: snapshot.map { String($0.stableTargetFrameCount) } ?? "—",
+                    icon: "scope"
+                )
+            }
+
+            if let snapshot {
+                HStack(spacing: 8) {
+                    Image(systemName: pipelineIcon(snapshot.visionPipelineStage))
+                    Text(pipelineText(snapshot.visionPipelineStage))
+                }
+                .font(.caption)
+                .foregroundStyle(pipelineColor(snapshot.visionPipelineStage))
+
+                if let point = snapshot.primaryTarget {
+                    Text(
+                        String(
+                            format: "目标坐标 x %.3f · y %.3f · 置信度 %.0f%%",
+                            point.x,
+                            point.y,
+                            snapshot.primaryTargetConfidence * 100
+                        )
+                    )
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                }
+
+                Text(
+                    "推理通道 \(snapshot.successfulLaneCount)/\(snapshot.attemptedLaneCount) · "
+                        + String(format: "延迟 %.0f ms", snapshot.analysisLatencyMilliseconds)
+                )
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
             }
 
             if isBroadcastActive, snapshot == nil {
@@ -497,6 +564,38 @@ private struct RealtimeMetricsCard: View {
         .padding(16)
         .background(Color.secondary.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private func pipelineText(_ stage: SharedVisionPipelineStage) -> String {
+        switch stage {
+        case .waitingForFrames: return "等待视频帧"
+        case .framesReceived: return "视频帧已进入，等待 AI"
+        case .inferenceFailed: return "AI 最近一次失败，正在自动恢复"
+        case .noVisibleTarget: return "AI 已执行，当前无可见目标"
+        case .targetDetected: return "目标已检出，坐标通道不可读"
+        case .coordinateReady: return "坐标已输出，正在连续帧融合"
+        case .stableTarget: return "目标坐标已稳定"
+        }
+    }
+
+    private func pipelineIcon(_ stage: SharedVisionPipelineStage) -> String {
+        switch stage {
+        case .stableTarget: return "checkmark.seal.fill"
+        case .coordinateReady, .targetDetected: return "scope"
+        case .noVisibleTarget: return "eye"
+        case .inferenceFailed: return "exclamationmark.triangle.fill"
+        case .framesReceived: return "cpu"
+        case .waitingForFrames: return "hourglass"
+        }
+    }
+
+    private func pipelineColor(_ stage: SharedVisionPipelineStage) -> Color {
+        switch stage {
+        case .stableTarget: return .green
+        case .coordinateReady, .targetDetected, .noVisibleTarget: return .blue
+        case .inferenceFailed: return .orange
+        case .framesReceived, .waitingForFrames: return .secondary
+        }
     }
 
     private func metric(_ title: String, value: String, icon: String) -> some View {

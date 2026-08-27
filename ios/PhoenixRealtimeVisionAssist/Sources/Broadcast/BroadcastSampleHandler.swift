@@ -17,6 +17,14 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
         let videoFramesPerSecond: Double
         let droppedAnalysisFrameCount: UInt64
         let analysisLatencyMilliseconds: Double
+        let analysisFrameCount: UInt64
+        let successfulAnalysisFrameCount: UInt64
+        let lastAnalysisSucceeded: Bool
+        let attemptedLaneCount: Int
+        let successfulLaneCount: Int
+        let primaryTarget: SharedNormalizedPoint?
+        let primaryTargetConfidence: Double
+        let stableTargetFrameCount: Int
     }
 
     private let sharedState = SharedRealtimeStateStore()
@@ -47,6 +55,14 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
     private var droppedAnalysisFrameCount: UInt64 = 0
     private var targetCount = 0
     private var analysisLatencyMilliseconds: Double = 0
+    private var analysisFrameCount: UInt64 = 0
+    private var successfulAnalysisFrameCount: UInt64 = 0
+    private var lastAnalysisSucceeded = false
+    private var attemptedLaneCount = 0
+    private var successfulLaneCount = 0
+    private var primaryTarget: SharedNormalizedPoint?
+    private var primaryTargetConfidence: Double = 0
+    private var stableTargetFrameCount = 0
 
     override func broadcastStarted(withSetupInfo setupInfo: [String: NSObject]?) {
         let now = ProcessInfo.processInfo.systemUptime
@@ -68,10 +84,21 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
         droppedAnalysisFrameCount = 0
         targetCount = 0
         analysisLatencyMilliseconds = 0
+        analysisFrameCount = 0
+        successfulAnalysisFrameCount = 0
+        lastAnalysisSucceeded = false
+        attemptedLaneCount = 0
+        successfulLaneCount = 0
+        primaryTarget = nil
+        primaryTargetConfidence = 0
+        stableTargetFrameCount = 0
         let metrics = currentMetricsLocked()
         let activeGeneration = generation
         stateLock.unlock()
 
+        analysisQueue.async { [weak self] in
+            self?.analyzer.reset()
+        }
         sharedState.clear()
         publish(metrics)
         BroadcastSignalName.post(BroadcastSignalName.started)
@@ -233,9 +260,24 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
             return
         }
         analysisInFlight = false
+        analysisFrameCount &+= 1
         analysisLatencyMilliseconds = result.latencyMilliseconds
+        lastAnalysisSucceeded = result.succeeded
+        attemptedLaneCount = result.attemptedLaneCount
+        successfulLaneCount = result.successfulLaneCount
         if result.succeeded {
+            successfulAnalysisFrameCount &+= 1
             targetCount = result.targetCount
+            primaryTarget = result.primaryTarget.map {
+                SharedNormalizedPoint(x: $0.x, y: $0.y)
+            }
+            primaryTargetConfidence = result.primaryTargetConfidence
+            stableTargetFrameCount = result.stableTargetFrameCount
+        } else {
+            targetCount = 0
+            primaryTarget = nil
+            primaryTargetConfidence = 0
+            stableTargetFrameCount = 0
         }
         let metrics = currentMetricsLocked()
         stateLock.unlock()
@@ -262,7 +304,15 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
             videoFramesPerSecond: metrics.videoFramesPerSecond,
             droppedAnalysisFrameCount: metrics.droppedAnalysisFrameCount,
             analysisLatencyMilliseconds: metrics.analysisLatencyMilliseconds,
-            analysisMode: .lightweightVision
+            analysisMode: .lightweightVision,
+            analysisFrameCount: metrics.analysisFrameCount,
+            successfulAnalysisFrameCount: metrics.successfulAnalysisFrameCount,
+            lastAnalysisSucceeded: metrics.lastAnalysisSucceeded,
+            attemptedLaneCount: metrics.attemptedLaneCount,
+            successfulLaneCount: metrics.successfulLaneCount,
+            primaryTarget: metrics.primaryTarget,
+            primaryTargetConfidence: metrics.primaryTargetConfidence,
+            stableTargetFrameCount: metrics.stableTargetFrameCount
         )
         if snapshot != nil {
             BroadcastSignalName.post(BroadcastSignalName.snapshot)
@@ -279,7 +329,15 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
             videoFramesPerSecond: metrics.videoFramesPerSecond,
             droppedAnalysisFrameCount: metrics.droppedAnalysisFrameCount,
             analysisLatencyMilliseconds: metrics.analysisLatencyMilliseconds,
-            analysisMode: .lightweightVision
+            analysisMode: .lightweightVision,
+            analysisFrameCount: metrics.analysisFrameCount,
+            successfulAnalysisFrameCount: metrics.successfulAnalysisFrameCount,
+            lastAnalysisSucceeded: metrics.lastAnalysisSucceeded,
+            attemptedLaneCount: metrics.attemptedLaneCount,
+            successfulLaneCount: metrics.successfulLaneCount,
+            primaryTarget: metrics.primaryTarget,
+            primaryTargetConfidence: metrics.primaryTargetConfidence,
+            stableTargetFrameCount: metrics.stableTargetFrameCount
         )
         if snapshot != nil {
             BroadcastSignalName.post(BroadcastSignalName.snapshot)
@@ -295,7 +353,15 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
             videoFrameCount: videoFrameCount,
             videoFramesPerSecond: videoFramesPerSecond,
             droppedAnalysisFrameCount: droppedAnalysisFrameCount,
-            analysisLatencyMilliseconds: analysisLatencyMilliseconds
+            analysisLatencyMilliseconds: analysisLatencyMilliseconds,
+            analysisFrameCount: analysisFrameCount,
+            successfulAnalysisFrameCount: successfulAnalysisFrameCount,
+            lastAnalysisSucceeded: lastAnalysisSucceeded,
+            attemptedLaneCount: attemptedLaneCount,
+            successfulLaneCount: successfulLaneCount,
+            primaryTarget: primaryTarget,
+            primaryTargetConfidence: primaryTargetConfidence,
+            stableTargetFrameCount: stableTargetFrameCount
         )
     }
 

@@ -73,6 +73,7 @@ jobs:
           ANALYZER="$ROOT/Sources/Broadcast/LightweightBroadcastAnalyzer.swift"
           DETECTOR="$ROOT/Sources/Vision/RealtimePersonDetector.swift"
           COREML="$ROOT/Sources/Vision/CoreMLPersonDetector.swift"
+          BANK="$ROOT/Sources/Vision/PhoenixCapabilityModelBank.swift"
 
           grep -Fq 'Config/App.entitlements' "$PROJECT"
           grep -Fq 'Config/Broadcast.entitlements' "$PROJECT"
@@ -91,16 +92,25 @@ jobs:
           grep -Fq 'predictionCount: Int = 0' "$CONFIG"
           grep -Fq 'VNDetectHumanBodyPoseRequest' "$ANALYZER"
           grep -Fq 'upperBodyOnly: true' "$ANALYZER"
+          grep -Fq 'stableTargetFrameCount' "$ANALYZER"
           grep -Fq 'detectWithMatrix' "$DETECTOR"
-          grep -Fq 'discoverCompiledModels' "$COREML"
+          grep -Fq 'PhoenixCapabilityModelBank.visibleLocalizationURLs' "$COREML"
+          grep -Fq 'realtimeResidencies' "$BANK"
+          grep -Fq 'analysisFrameCount' "$SHARED"
+          grep -Fq 'primaryTarget' "$HANDLER"
           grep -Fq 'soundIndicatorCount: 0' "$HANDLER"
+
+          if grep -Fq 'FileManager.default.enumerator' "$COREML"; then
+            echo 'Realtime detector must not enumerate cold capability models.' >&2
+            exit 1
+          fi
 
           if grep -R -Fq 'import CoreML' "$ROOT/Sources/Broadcast"; then
             echo 'Broadcast Extension must stay free of custom Core ML.' >&2
             exit 1
           fi
 
-      - name: Run start-stop-start lifecycle smoke test
+      - name: Run lifecycle, evidence, and residency smoke test
         shell: bash
         run: |
           set -euo pipefail
@@ -108,6 +118,7 @@ jobs:
           xcrun swiftc \
             "$ROOT/Sources/Core/SharedRealtimeStateStore.swift" \
             "$ROOT/Sources/Core/BroadcastLifecycle.swift" \
+            "$ROOT/Sources/Vision/PhoenixCapabilityModelBank.swift" \
             "$ROOT/scripts/lifecycle_smoke_main.swift" \
             -o "$RUNNER_TEMP/liteview-lifecycle-smoke"
           "$RUNNER_TEMP/liteview-lifecycle-smoke"
@@ -156,13 +167,13 @@ jobs:
 
           set_plist_string "$APP_PLIST" CFBundleDisplayName LiteView
           set_plist_string "$APP_PLIST" CFBundleIdentifier com.phoenix.realtimevisionassist
-          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.4.1
-          set_plist_string "$APP_PLIST" CFBundleVersion 7
+          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.7.0
+          set_plist_string "$APP_PLIST" CFBundleVersion 10
 
           set_plist_string "$EXT_PLIST" CFBundleDisplayName 'LiteView Broadcast'
           set_plist_string "$EXT_PLIST" CFBundleIdentifier com.phoenix.realtimevisionassist.broadcast
-          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.4.1
-          set_plist_string "$EXT_PLIST" CFBundleVersion 7
+          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.7.0
+          set_plist_string "$EXT_PLIST" CFBundleVersion 10
 
           /usr/libexec/PlistBuddy -c 'Delete :NSExtension' "$EXT_PLIST" >/dev/null 2>&1 || true
           /usr/libexec/PlistBuddy -c 'Add :NSExtension dict' "$EXT_PLIST"
@@ -190,8 +201,8 @@ jobs:
           test "$EXT_SIZE_BYTES" -lt 12582912
           test "$APP_ID" = 'com.phoenix.realtimevisionassist'
           test "$EXT_ID" = 'com.phoenix.realtimevisionassist.broadcast'
-          test "$APP_VERSION" = '0.4.1'
-          test "$EXT_VERSION" = '0.4.1'
+          test "$APP_VERSION" = '0.7.0'
+          test "$EXT_VERSION" = '0.7.0'
           test "$EXT_POINT" = 'com.apple.broadcast-services-upload'
           test "$EXT_CLASS" = 'PhoenixBroadcastExtension.BroadcastSampleHandler'
 
@@ -231,7 +242,7 @@ jobs:
           cat > "$MANIFEST" <<EOF
           LiteView memory-safe unsigned sideload package
           commit=${GITHUB_SHA}
-          version=0.4.1
+          version=0.7.0
           app_bundle_id=com.phoenix.realtimevisionassist
           extension_bundle_id=com.phoenix.realtimevisionassist.broadcast
           extension_point=com.apple.broadcast-services-upload
@@ -269,16 +280,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TAG='liteview-sideload-latest'
+          TAG='liteview-memorysafe-latest'
           IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
           MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
-          NOTES='LiteView 0.4.1 keeps the lightweight AI matrix and fixes the persistent waiting-for-heartbeat state. The main app now arms pollable Darwin notify_check latches before broadcast, so lifecycle posts made while the app is suspended can be consumed after returning. UIScreen capture remains a system fallback and no longer blocks the running state when third-party re-signing prevents richer cross-process metrics.'
+          NOTES='LiteView 0.7.0 lightweight validation build. It reports frame growth, real AI executions, target coordinates and stable-frame evidence while keeping the ReplayKit extension custom-model-free. The canonical near-1GiB package is published separately under liteview-sideload-latest.'
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
-            gh release edit "$TAG" --title 'LiteView 0.4.1 heartbeat-recovery sideload package' --notes "$NOTES"
+            gh release edit "$TAG" --title 'LiteView 0.7.0 lightweight validation package' --notes "$NOTES"
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" \
-              --title 'LiteView 0.4.1 heartbeat-recovery sideload package' \
+              --title 'LiteView 0.7.0 lightweight validation package' \
               --notes "$NOTES"
           fi

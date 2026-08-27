@@ -13,9 +13,21 @@ Design constraints:
 - Thermal throttling reduces analysis FPS automatically.
 - UI output is intentionally minimal.
 
-## LiteView 0.2.0
+## LiteView 0.7.0
 
-The Broadcast Extension uses Apple Vision human-rectangle detection at an adaptive low rate and a direct BGRA sound-cue sampler. It does not load the bundled Core ML model, preventing the extension memory spike that caused ReplayKit to stop. Thermal pressure automatically slows or disables analysis while the heartbeat remains alive.
+The near-1GiB package is split into visible localization, segmentation, scene routing, feature embedding, and depth/geometry capabilities. Realtime selection is restricted to `hotNano` and `warmFallback`; `coldOnly` models remain on disk and are never enumerated by the visible-target detector. Only one compatible custom model may be resident in the main app at a time.
+
+The Broadcast Extension stays custom-model-free and uses an adaptive Apple Vision matrix. Full-body rectangles are the cheap primary lane, upper-body rectangles provide independent fallback, and body pose is sampled at a lower cadence. Thermal pressure and low-power mode reduce verification work automatically.
+
+Heartbeat is transport evidence only. Runtime success is reported as a progressive chain:
+
+1. ReplayKit video-frame count increases.
+2. AI analysis-frame count increases.
+3. A visible target is detected.
+4. A normalized target coordinate is produced.
+5. The coordinate survives continuous-frame stabilization.
+
+The extension shares only the latest counters and normalized target point. It never shares or retains a frame, screenshot, mask, pose object, audio sample, trajectory, or inference history.
 
 `BroadcastSampleHandler` is designed for a ReplayKit Broadcast Upload Extension. The app and extension share only minimal runtime counters through an App Group. Entitlement-free Darwin heartbeats and a screen-capture fallback keep lifecycle reporting usable if a sideload signer strips App Group access. No image/audio payload or history is written to shared storage.
 
@@ -48,4 +60,4 @@ After the simulator build passes:
 4. Connect a physical iPhone and run the main app.
 5. Start the ReplayKit broadcast and confirm the app receives the minimal runtime status counters.
 
-The project is deliberately model-free in the repository. Do not commit model weights, recordings, screenshots, or captured media.
+The source repository remains model-free. CI downloads public Core ML assets into release packages; private Phoenix weights can later occupy the existing capability slots without changing the runtime architecture. Do not commit recordings, screenshots, or captured media.

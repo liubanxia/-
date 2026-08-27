@@ -60,6 +60,26 @@ enum SharedAnalysisMode: String, Codable, Sendable, Equatable {
     case lightweightVision
 }
 
+struct SharedNormalizedPoint: Codable, Sendable, Equatable {
+    let x: Double
+    let y: Double
+
+    init(x: Double, y: Double) {
+        self.x = min(max(x, 0), 1)
+        self.y = min(max(y, 0), 1)
+    }
+}
+
+enum SharedVisionPipelineStage: Sendable, Equatable {
+    case waitingForFrames
+    case framesReceived
+    case inferenceFailed
+    case noVisibleTarget
+    case targetDetected
+    case coordinateReady
+    case stableTarget
+}
+
 struct SharedRealtimeSnapshot: Codable, Sendable, Equatable {
     let schemaVersion: Int
     let sessionID: String
@@ -73,9 +93,17 @@ struct SharedRealtimeSnapshot: Codable, Sendable, Equatable {
     let droppedAnalysisFrameCount: UInt64
     let analysisLatencyMilliseconds: Double
     let analysisMode: SharedAnalysisMode
+    let analysisFrameCount: UInt64
+    let successfulAnalysisFrameCount: UInt64
+    let lastAnalysisSucceeded: Bool
+    let attemptedLaneCount: Int
+    let successfulLaneCount: Int
+    let primaryTarget: SharedNormalizedPoint?
+    let primaryTargetConfidence: Double
+    let stableTargetFrameCount: Int
 
     init(
-        schemaVersion: Int = 3,
+        schemaVersion: Int = 4,
         sessionID: String,
         sequence: UInt64,
         phase: SharedBroadcastPhase,
@@ -86,7 +114,15 @@ struct SharedRealtimeSnapshot: Codable, Sendable, Equatable {
         videoFramesPerSecond: Double,
         droppedAnalysisFrameCount: UInt64,
         analysisLatencyMilliseconds: Double,
-        analysisMode: SharedAnalysisMode
+        analysisMode: SharedAnalysisMode,
+        analysisFrameCount: UInt64 = 0,
+        successfulAnalysisFrameCount: UInt64 = 0,
+        lastAnalysisSucceeded: Bool = false,
+        attemptedLaneCount: Int = 0,
+        successfulLaneCount: Int = 0,
+        primaryTarget: SharedNormalizedPoint? = nil,
+        primaryTargetConfidence: Double = 0,
+        stableTargetFrameCount: Int = 0
     ) {
         self.schemaVersion = schemaVersion
         self.sessionID = sessionID
@@ -100,6 +136,23 @@ struct SharedRealtimeSnapshot: Codable, Sendable, Equatable {
         self.droppedAnalysisFrameCount = droppedAnalysisFrameCount
         self.analysisLatencyMilliseconds = max(0, analysisLatencyMilliseconds)
         self.analysisMode = analysisMode
+        self.analysisFrameCount = analysisFrameCount
+        self.successfulAnalysisFrameCount = min(successfulAnalysisFrameCount, analysisFrameCount)
+        self.lastAnalysisSucceeded = lastAnalysisSucceeded
+        self.attemptedLaneCount = max(0, attemptedLaneCount)
+        self.successfulLaneCount = min(max(0, successfulLaneCount), max(0, attemptedLaneCount))
+        self.primaryTarget = primaryTarget
+        self.primaryTargetConfidence = min(max(primaryTargetConfidence, 0), 1)
+        self.stableTargetFrameCount = max(0, stableTargetFrameCount)
+    }
+
+    var visionPipelineStage: SharedVisionPipelineStage {
+        guard videoFrameCount > 0 || videoFramesPerSecond > 0 else { return .waitingForFrames }
+        guard analysisFrameCount > 0 else { return .framesReceived }
+        guard lastAnalysisSucceeded else { return .inferenceFailed }
+        guard targetCount > 0 else { return .noVisibleTarget }
+        guard primaryTarget != nil else { return .targetDetected }
+        return stableTargetFrameCount >= 3 ? .stableTarget : .coordinateReady
     }
 
     func isFresh(at uptime: TimeInterval, tolerance: TimeInterval = 3.5) -> Bool {
@@ -119,6 +172,14 @@ struct SharedRealtimeSnapshot: Codable, Sendable, Equatable {
         case droppedAnalysisFrameCount
         case analysisLatencyMilliseconds
         case analysisMode
+        case analysisFrameCount
+        case successfulAnalysisFrameCount
+        case lastAnalysisSucceeded
+        case attemptedLaneCount
+        case successfulLaneCount
+        case primaryTarget
+        case primaryTargetConfidence
+        case stableTargetFrameCount
     }
 
     init(from decoder: Decoder) throws {
@@ -145,6 +206,32 @@ struct SharedRealtimeSnapshot: Codable, Sendable, Equatable {
         )
         analysisMode = try values.decodeIfPresent(SharedAnalysisMode.self, forKey: .analysisMode)
             ?? .heartbeatOnly
+        analysisFrameCount = try values.decodeIfPresent(UInt64.self, forKey: .analysisFrameCount) ?? 0
+        successfulAnalysisFrameCount = min(
+            try values.decodeIfPresent(UInt64.self, forKey: .successfulAnalysisFrameCount) ?? 0,
+            analysisFrameCount
+        )
+        lastAnalysisSucceeded = try values.decodeIfPresent(
+            Bool.self,
+            forKey: .lastAnalysisSucceeded
+        ) ?? false
+        attemptedLaneCount = max(
+            0,
+            try values.decodeIfPresent(Int.self, forKey: .attemptedLaneCount) ?? 0
+        )
+        successfulLaneCount = min(
+            max(0, try values.decodeIfPresent(Int.self, forKey: .successfulLaneCount) ?? 0),
+            attemptedLaneCount
+        )
+        primaryTarget = try values.decodeIfPresent(SharedNormalizedPoint.self, forKey: .primaryTarget)
+        primaryTargetConfidence = min(
+            max(0, try values.decodeIfPresent(Double.self, forKey: .primaryTargetConfidence) ?? 0),
+            1
+        )
+        stableTargetFrameCount = max(
+            0,
+            try values.decodeIfPresent(Int.self, forKey: .stableTargetFrameCount) ?? 0
+        )
     }
 }
 
@@ -152,13 +239,13 @@ struct SharedRealtimeSnapshot: Codable, Sendable, Equatable {
 /// to prove that the Broadcast Extension is alive even when third-party re-signing strips
 /// the App Group entitlement. No frame data, audio data, or history crosses this channel.
 struct CompactBroadcastState: Sendable, Equatable {
-    private static let formatVersion: UInt64 = 1
+    private static let formatVersion: UInt64 = 2
     private static let magic: UInt64 = 0xB7
 
     let phase: SharedBroadcastPhase
     let sequence: UInt8
     let targetCount: UInt8
-    let soundIndicatorCount: UInt8
+    let visionEvidenceCode: UInt8
     let videoFramesPerSecond: Double
     let analysisLatencyMilliseconds: Double
     let uptimeTicks: UInt16
@@ -167,7 +254,16 @@ struct CompactBroadcastState: Sendable, Equatable {
         phase = snapshot.phase
         sequence = UInt8(truncatingIfNeeded: snapshot.sequence)
         targetCount = UInt8(clamping: snapshot.targetCount)
-        soundIndicatorCount = UInt8(clamping: snapshot.soundIndicatorCount)
+        switch snapshot.visionPipelineStage {
+        case .waitingForFrames:
+            visionEvidenceCode = 0
+        case .framesReceived:
+            visionEvidenceCode = 1
+        case .inferenceFailed, .noVisibleTarget, .targetDetected, .coordinateReady:
+            visionEvidenceCode = 2
+        case .stableTarget:
+            visionEvidenceCode = 3
+        }
         videoFramesPerSecond = min(max(snapshot.videoFramesPerSecond, 0), 127.5)
         analysisLatencyMilliseconds = min(max(snapshot.analysisLatencyMilliseconds, 0), 1_020)
         uptimeTicks = UInt16(truncatingIfNeeded: Int(snapshot.timestamp * 4))
@@ -189,7 +285,7 @@ struct CompactBroadcastState: Sendable, Equatable {
 
         sequence = UInt8((rawValue >> 2) & 0xFF)
         targetCount = UInt8((rawValue >> 10) & 0x0F)
-        soundIndicatorCount = UInt8((rawValue >> 14) & 0x03)
+        visionEvidenceCode = UInt8((rawValue >> 14) & 0x03)
         videoFramesPerSecond = Double((rawValue >> 16) & 0xFF) / 2.0
         analysisLatencyMilliseconds = Double((rawValue >> 24) & 0xFF) * 4.0
         uptimeTicks = UInt16((rawValue >> 32) & 0xFFFF)
@@ -213,7 +309,7 @@ struct CompactBroadcastState: Sendable, Equatable {
         return phaseCode
             | (UInt64(sequence) << 2)
             | (UInt64(min(targetCount, 15)) << 10)
-            | (UInt64(min(soundIndicatorCount, 3)) << 14)
+            | (UInt64(min(visionEvidenceCode, 3)) << 14)
             | (fpsCode << 16)
             | (latencyCode << 24)
             | (UInt64(uptimeTicks) << 32)
@@ -233,12 +329,20 @@ struct CompactBroadcastState: Sendable, Equatable {
             phase: phase,
             timestamp: reconstructedTimestamp,
             targetCount: Int(targetCount),
-            soundIndicatorCount: Int(soundIndicatorCount),
-            videoFrameCount: 0,
+            soundIndicatorCount: 0,
+            videoFrameCount: visionEvidenceCode > 0 ? 1 : 0,
             videoFramesPerSecond: videoFramesPerSecond,
             droppedAnalysisFrameCount: 0,
             analysisLatencyMilliseconds: analysisLatencyMilliseconds,
-            analysisMode: .lightweightVision
+            analysisMode: .lightweightVision,
+            analysisFrameCount: visionEvidenceCode >= 2 ? 1 : 0,
+            successfulAnalysisFrameCount: visionEvidenceCode >= 2 ? 1 : 0,
+            lastAnalysisSucceeded: visionEvidenceCode >= 2,
+            attemptedLaneCount: visionEvidenceCode >= 2 ? 1 : 0,
+            successfulLaneCount: visionEvidenceCode >= 2 ? 1 : 0,
+            primaryTarget: nil,
+            primaryTargetConfidence: 0,
+            stableTargetFrameCount: visionEvidenceCode == 3 ? 3 : 0
         )
     }
 }
@@ -294,8 +398,9 @@ final class EntitlementFreeBroadcastStateChannel {
 
 final class SharedRealtimeStateStore {
     static let suiteName = "group.com.phoenix.realtimevisionassist"
-    private static let snapshotKey = "phoenix.realtime.snapshot.v3"
-    private static let previousSnapshotKey = "phoenix.realtime.snapshot.v2"
+    private static let snapshotKey = "phoenix.realtime.snapshot.v4"
+    private static let previousSnapshotKey = "phoenix.realtime.snapshot.v3"
+    private static let olderSnapshotKey = "phoenix.realtime.snapshot.v2"
     private static let legacySnapshotKey = "phoenix.realtime.snapshot"
 
     let isAvailable: Bool
@@ -330,7 +435,15 @@ final class SharedRealtimeStateStore {
         videoFramesPerSecond: Double,
         droppedAnalysisFrameCount: UInt64,
         analysisLatencyMilliseconds: Double,
-        analysisMode: SharedAnalysisMode
+        analysisMode: SharedAnalysisMode,
+        analysisFrameCount: UInt64,
+        successfulAnalysisFrameCount: UInt64,
+        lastAnalysisSucceeded: Bool,
+        attemptedLaneCount: Int,
+        successfulLaneCount: Int,
+        primaryTarget: SharedNormalizedPoint?,
+        primaryTargetConfidence: Double,
+        stableTargetFrameCount: Int
     ) -> SharedRealtimeSnapshot? {
         lock.lock()
         nextSequence &+= 1
@@ -344,7 +457,15 @@ final class SharedRealtimeStateStore {
             videoFramesPerSecond: videoFramesPerSecond,
             droppedAnalysisFrameCount: droppedAnalysisFrameCount,
             analysisLatencyMilliseconds: analysisLatencyMilliseconds,
-            analysisMode: analysisMode
+            analysisMode: analysisMode,
+            analysisFrameCount: analysisFrameCount,
+            successfulAnalysisFrameCount: successfulAnalysisFrameCount,
+            lastAnalysisSucceeded: lastAnalysisSucceeded,
+            attemptedLaneCount: attemptedLaneCount,
+            successfulLaneCount: successfulLaneCount,
+            primaryTarget: primaryTarget,
+            primaryTargetConfidence: primaryTargetConfidence,
+            stableTargetFrameCount: stableTargetFrameCount
         )
         if let data = try? encoder.encode(snapshot) {
             defaults?.set(data, forKey: Self.snapshotKey)
@@ -357,28 +478,35 @@ final class SharedRealtimeStateStore {
 
     func read() -> SharedRealtimeSnapshot? {
         let now = ProcessInfo.processInfo.systemUptime
-        var candidates: [SharedRealtimeSnapshot] = []
+        var appGroupSnapshot: SharedRealtimeSnapshot?
 
         if let defaults {
             let data = defaults.data(forKey: Self.snapshotKey)
                 ?? defaults.data(forKey: Self.previousSnapshotKey)
+                ?? defaults.data(forKey: Self.olderSnapshotKey)
                 ?? defaults.data(forKey: Self.legacySnapshotKey)
             if let data,
                let snapshot = try? decoder.decode(SharedRealtimeSnapshot.self, from: data) {
-                candidates.append(snapshot)
+                appGroupSnapshot = snapshot
             }
         }
 
-        if let fallback = fallbackChannel.read(at: now) {
-            candidates.append(fallback)
+        let fallbackSnapshot = fallbackChannel.read(at: now)
+
+        // The App Group payload carries exact counters and normalized coordinates. Prefer it
+        // whenever it is fresh; the compact Darwin state exists only as a signing fallback.
+        if let appGroupSnapshot,
+           appGroupSnapshot.isFresh(at: now, tolerance: 5) {
+            return appGroupSnapshot
         }
 
-        let fresh = candidates.filter { $0.isFresh(at: now, tolerance: 5) }
-        if let newestFresh = fresh.max(by: { $0.timestamp < $1.timestamp }) {
-            return newestFresh
+        if let fallbackSnapshot,
+           fallbackSnapshot.isFresh(at: now, tolerance: 5) {
+            return fallbackSnapshot
         }
 
-        return candidates
+        return [appGroupSnapshot, fallbackSnapshot]
+            .compactMap { $0 }
             .filter { $0.timestamp > 0 && $0.timestamp <= now }
             .max(by: { $0.timestamp < $1.timestamp })
     }
@@ -390,6 +518,7 @@ final class SharedRealtimeStateStore {
 
         defaults?.removeObject(forKey: Self.snapshotKey)
         defaults?.removeObject(forKey: Self.previousSnapshotKey)
+        defaults?.removeObject(forKey: Self.olderSnapshotKey)
         defaults?.removeObject(forKey: Self.legacySnapshotKey)
         fallbackChannel.clear()
     }

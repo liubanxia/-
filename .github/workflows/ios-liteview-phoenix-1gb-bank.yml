@@ -6,7 +6,7 @@ on:
       - feature/ios-realtime-vision-assist
     paths:
       - '.github/workflows/ios-liteview-phoenix-1gb-bank.yml'
-      - 'ios/PhoenixRealtimeVisionAssist/Sources/Vision/PhoenixCapabilityModelBank.swift'
+      - 'ios/PhoenixRealtimeVisionAssist/**'
   workflow_dispatch:
 
 permissions:
@@ -156,6 +156,12 @@ jobs:
           {
             "architecture": "Phoenix split-capability model bank",
             "runtime_rule": "large on disk, one selected custom lane resident at a time",
+            "residency_policy": {
+              "hotNano": ["yolo11n", "YOLOv3TinyInt8LUT"],
+              "warmFallback": ["YOLOv3TinyFP16", "YOLOv3Tiny", "YOLOv3Int8LUT"],
+              "coldOnly": ["YOLOv3FP16", "YOLOv3", "DeepLabV3 family", "MobileNetV2 family", "Resnet50 family", "FastViT family", "DepthAnythingV2 family"]
+            },
+            "success_evidence": ["video_frame_growth", "ai_execution", "visible_target", "normalized_coordinate", "stable_frame_streak"],
             "capabilities": {
               "visible_localization": ["yolo11n", "YOLOv3TinyInt8LUT", "YOLOv3TinyFP16", "YOLOv3Tiny", "YOLOv3Int8LUT", "YOLOv3FP16", "YOLOv3"],
               "segmentation": ["DeepLabV3Int8LUT", "DeepLabV3FP16", "DeepLabV3"],
@@ -181,6 +187,19 @@ jobs:
       - name: Generate project
         working-directory: ios/PhoenixRealtimeVisionAssist
         run: xcodegen generate
+
+      - name: Run lifecycle, evidence, and residency smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          xcrun swiftc \
+            "$ROOT/Sources/Core/SharedRealtimeStateStore.swift" \
+            "$ROOT/Sources/Core/BroadcastLifecycle.swift" \
+            "$ROOT/Sources/Vision/PhoenixCapabilityModelBank.swift" \
+            "$ROOT/scripts/lifecycle_smoke_main.swift" \
+            -o "$RUNNER_TEMP/liteview-pipeline-smoke"
+          "$RUNNER_TEMP/liteview-pipeline-smoke"
 
       - name: Build unsigned iPhone device target
         working-directory: ios/PhoenixRealtimeVisionAssist
@@ -232,12 +251,12 @@ jobs:
 
           set_plist_string "$APP_PLIST" CFBundleDisplayName LiteView
           set_plist_string "$APP_PLIST" CFBundleIdentifier com.phoenix.realtimevisionassist
-          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.6.0
-          set_plist_string "$APP_PLIST" CFBundleVersion 9
+          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.7.0
+          set_plist_string "$APP_PLIST" CFBundleVersion 10
           set_plist_string "$EXT_PLIST" CFBundleDisplayName 'LiteView Broadcast'
           set_plist_string "$EXT_PLIST" CFBundleIdentifier com.phoenix.realtimevisionassist.broadcast
-          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.6.0
-          set_plist_string "$EXT_PLIST" CFBundleVersion 9
+          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.7.0
+          set_plist_string "$EXT_PLIST" CFBundleVersion 10
 
           /usr/libexec/PlistBuddy -c 'Delete :NSExtension' "$EXT_PLIST" >/dev/null 2>&1 || true
           /usr/libexec/PlistBuddy -c 'Add :NSExtension dict' "$EXT_PLIST"
@@ -285,18 +304,19 @@ jobs:
           test "$MODEL_COUNT" -ge 12
           test -z "$(find "$VEXT" -type d -name '*.mlmodelc' -print -quit)"
           test -f "$VAPP/PhoenixCapabilityBank.json"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VAPP/Info.plist")" = '0.6.0'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VEXT/Info.plist")" = '0.6.0'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VAPP/Info.plist")" = '0.7.0'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VEXT/Info.plist")" = '0.7.0'
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$VEXT/Info.plist")" = 'com.apple.broadcast-services-upload'
 
           cat > "$MANIFEST" <<EOF
-          LiteView 0.6.0 Phoenix capability-split near-1GiB bank
+          LiteView 0.7.0 Phoenix capability-split near-1GiB bank
           commit=${GITHUB_SHA}
-          build=9
+          build=10
           package_size_budget_bytes=1073741824
           package_minimum_bytes=600000000
           model_bank_minimum_bytes=650000000
           runtime_rule=large offline bank; one selected custom lane resident at a time
+          realtime_residency=hotNano + warmFallback only; coldOnly models are never enumerated by the realtime detector
           phoenix_architecture=capability split + independent fallback + result fusion
           visible_localization=yolo11n + YOLOv3 multi-precision family + Apple Vision
           segmentation=DeepLabV3 family when available
@@ -305,6 +325,8 @@ jobs:
           depth_geometry=DepthAnythingV2 Small family when available
           broadcast_extension_custom_models=none
           broadcast_extension_size_budget_bytes=12582912
+          success_evidence=video frame growth + AI execution count + visible target + normalized coordinate + stable-frame streak
+          coordinate_pipeline=latest normalized target only; no frame or trajectory history retained
           lifecycle=App Group snapshot + compact libnotify + live Darwin events + notify_check latch + UIScreen capture fallback
           persistence=none for frames, screenshots, audio, or analysis history
           signing=unsigned; re-sign app and embedded Broadcast Extension without removing PlugIns
@@ -331,13 +353,13 @@ jobs:
           TAG='liteview-sideload-latest'
           IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
           MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
-          NOTES='LiteView 0.6.0 carries a large Phoenix-style capability-split offline vision bank: separate visible localization, segmentation, scene routing, representation and depth/geometry reserves. The ReplayKit extension stays small and custom-model-free; the main app keeps the bank cold and loads one selected custom model at a time.'
+          NOTES='LiteView 0.7.0 carries a Phoenix-style near-1GiB capability bank with strict hotNano/warmFallback/coldOnly residency. ReplayKit success is now measured by frame growth, real AI execution, target detection, normalized coordinates and stable-frame fusion—not heartbeat alone. The extension remains small and custom-model-free.'
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
-            gh release edit "$TAG" --title 'LiteView 0.6.0 Phoenix Capability Bank' --notes "$NOTES"
+            gh release edit "$TAG" --title 'LiteView 0.7.0 Phoenix Capability Bank' --notes "$NOTES"
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" \
-              --title 'LiteView 0.6.0 Phoenix Capability Bank' \
+              --title 'LiteView 0.7.0 Phoenix Capability Bank' \
               --notes "$NOTES"
           fi

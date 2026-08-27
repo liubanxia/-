@@ -83,7 +83,15 @@ final class BroadcastLifecycleTests: XCTestCase {
             videoFramesPerSecond: 59.5,
             droppedAnalysisFrameCount: 3,
             analysisLatencyMilliseconds: 84,
-            analysisMode: .lightweightVision
+            analysisMode: .lightweightVision,
+            analysisFrameCount: 12,
+            successfulAnalysisFrameCount: 11,
+            lastAnalysisSucceeded: true,
+            attemptedLaneCount: 2,
+            successfulLaneCount: 2,
+            primaryTarget: SharedNormalizedPoint(x: 0.42, y: 0.31),
+            primaryTargetConfidence: 0.88,
+            stableTargetFrameCount: 5
         )
 
         let packed = CompactBroadcastState(snapshot: source).rawValue
@@ -93,10 +101,73 @@ final class BroadcastLifecycleTests: XCTestCase {
         let restored = decoded?.makeSnapshot(at: 1_234.5)
         XCTAssertEqual(restored?.phase, .paused)
         XCTAssertEqual(restored?.targetCount, 7)
-        XCTAssertEqual(restored?.soundIndicatorCount, 2)
+        XCTAssertEqual(restored?.soundIndicatorCount, 0)
         XCTAssertEqual(restored?.videoFramesPerSecond, 59.5, accuracy: 0.51)
         XCTAssertEqual(restored?.analysisLatencyMilliseconds, 84, accuracy: 4.1)
+        XCTAssertEqual(restored?.visionPipelineStage, .stableTarget)
+        XCTAssertNil(restored?.primaryTarget)
         XCTAssertTrue(restored?.isFresh(at: 1_234.5) == true)
+    }
+
+    func testVisionPipelineRequiresFramesInferenceCoordinatesAndStability() {
+        func snapshot(
+            videoFrames: UInt64,
+            analyses: UInt64,
+            succeeded: Bool,
+            targets: Int,
+            point: SharedNormalizedPoint?,
+            stableFrames: Int
+        ) -> SharedRealtimeSnapshot {
+            SharedRealtimeSnapshot(
+                sessionID: "pipeline",
+                sequence: 1,
+                phase: .running,
+                targetCount: targets,
+                soundIndicatorCount: 0,
+                videoFrameCount: videoFrames,
+                videoFramesPerSecond: videoFrames > 0 ? 30 : 0,
+                droppedAnalysisFrameCount: 0,
+                analysisLatencyMilliseconds: analyses > 0 ? 18 : 0,
+                analysisMode: .lightweightVision,
+                analysisFrameCount: analyses,
+                successfulAnalysisFrameCount: succeeded ? analyses : 0,
+                lastAnalysisSucceeded: succeeded,
+                attemptedLaneCount: analyses > 0 ? 1 : 0,
+                successfulLaneCount: succeeded ? 1 : 0,
+                primaryTarget: point,
+                primaryTargetConfidence: point == nil ? 0 : 0.9,
+                stableTargetFrameCount: stableFrames
+            )
+        }
+
+        XCTAssertEqual(
+            snapshot(videoFrames: 0, analyses: 0, succeeded: false, targets: 0, point: nil, stableFrames: 0).visionPipelineStage,
+            .waitingForFrames
+        )
+        XCTAssertEqual(
+            snapshot(videoFrames: 8, analyses: 0, succeeded: false, targets: 0, point: nil, stableFrames: 0).visionPipelineStage,
+            .framesReceived
+        )
+        XCTAssertEqual(
+            snapshot(videoFrames: 8, analyses: 1, succeeded: true, targets: 0, point: nil, stableFrames: 0).visionPipelineStage,
+            .noVisibleTarget
+        )
+        XCTAssertEqual(
+            snapshot(videoFrames: 8, analyses: 2, succeeded: true, targets: 1, point: .init(x: 0.4, y: 0.6), stableFrames: 2).visionPipelineStage,
+            .coordinateReady
+        )
+        XCTAssertEqual(
+            snapshot(videoFrames: 8, analyses: 3, succeeded: true, targets: 1, point: .init(x: 0.4, y: 0.6), stableFrames: 3).visionPipelineStage,
+            .stableTarget
+        )
+    }
+
+    func testRealtimeCapabilitySelectionNeverLoadsColdOnlyModels() {
+        let candidates = PhoenixCapabilityModelBank.descriptors(for: .visibleLocalization)
+        XCTAssertEqual(candidates.first?.resourceName, "yolo11n")
+        XCTAssertTrue(candidates.allSatisfy { $0.residency != .coldOnly })
+        XCTAssertFalse(candidates.contains { $0.resourceName == "YOLOv3FP16" })
+        XCTAssertFalse(candidates.contains { $0.capability != .visibleLocalization })
     }
 
     func testDefaultRuntimeIsLightweightVisibleOnly() {

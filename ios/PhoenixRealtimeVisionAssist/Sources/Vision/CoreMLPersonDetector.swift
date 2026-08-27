@@ -97,7 +97,7 @@ final class CoreMLPersonDetector {
             return visionModel
         }
 
-        let urls = discoveredModelURLs ?? Self.discoverCompiledModels()
+        let urls = discoveredModelURLs ?? PhoenixCapabilityModelBank.visibleLocalizationURLs
         discoveredModelURLs = urls
 
         let configuration = MLModelConfiguration()
@@ -285,42 +285,4 @@ final class CoreMLPersonDetector {
         return intersectionArea / unionArea
     }
 
-    private static func discoverCompiledModels() -> [URL] {
-        let preferredNames = [
-            "yolo11n",
-            "liteview_person_nano",
-            "person_detector_nano",
-            "yolov8n",
-            "liteview_person_backup"
-        ]
-
-        var result: [URL] = []
-        var seenPaths: Set<String> = []
-
-        for name in preferredNames {
-            if let url = Bundle.main.url(forResource: name, withExtension: "mlmodelc"),
-               seenPaths.insert(url.path).inserted {
-                result.append(url)
-            }
-        }
-
-        guard let resourceURL = Bundle.main.resourceURL,
-              let enumerator = FileManager.default.enumerator(
-                at: resourceURL,
-                includingPropertiesForKeys: [.isDirectoryKey],
-                options: [.skipsHiddenFiles]
-              ) else {
-            return result
-        }
-
-        for case let url as URL in enumerator {
-            guard url.pathExtension == "mlmodelc" else { continue }
-            if seenPaths.insert(url.path).inserted {
-                result.append(url)
-            }
-            enumerator.skipDescendants()
-        }
-
-        return result
-    }
 }

@@ -14,7 +14,7 @@ enum PhoenixVisionCapability: String, Sendable, CaseIterable {
     case depthGeometry
 }
 
-enum PhoenixModelResidency: String, Sendable {
+enum PhoenixModelResidency: String, Sendable, CaseIterable, Hashable {
     case hotNano
     case warmFallback
     case coldOnly
@@ -28,6 +28,8 @@ struct PhoenixCapabilityModelDescriptor: Sendable, Hashable {
 }
 
 enum PhoenixCapabilityModelBank {
+    static let realtimeResidencies: Set<PhoenixModelResidency> = [.hotNano, .warmFallback]
+
     static let descriptors: [PhoenixCapabilityModelDescriptor] = [
         // Visible-content localization. Tiny/quantized models are tried before heavier fallbacks.
         .init(resourceName: "yolo11n", capability: .visibleLocalization, residency: .hotNano, priority: 0),
@@ -50,31 +52,47 @@ enum PhoenixCapabilityModelBank {
         .init(resourceName: "Resnet50Int8LUT", capability: .sceneRouting, residency: .coldOnly, priority: 3),
         .init(resourceName: "Resnet50FP16", capability: .sceneRouting, residency: .coldOnly, priority: 4),
         .init(resourceName: "Resnet50", capability: .sceneRouting, residency: .coldOnly, priority: 5),
+        .init(resourceName: "FastViTT8F16", capability: .sceneRouting, residency: .coldOnly, priority: 6),
+        .init(resourceName: "FastViTMA36F16", capability: .sceneRouting, residency: .coldOnly, priority: 7),
 
         .init(resourceName: "Resnet50Headless", capability: .featureEmbedding, residency: .coldOnly, priority: 0),
         .init(resourceName: "FastViTT8F16Headless", capability: .featureEmbedding, residency: .coldOnly, priority: 1),
+        .init(resourceName: "FastViTMA36F16Headless", capability: .featureEmbedding, residency: .coldOnly, priority: 2),
 
         .init(resourceName: "DepthAnythingV2SmallF16P6", capability: .depthGeometry, residency: .coldOnly, priority: 0),
         .init(resourceName: "DepthAnythingV2SmallF16", capability: .depthGeometry, residency: .coldOnly, priority: 1)
     ]
 
-    static func modelURLs(for capability: PhoenixVisionCapability) -> [URL] {
+    static func descriptors(
+        for capability: PhoenixVisionCapability,
+        allowedResidencies: Set<PhoenixModelResidency> = realtimeResidencies
+    ) -> [PhoenixCapabilityModelDescriptor] {
         descriptors
-            .filter { $0.capability == capability }
+            .filter {
+                $0.capability == capability && allowedResidencies.contains($0.residency)
+            }
             .sorted { lhs, rhs in
                 if lhs.priority != rhs.priority { return lhs.priority < rhs.priority }
                 return lhs.resourceName < rhs.resourceName
             }
-            .compactMap { Bundle.main.url(forResource: $0.resourceName, withExtension: "mlmodelc") }
+    }
+
+    static func modelURLs(
+        for capability: PhoenixVisionCapability,
+        allowedResidencies: Set<PhoenixModelResidency> = realtimeResidencies,
+        bundle: Bundle = .main
+    ) -> [URL] {
+        descriptors(for: capability, allowedResidencies: allowedResidencies)
+            .compactMap { bundle.url(forResource: $0.resourceName, withExtension: "mlmodelc") }
     }
 
     static var visibleLocalizationURLs: [URL] {
         modelURLs(for: .visibleLocalization)
     }
 
-    static func installedDescriptors() -> [PhoenixCapabilityModelDescriptor] {
+    static func installedDescriptors(bundle: Bundle = .main) -> [PhoenixCapabilityModelDescriptor] {
         descriptors.filter {
-            Bundle.main.url(forResource: $0.resourceName, withExtension: "mlmodelc") != nil
+            bundle.url(forResource: $0.resourceName, withExtension: "mlmodelc") != nil
         }
     }
 }

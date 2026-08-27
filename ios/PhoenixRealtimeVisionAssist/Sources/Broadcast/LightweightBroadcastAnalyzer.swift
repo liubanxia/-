@@ -3,8 +3,16 @@ import Foundation
 import ImageIO
 import Vision
 
+struct LightweightTargetPoint: Sendable, Equatable {
+    let x: Double
+    let y: Double
+}
+
 struct LightweightVisionAnalysis {
     let targetCount: Int
+    let primaryTarget: LightweightTargetPoint?
+    let primaryTargetConfidence: Double
+    let stableTargetFrameCount: Int
     let latencyMilliseconds: Double
     let succeeded: Bool
     let attemptedLaneCount: Int
@@ -28,12 +36,34 @@ final class LightweightBroadcastAnalyzer {
 
     private struct LaneResult {
         let lane: Lane
-        let targetCount: Int
+        let observations: [TargetObservation]
         let succeeded: Bool
     }
 
+    private struct TargetObservation {
+        let point: LightweightTargetPoint
+        let confidence: Double
+    }
+
+    private let primarySchedule: [Lane] = [
+        .fullBodyRectangle,
+        .fullBodyRectangle,
+        .upperBodyRectangle,
+        .fullBodyRectangle,
+        .fullBodyRectangle,
+        .bodyPose
+    ]
     private var rotationIndex = 0
     private var analysisOrdinal: UInt64 = 0
+    private var stabilizedTarget: LightweightTargetPoint?
+    private var stableTargetFrameCount = 0
+
+    func reset() {
+        rotationIndex = 0
+        analysisOrdinal = 0
+        stabilizedTarget = nil
+        stableTargetFrameCount = 0
+    }
 
     func detectVisibleHumans(
         in pixelBuffer: CVPixelBuffer,
@@ -43,8 +73,8 @@ final class LightweightBroadcastAnalyzer {
         analysisOrdinal &+= 1
 
         let lanes = Lane.allCases
-        let primary = lanes[rotationIndex % lanes.count]
-        rotationIndex = (rotationIndex + 1) % lanes.count
+        let primary = primarySchedule[rotationIndex % primarySchedule.count]
+        rotationIndex = (rotationIndex + 1) % primarySchedule.count
 
         var results: [LaneResult] = []
         results.reserveCapacity(3)
@@ -57,7 +87,7 @@ final class LightweightBroadcastAnalyzer {
         results.append(primaryResult)
 
         if shouldRunFallback(after: primaryResult) {
-            let fallback = lanes[(primary.rawValue + 1) % lanes.count]
+            let fallback = fallbackLane(for: primary)
             results.append(
                 run(
                     fallback,
@@ -66,7 +96,7 @@ final class LightweightBroadcastAnalyzer {
                 )
             )
         } else if shouldRunVerifier {
-            let verifier = lanes[(primary.rawValue + 1) % lanes.count]
+            let verifier = fallbackLane(for: primary)
             results.append(
                 run(
                     verifier,
@@ -76,8 +106,9 @@ final class LightweightBroadcastAnalyzer {
             )
         }
 
-        if results.allSatisfy({ !$0.succeeded || $0.targetCount == 0 }),
+        if results.allSatisfy({ !$0.succeeded || $0.observations.isEmpty }),
            RuntimeResourcePolicyForExtension.allowsThirdLane,
+           analysisOrdinal % 6 == 0,
            results.count < lanes.count {
             let attempted = Set(results.map(\.lane))
             if let third = lanes.first(where: { !attempted.contains($0) }) {
@@ -92,10 +123,15 @@ final class LightweightBroadcastAnalyzer {
         }
 
         let successful = results.filter(\.succeeded)
-        let fusedCount = fuseCounts(successful.map(\.targetCount))
+        let fusedTargets = fuseTargets(successful.flatMap(\.observations))
+        let primary = selectPrimaryTarget(from: fusedTargets)
+        let stabilized = updateStability(with: primary)
 
         return LightweightVisionAnalysis(
-            targetCount: fusedCount,
+            targetCount: fusedTargets.count,
+            primaryTarget: stabilized?.point,
+            primaryTargetConfidence: stabilized?.confidence ?? 0,
+            stableTargetFrameCount: stableTargetFrameCount,
             latencyMilliseconds: elapsedMilliseconds(since: startedAt),
             succeeded: !successful.isEmpty,
             attemptedLaneCount: results.count,
@@ -109,7 +145,16 @@ final class LightweightBroadcastAnalyzer {
     }
 
     private func shouldRunFallback(after result: LaneResult) -> Bool {
-        !result.succeeded || result.targetCount == 0
+        !result.succeeded || result.observations.isEmpty
+    }
+
+    private func fallbackLane(for primary: Lane) -> Lane {
+        switch primary {
+        case .fullBodyRectangle:
+            return .upperBodyRectangle
+        case .upperBodyRectangle, .bodyPose:
+            return .fullBodyRectangle
+        }
     }
 
     private func run(
@@ -164,13 +209,22 @@ final class LightweightBroadcastAnalyzer {
         do {
             try handler.perform([request])
             let threshold: VNConfidence = upperBodyOnly ? 0.30 : 0.35
-            let count = (request.results ?? [])
+            let observations = (request.results ?? [])
                 .filter { $0.confidence >= threshold }
                 .prefix(8)
-                .count
-            return LaneResult(lane: lane, targetCount: count, succeeded: true)
+                .map { observation in
+                    let box = observation.boundingBox
+                    return TargetObservation(
+                        point: LightweightTargetPoint(
+                            x: min(max(Double(box.midX), 0), 1),
+                            y: min(max(1.0 - Double(box.midY), 0), 1)
+                        ),
+                        confidence: Double(observation.confidence)
+                    )
+                }
+            return LaneResult(lane: lane, observations: observations, succeeded: true)
         } catch {
-            return LaneResult(lane: lane, targetCount: 0, succeeded: false)
+            return LaneResult(lane: lane, observations: [], succeeded: false)
         }
     }
 
@@ -190,25 +244,90 @@ final class LightweightBroadcastAnalyzer {
 
         do {
             try handler.perform([request])
-            let count = min((request.results ?? []).count, 8)
-            return LaneResult(lane: lane, targetCount: count, succeeded: true)
+            let observations = (request.results ?? [])
+                .prefix(8)
+                .compactMap { observation -> TargetObservation? in
+                    guard let neck = try? observation.recognizedPoint(.neck),
+                          neck.confidence >= 0.25 else {
+                        return nil
+                    }
+                    return TargetObservation(
+                        point: LightweightTargetPoint(
+                            x: min(max(Double(neck.location.x), 0), 1),
+                            y: min(max(1.0 - Double(neck.location.y), 0), 1)
+                        ),
+                        confidence: Double(neck.confidence)
+                    )
+                }
+            return LaneResult(lane: lane, observations: observations, succeeded: true)
         } catch {
-            return LaneResult(lane: lane, targetCount: 0, succeeded: false)
+            return LaneResult(lane: lane, observations: [], succeeded: false)
         }
     }
 
-    private func fuseCounts(_ counts: [Int]) -> Int {
-        guard !counts.isEmpty else { return 0 }
-        let bounded = counts.map { min(max($0, 0), 8) }
-        guard bounded.count > 1 else { return bounded[0] }
+    private func fuseTargets(_ observations: [TargetObservation]) -> [TargetObservation] {
+        var fused: [TargetObservation] = []
+        fused.reserveCapacity(min(observations.count, 8))
 
-        // Prefer non-zero evidence so a temporarily weak lane cannot suppress another lane.
-        let nonZero = bounded.filter { $0 > 0 }.sorted()
-        guard !nonZero.isEmpty else { return 0 }
-        if nonZero.count == 1 { return nonZero[0] }
+        for candidate in observations.sorted(by: { $0.confidence > $1.confidence }) {
+            let isDuplicate = fused.contains { existing in
+                distance(existing.point, candidate.point) <= 0.10
+            }
+            if !isDuplicate, fused.count < 8 {
+                fused.append(candidate)
+            }
+        }
+        return fused
+    }
 
-        // Median-like fusion avoids an outlier lane inflating the visible count.
-        return nonZero[(nonZero.count - 1) / 2]
+    private func selectPrimaryTarget(
+        from observations: [TargetObservation]
+    ) -> TargetObservation? {
+        guard !observations.isEmpty else { return nil }
+        if let stabilizedTarget,
+           let nearest = observations.min(by: {
+               distance($0.point, stabilizedTarget) < distance($1.point, stabilizedTarget)
+           }),
+           distance(nearest.point, stabilizedTarget) <= 0.18 {
+            return nearest
+        }
+        return observations.max(by: { $0.confidence < $1.confidence })
+    }
+
+    private func updateStability(
+        with observation: TargetObservation?
+    ) -> TargetObservation? {
+        guard let observation else {
+            stabilizedTarget = nil
+            stableTargetFrameCount = 0
+            return nil
+        }
+
+        let point: LightweightTargetPoint
+        if let previous = stabilizedTarget,
+           distance(previous, observation.point) <= 0.18 {
+            let newWeight = 0.45
+            point = LightweightTargetPoint(
+                x: previous.x * (1 - newWeight) + observation.point.x * newWeight,
+                y: previous.y * (1 - newWeight) + observation.point.y * newWeight
+            )
+            stableTargetFrameCount = min(stableTargetFrameCount + 1, 255)
+        } else {
+            point = observation.point
+            stableTargetFrameCount = 1
+        }
+
+        stabilizedTarget = point
+        return TargetObservation(point: point, confidence: observation.confidence)
+    }
+
+    private func distance(
+        _ lhs: LightweightTargetPoint,
+        _ rhs: LightweightTargetPoint
+    ) -> Double {
+        let dx = lhs.x - rhs.x
+        let dy = lhs.y - rhs.y
+        return (dx * dx + dy * dy).squareRoot()
     }
 
     private func elapsedMilliseconds(since startedAt: TimeInterval) -> Double {
