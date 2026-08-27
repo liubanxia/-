@@ -1,0 +1,343 @@
+name: LiteView Phoenix Near-1GiB Capability Bank
+
+on:
+  push:
+    branches:
+      - feature/ios-realtime-vision-assist
+    paths:
+      - '.github/workflows/ios-liteview-phoenix-1gb-bank.yml'
+      - 'ios/PhoenixRealtimeVisionAssist/Sources/Vision/PhoenixCapabilityModelBank.swift'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Stage Phoenix capability-split offline model bank
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          MODEL_DIR="$ROOT/Resources/Models"
+          WORK="$RUNNER_TEMP/liteview-phoenix-bank"
+          COMPILED_ROOT="$WORK/compiled"
+          mkdir -p "$MODEL_DIR" "$WORK" "$COMPILED_ROOT"
+          rm -rf "$MODEL_DIR"/*
+
+          download() {
+            local url="$1" out="$2"
+            curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 30 -o "$out" "$url"
+          }
+
+          compile_mlmodel() {
+            local name="$1" url="$2"
+            local src="$WORK/$name.mlmodel"
+            local out="$COMPILED_ROOT/$name"
+            rm -rf "$out"
+            mkdir -p "$out"
+            download "$url" "$src"
+            xcrun coremlc compile "$src" "$out"
+            local compiled
+            compiled="$(find "$out" -type d -name '*.mlmodelc' -print -quit)"
+            test -n "$compiled"
+            rm -rf "$MODEL_DIR/$name.mlmodelc"
+            cp -R "$compiled" "$MODEL_DIR/$name.mlmodelc"
+          }
+
+          optional_mlmodel() {
+            local name="$1" url="$2"
+            if compile_mlmodel "$name" "$url"; then
+              echo "OPTIONAL_MODEL_OK=$name"
+            else
+              echo "OPTIONAL_MODEL_SKIPPED=$name" >&2
+              rm -rf "$MODEL_DIR/$name.mlmodelc" "$COMPILED_ROOT/$name" "$WORK/$name.mlmodel"
+            fi
+          }
+
+          compile_mlpackage_zip() {
+            local name="$1" url="$2"
+            local zip="$WORK/$name.zip"
+            local unpack="$WORK/$name-unpack"
+            local out="$COMPILED_ROOT/$name"
+            rm -rf "$unpack" "$out"
+            mkdir -p "$unpack" "$out"
+            download "$url" "$zip"
+            unzip -q "$zip" -d "$unpack"
+            local manifest package compiled
+            manifest="$(find "$unpack" -type f -name 'Manifest.json' -not -path '*/__MACOSX/*' -print -quit)"
+            test -n "$manifest"
+            package="${manifest%/Manifest.json}"
+            xcrun coremlc compile "$package" "$out"
+            compiled="$(find "$out" -type d -name '*.mlmodelc' -print -quit)"
+            test -n "$compiled"
+            rm -rf "$MODEL_DIR/$name.mlmodelc"
+            cp -R "$compiled" "$MODEL_DIR/$name.mlmodelc"
+          }
+
+          optional_mlpackage_zip() {
+            local name="$1" url="$2"
+            if compile_mlpackage_zip "$name" "$url"; then
+              echo "OPTIONAL_PACKAGE_OK=$name"
+            else
+              echo "OPTIONAL_PACKAGE_SKIPPED=$name" >&2
+              rm -rf "$MODEL_DIR/$name.mlmodelc" "$COMPILED_ROOT/$name" "$WORK/$name.zip" "$WORK/$name-unpack"
+            fi
+          }
+
+          # Phoenix hot lane: existing distilled/nano-style LiteView detector.
+          YOLO_ZIP="$WORK/liteview-yolo11n-coreml.zip"
+          YOLO_UNPACK="$WORK/yolo11n-unpack"
+          YOLO_COMPILE="$COMPILED_ROOT/yolo11n"
+          download \
+            'https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip' \
+            "$YOLO_ZIP"
+          mkdir -p "$YOLO_UNPACK" "$YOLO_COMPILE"
+          unzip -q "$YOLO_ZIP" -d "$YOLO_UNPACK"
+          YOLO_PACKAGE="$(find "$YOLO_UNPACK" -type d -name 'yolo11n.mlpackage' -not -path '*/__MACOSX/*' -print -quit)"
+          test -n "$YOLO_PACKAGE"
+          xcrun coremlc compile "$YOLO_PACKAGE" "$YOLO_COMPILE"
+          YOLO_COMPILED="$(find "$YOLO_COMPILE" -type d -name '*.mlmodelc' -print -quit)"
+          test -n "$YOLO_COMPILED"
+          cp -R "$YOLO_COMPILED" "$MODEL_DIR/yolo11n.mlmodelc"
+
+          # Capability A: visible localization. Multiple precisions give independent failover.
+          compile_mlmodel 'YOLOv3TinyInt8LUT' 'https://ml-assets.apple.com/coreml/models/Image/ObjectDetection/YOLOv3Tiny/YOLOv3TinyInt8LUT.mlmodel'
+          compile_mlmodel 'YOLOv3TinyFP16' 'https://ml-assets.apple.com/coreml/models/Image/ObjectDetection/YOLOv3Tiny/YOLOv3TinyFP16.mlmodel'
+          compile_mlmodel 'YOLOv3Tiny' 'https://ml-assets.apple.com/coreml/models/Image/ObjectDetection/YOLOv3Tiny/YOLOv3Tiny.mlmodel'
+          compile_mlmodel 'YOLOv3Int8LUT' 'https://ml-assets.apple.com/coreml/models/Image/ObjectDetection/YOLOv3/YOLOv3Int8LUT.mlmodel'
+          compile_mlmodel 'YOLOv3FP16' 'https://ml-assets.apple.com/coreml/models/Image/ObjectDetection/YOLOv3/YOLOv3FP16.mlmodel'
+          compile_mlmodel 'YOLOv3' 'https://ml-assets.apple.com/coreml/models/Image/ObjectDetection/YOLOv3/YOLOv3.mlmodel'
+
+          # Capability B: scene/quality routing. These are cold and must never be walked by the
+          # visible-person failover loop unless a scene-routing lane explicitly requests them.
+          compile_mlmodel 'MobileNetV2Int8LUT' 'https://ml-assets.apple.com/coreml/models/Image/ImageClassification/MobileNetV2/MobileNetV2Int8LUT.mlmodel'
+          compile_mlmodel 'MobileNetV2FP16' 'https://ml-assets.apple.com/coreml/models/Image/ImageClassification/MobileNetV2/MobileNetV2FP16.mlmodel'
+          optional_mlmodel 'MobileNetV2' 'https://ml-assets.apple.com/coreml/models/Image/ImageClassification/MobileNetV2/MobileNetV2.mlmodel'
+          compile_mlmodel 'Resnet50Int8LUT' 'https://ml-assets.apple.com/coreml/models/Image/ImageClassification/Resnet50/Resnet50Int8LUT.mlmodel'
+          compile_mlmodel 'Resnet50FP16' 'https://ml-assets.apple.com/coreml/models/Image/ImageClassification/Resnet50/Resnet50FP16.mlmodel'
+          optional_mlmodel 'Resnet50Headless' 'https://ml-assets.apple.com/coreml/models/Image/ImageClassification/Resnet50/Resnet50Headless.mlmodel'
+          optional_mlmodel 'Resnet50' 'https://ml-assets.apple.com/coreml/models/Image/ImageClassification/Resnet50/Resnet50.mlmodel'
+
+          # Capability C: segmentation. Small quantized variants are included because Phoenix's
+          # split-capability design treats boundary/region reasoning separately from localization.
+          optional_mlmodel 'DeepLabV3Int8LUT' 'https://ml-assets.apple.com/coreml/models/Image/Segmentation/DeepLabV3/DeepLabV3Int8LUT.mlmodel'
+          optional_mlmodel 'DeepLabV3FP16' 'https://ml-assets.apple.com/coreml/models/Image/Segmentation/DeepLabV3/DeepLabV3FP16.mlmodel'
+          optional_mlmodel 'DeepLabV3' 'https://ml-assets.apple.com/coreml/models/Image/Segmentation/DeepLabV3/DeepLabV3.mlmodel'
+
+          # Capability D: feature representation. Headless FastViT stays cold; T8 is the cheap
+          # future embedding lane and MA36 variants are accuracy reserves on disk only.
+          optional_mlpackage_zip 'FastViTT8F16' 'https://ml-assets.apple.com/coreml/models/Image/ImageClassification/FastViT/FastViTT8F16.mlpackage.zip'
+          optional_mlpackage_zip 'FastViTT8F16Headless' 'https://ml-assets.apple.com/coreml/models/Image/ImageClassification/FastViT/FastViTT8F16Headless.mlpackage.zip'
+          optional_mlpackage_zip 'FastViTMA36F16' 'https://ml-assets.apple.com/coreml/models/Image/ImageClassification/FastViT/FastViTMA36F16.mlpackage.zip'
+          optional_mlpackage_zip 'FastViTMA36F16Headless' 'https://ml-assets.apple.com/coreml/models/Image/ImageClassification/FastViT/FastViTMA36F16Headless.mlpackage.zip'
+
+          # Capability E: depth/geometry. This is also teacher-student/distillation-derived and
+          # aligns with Phoenix's ability-extraction strategy. It remains cold by default.
+          optional_mlpackage_zip 'DepthAnythingV2SmallF16P6' 'https://ml-assets.apple.com/coreml/models/Image/DepthEstimation/DepthAnything/DepthAnythingV2SmallF16P6.mlpackage.zip'
+          optional_mlpackage_zip 'DepthAnythingV2SmallF16' 'https://ml-assets.apple.com/coreml/models/Image/DepthEstimation/DepthAnything/DepthAnythingV2SmallF16.mlpackage.zip'
+
+          cat > "$MODEL_DIR/PhoenixCapabilityBank.json" <<'EOF'
+          {
+            "architecture": "Phoenix split-capability model bank",
+            "runtime_rule": "large on disk, one selected custom lane resident at a time",
+            "capabilities": {
+              "visible_localization": ["yolo11n", "YOLOv3TinyInt8LUT", "YOLOv3TinyFP16", "YOLOv3Tiny", "YOLOv3Int8LUT", "YOLOv3FP16", "YOLOv3"],
+              "segmentation": ["DeepLabV3Int8LUT", "DeepLabV3FP16", "DeepLabV3"],
+              "scene_routing": ["MobileNetV2Int8LUT", "MobileNetV2FP16", "MobileNetV2", "Resnet50Int8LUT", "Resnet50FP16", "Resnet50"],
+              "feature_embedding": ["Resnet50Headless", "FastViTT8F16Headless", "FastViTMA36F16Headless"],
+              "depth_geometry": ["DepthAnythingV2SmallF16P6", "DepthAnythingV2SmallF16"]
+            },
+            "broadcast_extension": "Apple Vision only; no large custom model bank",
+            "persistence": "no video frames, screenshots, audio, or inference history"
+          }
+          EOF
+
+          echo '=== Phoenix capability bank ==='
+          du -sh "$MODEL_DIR"/*.mlmodelc 2>/dev/null | sort -h || true
+          MODEL_COUNT="$(find "$MODEL_DIR" -type d -name '*.mlmodelc' -prune | wc -l | tr -d ' ')"
+          MODEL_BANK_BYTES="$(du -sk "$MODEL_DIR" | awk '{print $1 * 1024}')"
+          echo "MODEL_COUNT=$MODEL_COUNT"
+          echo "MODEL_BANK_BYTES=$MODEL_BANK_BYTES"
+          test "$MODEL_COUNT" -ge 12
+          test "$MODEL_BANK_BYTES" -ge 650000000
+          test "$MODEL_BANK_BYTES" -le 1200000000
+
+      - name: Generate project
+        working-directory: ios/PhoenixRealtimeVisionAssist
+        run: xcodegen generate
+
+      - name: Build unsigned iPhone device target
+        working-directory: ios/PhoenixRealtimeVisionAssist
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/LiteViewPhoenixBankDerivedData"
+          xcodebuild \
+            -project PhoenixRealtimeVisionAssist.xcodeproj \
+            -scheme PhoenixRealtimeVisionAssist \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/LiteViewPhoenixBankDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Normalize and enforce lightweight ReplayKit extension
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRODUCTS="$RUNNER_TEMP/LiteViewPhoenixBankDerivedData/Build/Products/Release-iphoneos"
+          APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
+          EXT="$APP/PlugIns/PhoenixBroadcastExtension.appex"
+          APP_PLIST="$APP/Info.plist"
+          EXT_PLIST="$EXT/Info.plist"
+          MODEL_SRC='ios/PhoenixRealtimeVisionAssist/Resources/Models'
+
+          test -d "$APP"
+          test -d "$EXT"
+
+          # XcodeGen's existing post-build script copies every compiled bank member to the app.
+          # Copy any optional models that were generated after project generation as a final guard.
+          for SRC in "$MODEL_SRC"/*.mlmodelc; do
+            [ -d "$SRC" ] || continue
+            NAME="$(basename "$SRC")"
+            if [ ! -d "$APP/$NAME" ]; then cp -R "$SRC" "$APP/$NAME"; fi
+          done
+          cp "$MODEL_SRC/PhoenixCapabilityBank.json" "$APP/PhoenixCapabilityBank.json"
+
+          # ReplayKit remains tiny regardless of IPA size.
+          find "$EXT" -type d -name '*.mlmodelc' -prune -exec rm -rf {} + || true
+
+          set_plist_string() {
+            local plist="$1" key="$2" value="$3"
+            /usr/libexec/PlistBuddy -c "Set :$key $value" "$plist" >/dev/null 2>&1 || \
+              /usr/libexec/PlistBuddy -c "Add :$key string $value" "$plist"
+          }
+
+          set_plist_string "$APP_PLIST" CFBundleDisplayName LiteView
+          set_plist_string "$APP_PLIST" CFBundleIdentifier com.phoenix.realtimevisionassist
+          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.6.0
+          set_plist_string "$APP_PLIST" CFBundleVersion 9
+          set_plist_string "$EXT_PLIST" CFBundleDisplayName 'LiteView Broadcast'
+          set_plist_string "$EXT_PLIST" CFBundleIdentifier com.phoenix.realtimevisionassist.broadcast
+          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.6.0
+          set_plist_string "$EXT_PLIST" CFBundleVersion 9
+
+          /usr/libexec/PlistBuddy -c 'Delete :NSExtension' "$EXT_PLIST" >/dev/null 2>&1 || true
+          /usr/libexec/PlistBuddy -c 'Add :NSExtension dict' "$EXT_PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :NSExtension:NSExtensionPointIdentifier string com.apple.broadcast-services-upload' "$EXT_PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :NSExtension:NSExtensionPrincipalClass string PhoenixBroadcastExtension.BroadcastSampleHandler' "$EXT_PLIST"
+
+          EXT_SIZE_BYTES="$(du -sk "$EXT" | awk '{print $1 * 1024}')"
+          MODEL_COUNT="$(find "$APP" -type d -name '*.mlmodelc' -prune | wc -l | tr -d ' ')"
+          MODEL_BYTES="$(find "$APP" -type d -name '*.mlmodelc' -prune -exec du -sk {} + | awk '{sum += $1} END {print sum * 1024}')"
+          echo "EXT_SIZE_BYTES=$EXT_SIZE_BYTES"
+          echo "MODEL_COUNT=$MODEL_COUNT"
+          echo "MODEL_BYTES=$MODEL_BYTES"
+          test "$EXT_SIZE_BYTES" -lt 12582912
+          test -z "$(find "$EXT" -type d -name '*.mlmodelc' -print -quit)"
+          test "$MODEL_COUNT" -ge 12
+          test "$MODEL_BYTES" -ge 650000000
+
+      - name: Package near-1GiB IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRODUCTS="$RUNNER_TEMP/LiteViewPhoenixBankDerivedData/Build/Products/Release-iphoneos"
+          APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
+          ROOT="$RUNNER_TEMP/LiteViewPhoenixBankPackage"
+          PAYLOAD="$ROOT/Payload"
+          IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
+          VERIFY="$RUNNER_TEMP/LiteViewPhoenixBankVerify"
+
+          rm -rf "$ROOT" "$IPA" "$MANIFEST" "$VERIFY"
+          mkdir -p "$PAYLOAD" "$VERIFY"
+          cp -R "$APP" "$PAYLOAD/"
+          (cd "$ROOT" && /usr/bin/zip -qry "$IPA" Payload)
+          test -s "$IPA"
+
+          IPA_SIZE_BYTES="$(stat -f%z "$IPA")"
+          echo "IPA_SIZE_BYTES=$IPA_SIZE_BYTES"
+          test "$IPA_SIZE_BYTES" -ge 600000000
+          test "$IPA_SIZE_BYTES" -le 1073741824
+
+          /usr/bin/unzip -q "$IPA" -d "$VERIFY"
+          VAPP="$VERIFY/Payload/PhoenixRealtimeVisionAssist.app"
+          VEXT="$VAPP/PlugIns/PhoenixBroadcastExtension.appex"
+          MODEL_COUNT="$(find "$VAPP" -type d -name '*.mlmodelc' -prune | wc -l | tr -d ' ')"
+          test "$MODEL_COUNT" -ge 12
+          test -z "$(find "$VEXT" -type d -name '*.mlmodelc' -print -quit)"
+          test -f "$VAPP/PhoenixCapabilityBank.json"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VAPP/Info.plist")" = '0.6.0'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VEXT/Info.plist")" = '0.6.0'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$VEXT/Info.plist")" = 'com.apple.broadcast-services-upload'
+
+          cat > "$MANIFEST" <<EOF
+          LiteView 0.6.0 Phoenix capability-split near-1GiB bank
+          commit=${GITHUB_SHA}
+          build=9
+          package_size_budget_bytes=1073741824
+          package_minimum_bytes=600000000
+          model_bank_minimum_bytes=650000000
+          runtime_rule=large offline bank; one selected custom lane resident at a time
+          phoenix_architecture=capability split + independent fallback + result fusion
+          visible_localization=yolo11n + YOLOv3 multi-precision family + Apple Vision
+          segmentation=DeepLabV3 family when available
+          scene_routing=MobileNetV2 + Resnet50 families
+          feature_embedding=Resnet50Headless + FastViT headless family when available
+          depth_geometry=DepthAnythingV2 Small family when available
+          broadcast_extension_custom_models=none
+          broadcast_extension_size_budget_bytes=12582912
+          lifecycle=App Group snapshot + compact libnotify + live Darwin events + notify_check latch + UIScreen capture fallback
+          persistence=none for frames, screenshots, audio, or analysis history
+          signing=unsigned; re-sign app and embedded Broadcast Extension without removing PlugIns
+          EOF
+
+          ls -lh "$IPA" "$MANIFEST"
+          shasum -a 256 "$IPA"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-phoenix-1gb-unsigned-sideload
+          path: |
+            ${{ runner.temp }}/LiteView-unsigned-sideload.ipa
+            ${{ runner.temp }}/LiteView-sideload-manifest.txt
+          if-no-files-found: error
+
+      - name: Publish Phoenix capability-bank sideload release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='liteview-sideload-latest'
+          IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
+          NOTES='LiteView 0.6.0 carries a large Phoenix-style capability-split offline vision bank: separate visible localization, segmentation, scene routing, representation and depth/geometry reserves. The ReplayKit extension stays small and custom-model-free; the main app keeps the bank cold and loads one selected custom model at a time.'
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
+            gh release edit "$TAG" --title 'LiteView 0.6.0 Phoenix Capability Bank' --notes "$NOTES"
+          else
+            gh release create "$TAG" "$IPA" "$MANIFEST" \
+              --title 'LiteView 0.6.0 Phoenix Capability Bank' \
+              --notes "$NOTES"
+          fi
