@@ -29,7 +29,7 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Stage and compile Core ML model for main app only
+      - name: Stage and compile primary Core ML model for main app only
         shell: bash
         run: |
           set -euo pipefail
@@ -59,7 +59,7 @@ jobs:
         working-directory: ios/PhoenixRealtimeVisionAssist
         run: xcodegen generate
 
-      - name: Verify lightweight runtime wiring
+      - name: Verify lightweight matrix runtime wiring
         shell: bash
         run: |
           set -euo pipefail
@@ -68,6 +68,9 @@ jobs:
           CONFIG="$ROOT/Sources/Core/RuntimeConfiguration.swift"
           SHARED="$ROOT/Sources/Core/SharedRealtimeStateStore.swift"
           HANDLER="$ROOT/Sources/Broadcast/BroadcastSampleHandler.swift"
+          ANALYZER="$ROOT/Sources/Broadcast/LightweightBroadcastAnalyzer.swift"
+          DETECTOR="$ROOT/Sources/Vision/RealtimePersonDetector.swift"
+          COREML="$ROOT/Sources/Vision/CoreMLPersonDetector.swift"
 
           grep -Fq 'Config/App.entitlements' "$PROJECT"
           grep -Fq 'Config/Broadcast.entitlements' "$PROJECT"
@@ -75,10 +78,15 @@ jobs:
           grep -Fq 'LightweightBroadcastAnalyzer.swift' "$PROJECT"
           grep -Fq 'EntitlementFreeBroadcastStateChannel' "$SHARED"
           grep -Fq 'liteview_notify_set_state' "$SHARED"
-          grep -Fq 'useCustomCoreMLModel: Bool = false' "$CONFIG"
+          grep -Fq 'enableModelMatrix: Bool = true' "$CONFIG"
+          grep -Fq 'useCustomCoreMLModel: Bool = true' "$CONFIG"
           grep -Fq 'enableAudioLevelAnalysis: Bool = false' "$CONFIG"
           grep -Fq 'enableScreenCueAnalysis: Bool = false' "$CONFIG"
           grep -Fq 'predictionCount: Int = 0' "$CONFIG"
+          grep -Fq 'VNDetectHumanBodyPoseRequest' "$ANALYZER"
+          grep -Fq 'upperBodyOnly: true' "$ANALYZER"
+          grep -Fq 'detectWithMatrix' "$DETECTOR"
+          grep -Fq 'discoverCompiledModels' "$COREML"
           grep -Fq 'soundIndicatorCount: 0' "$HANDLER"
 
           if grep -R -Fq 'import CoreML' "$ROOT/Sources/Broadcast"; then
@@ -132,7 +140,7 @@ jobs:
           if [ ! -d "$MODEL_DST" ]; then
             cp -R "$MODEL_SRC" "$MODEL_DST"
           fi
-          rm -rf "$EXT/yolo11n.mlmodelc"
+          find "$EXT" -type d -name '*.mlmodelc' -prune -exec rm -rf {} + || true
 
           set_plist_string() {
             local plist="$1" key="$2" value="$3"
@@ -142,13 +150,13 @@ jobs:
 
           set_plist_string "$APP_PLIST" CFBundleDisplayName LiteView
           set_plist_string "$APP_PLIST" CFBundleIdentifier com.phoenix.realtimevisionassist
-          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.3.0
-          set_plist_string "$APP_PLIST" CFBundleVersion 5
+          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.4.0
+          set_plist_string "$APP_PLIST" CFBundleVersion 6
 
           set_plist_string "$EXT_PLIST" CFBundleDisplayName 'LiteView Broadcast'
           set_plist_string "$EXT_PLIST" CFBundleIdentifier com.phoenix.realtimevisionassist.broadcast
-          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.3.0
-          set_plist_string "$EXT_PLIST" CFBundleVersion 5
+          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.4.0
+          set_plist_string "$EXT_PLIST" CFBundleVersion 6
 
           /usr/libexec/PlistBuddy -c 'Delete :NSExtension' "$EXT_PLIST" >/dev/null 2>&1 || true
           /usr/libexec/PlistBuddy -c 'Add :NSExtension dict' "$EXT_PLIST"
@@ -172,12 +180,12 @@ jobs:
           echo "EXT_CLASS=$EXT_CLASS"
 
           test -d "$MODEL_DST"
-          test ! -d "$EXT/yolo11n.mlmodelc"
+          test -z "$(find "$EXT" -type d -name '*.mlmodelc' -print -quit)"
           test "$EXT_SIZE_BYTES" -lt 12582912
           test "$APP_ID" = 'com.phoenix.realtimevisionassist'
           test "$EXT_ID" = 'com.phoenix.realtimevisionassist.broadcast'
-          test "$APP_VERSION" = '0.3.0'
-          test "$EXT_VERSION" = '0.3.0'
+          test "$APP_VERSION" = '0.4.0'
+          test "$EXT_VERSION" = '0.4.0'
           test "$EXT_POINT" = 'com.apple.broadcast-services-upload'
           test "$EXT_CLASS" = 'PhoenixBroadcastExtension.BroadcastSampleHandler'
 
@@ -209,7 +217,7 @@ jobs:
           VAPP="$VERIFY/Payload/PhoenixRealtimeVisionAssist.app"
           VEXT="$VAPP/PlugIns/PhoenixBroadcastExtension.appex"
           test -d "$VAPP/yolo11n.mlmodelc"
-          test ! -d "$VEXT/yolo11n.mlmodelc"
+          test -z "$(find "$VEXT" -type d -name '*.mlmodelc' -print -quit)"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$VAPP/Info.plist")" = 'com.phoenix.realtimevisionassist'
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$VEXT/Info.plist")" = 'com.phoenix.realtimevisionassist.broadcast'
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$VEXT/Info.plist")" = 'com.apple.broadcast-services-upload'
@@ -217,18 +225,20 @@ jobs:
           cat > "$MANIFEST" <<EOF
           LiteView memory-safe unsigned sideload package
           commit=${GITHUB_SHA}
-          version=0.3.0
+          version=0.4.0
           app_bundle_id=com.phoenix.realtimevisionassist
           extension_bundle_id=com.phoenix.realtimevisionassist.broadcast
           extension_point=com.apple.broadcast-services-upload
           app_group=group.com.phoenix.realtimevisionassist
           package_size_budget_bytes=1073741824
           broadcast_extension_size_budget_bytes=12582912
-          broadcast_extension_model=none
-          broadcast_extension_analysis=adaptive low-rate Apple Vision visible-human rectangles only
+          broadcast_extension_custom_model=none
+          broadcast_extension_model_matrix=Apple Vision full-body rectangles + upper-body rectangles + human body pose; adaptive rotation/fallback
+          main_app_model_matrix=lazy Core ML detector pool + Apple Vision human rectangles + human body pose verifier
+          main_app_coreml_primary=yolo11n.mlmodelc
+          main_app_coreml_pool=drop-in compatible compiled models; one custom model resident at a time; automatic failover
+          runtime_policy=secondary lanes only on empty/failure or periodic verification; low-power/thermal states reduce matrix work
           lifecycle=App Group snapshot plus compact libnotify fallback plus Darwin lifecycle signals
-          main_app_coreml=yolo11n.mlmodelc
-          main_app_model_loading=opt-in lazy load; CPU+NeuralEngine; low-power/thermal gated
           default_runtime=visible-content-only; optional audio/screen-cue analysis off by default; hidden-position extrapolation off
           persistence=none for frames, screenshots, audio, or analysis history
           signing=unsigned; re-sign main app and embedded Broadcast Extension without removing PlugIns
@@ -255,13 +265,13 @@ jobs:
           TAG='liteview-sideload-latest'
           IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
           MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
-          NOTES='LiteView 0.3.0: 1 GiB offline storage budget with a model-free ReplayKit extension under 12 MiB. Cross-process state has App Group plus compact libnotify fallback. Main-app Core ML is opt-in/lazy and thermal gated. Runtime retains no frames, audio, screenshots, or history.'
+          NOTES='LiteView 0.4.0 adds an automatic lightweight model matrix. ReplayKit rotates among multiple Apple Vision lanes without bundling custom models in the extension. The main app uses a lazy Core ML model pool plus Apple Vision fallbacks, so an empty or unsupported model cannot become the only detection path. Secondary lanes run only when needed or periodically, and thermals/low-power mode reduce work automatically.'
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
-            gh release edit "$TAG" --title 'LiteView 0.3.0 lightweight-runtime sideload package' --notes "$NOTES"
+            gh release edit "$TAG" --title 'LiteView 0.4.0 matrix-runtime sideload package' --notes "$NOTES"
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" \
-              --title 'LiteView 0.3.0 lightweight-runtime sideload package' \
+              --title 'LiteView 0.4.0 matrix-runtime sideload package' \
               --notes "$NOTES"
           fi

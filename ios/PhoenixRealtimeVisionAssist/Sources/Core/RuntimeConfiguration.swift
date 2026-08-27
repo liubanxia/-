@@ -8,14 +8,21 @@ struct RuntimeConfiguration: Sendable {
     var audioWindowMilliseconds: Double = 180
     var useHeadBiasedPoint: Bool = false
 
-    // Heavy optional features are dormant by default. Package size may grow, but the
-    // running process should stay small unless the user explicitly opts in later.
-    var useCustomCoreMLModel: Bool = false
+    // Matrix mode is automatic. The runtime chooses lanes; the user does not need to manage
+    // individual models. The custom Core ML lane is lazy and only becomes resident when the
+    // main-app analysis path actually needs it.
+    var enableModelMatrix: Bool = true
+    var useCustomCoreMLModel: Bool = true
+    var matrixVerificationStride: Int = 4
+    var matrixPoseProbeStride: Int = 8
+    var matrixFusionRadius: Double = 0.08
+
+    // Optional non-visual analysis remains dormant by default.
     var enableAudioLevelAnalysis: Bool = false
     var enableScreenCueAnalysis: Bool = false
 
-    // Legacy extrapolation fields are kept for source compatibility only. The default
-    // realtime path is visible-content-only and does not synthesize hidden positions.
+    // Legacy extrapolation fields are kept for source compatibility only. The default realtime
+    // path is visible-content-only and does not synthesize hidden positions.
     var predictionCount: Int = 0
     var predictionStepSeconds: Double = 0.18
     var predictionHoldSeconds: Double = 0

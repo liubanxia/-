@@ -9,8 +9,8 @@ settings:
     IPHONEOS_DEPLOYMENT_TARGET: 17.0
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: ""
-    CURRENT_PROJECT_VERSION: 5
-    MARKETING_VERSION: 0.3.0
+    CURRENT_PROJECT_VERSION: 6
+    MARKETING_VERSION: 0.4.0
 targets:
   PhoenixRealtimeVisionAssist:
     type: application
@@ -27,15 +27,20 @@ targets:
         optional: true
         type: folder
     postBuildScripts:
-      - name: Copy LiteView Core ML model
+      - name: Copy LiteView Core ML model pool
         script: |
           set -e
-          SRC="${SRCROOT}/Resources/Models/yolo11n.mlmodelc"
-          DST="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/yolo11n.mlmodelc"
-          if [ -d "$SRC" ]; then
-            rm -rf "$DST"
-            mkdir -p "$(dirname "$DST")"
-            cp -R "$SRC" "$DST"
+          MODEL_ROOT="${SRCROOT}/Resources/Models"
+          DEST_ROOT="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
+          if [ -d "$MODEL_ROOT" ]; then
+            for SRC in "$MODEL_ROOT"/*.mlmodelc; do
+              [ -d "$SRC" ] || continue
+              NAME="$(basename "$SRC")"
+              DST="$DEST_ROOT/$NAME"
+              rm -rf "$DST"
+              mkdir -p "$DEST_ROOT"
+              cp -R "$SRC" "$DST"
+            done
           fi
     info:
       path: Sources/App/Info.plist
