@@ -59,6 +59,35 @@ jobs:
         working-directory: ios/PhoenixRealtimeVisionAssist
         run: xcodegen generate
 
+      - name: Verify lifecycle and App Group wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          PROJECT="$ROOT/PhoenixRealtimeVisionAssist.xcodeproj/project.pbxproj"
+          APP_ENTITLEMENTS="$ROOT/Config/App.entitlements"
+          EXT_ENTITLEMENTS="$ROOT/Config/Broadcast.entitlements"
+
+          test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' "$APP_ENTITLEMENTS")" = 'group.com.phoenix.realtimevisionassist'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' "$EXT_ENTITLEMENTS")" = 'group.com.phoenix.realtimevisionassist'
+          grep -Fq 'Config/App.entitlements' "$PROJECT"
+          grep -Fq 'Config/Broadcast.entitlements' "$PROJECT"
+          grep -Fq 'SharedRealtimeStateStore.swift' "$PROJECT"
+          grep -Fq 'LightweightBroadcastAnalyzer.swift' "$PROJECT"
+          grep -Fq 'BroadcastLifecycleTests.swift' "$PROJECT"
+
+      - name: Run start-stop-start lifecycle smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          xcrun swiftc \
+            "$ROOT/Sources/Core/SharedRealtimeStateStore.swift" \
+            "$ROOT/Sources/Core/BroadcastLifecycle.swift" \
+            "$ROOT/scripts/lifecycle_smoke_main.swift" \
+            -o "$RUNNER_TEMP/liteview-lifecycle-smoke"
+          "$RUNNER_TEMP/liteview-lifecycle-smoke"
+
       - name: Build unsigned iPhone device target
         working-directory: ios/PhoenixRealtimeVisionAssist
         shell: bash
@@ -90,6 +119,9 @@ jobs:
           test -d "$EXT"
           test -d "$APP/yolo11n.mlmodelc"
           test ! -d "$EXT/yolo11n.mlmodelc"
+
+          EXT_SIZE_BYTES="$(du -sk "$EXT" | awk '{print $1 * 1024}')"
+          test "$EXT_SIZE_BYTES" -lt 12582912
 
           EXT_POINT="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$SOURCE_PLIST")"
           EXT_CLASS="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$SOURCE_PLIST")"
@@ -141,11 +173,14 @@ jobs:
           cat > "$MANIFEST" <<EOF
           LiteView memory-safe unsigned sideload package
           commit=${GITHUB_SHA}
+          version=0.2.0
           app_bundle_id=com.phoenix.realtimevisionassist
           extension_bundle_id=com.phoenix.realtimevisionassist.broadcast
           extension_point=com.apple.broadcast-services-upload
           app_group=group.com.phoenix.realtimevisionassist
           broadcast_extension_model=none
+          broadcast_extension_analysis=adaptive Vision human rectangles plus direct BGRA sound-cue sampling
+          lifecycle=Darwin heartbeat plus App Group snapshot plus ReplayKit picker rebuild
           main_app_coreml=yolo11n.mlmodelc
           signing=unsigned; re-sign main app and embedded Broadcast Extension without removing PlugIns
           EOF
@@ -174,9 +209,9 @@ jobs:
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
-            gh release edit "$TAG" --title 'LiteView unsigned sideload test package' --notes 'Memory-safe ReplayKit build. Core ML remains in the main app; the Broadcast Extension is intentionally lightweight for iOS extension memory limits. Re-sign the app and embedded Broadcast Extension without removing PlugIns.'
+            gh release edit "$TAG" --title 'LiteView 0.2.0 stable restart sideload package' --notes 'Start → stop → start-again lifecycle rebuilt as a state machine. The extension keeps adaptive lightweight analysis, App Group snapshots, entitlement-free heartbeats, stale-session recovery, and no frame retention. Re-sign the app and embedded Broadcast Extension without removing PlugIns.'
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" \
-              --title 'LiteView unsigned sideload test package' \
-              --notes 'Memory-safe ReplayKit build. Core ML remains in the main app; the Broadcast Extension is intentionally lightweight for iOS extension memory limits. Re-sign the app and embedded Broadcast Extension without removing PlugIns.'
+              --title 'LiteView 0.2.0 stable restart sideload package' \
+              --notes 'Start → stop → start-again lifecycle rebuilt as a state machine. The extension keeps adaptive lightweight analysis, App Group snapshots, entitlement-free heartbeats, stale-session recovery, and no frame retention. Re-sign the app and embedded Broadcast Extension without removing PlugIns.'
           fi

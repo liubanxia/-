@@ -1,4 +1,4 @@
-# Phoenix Realtime Vision Assist (iOS)
+# LiteView / Phoenix Realtime Vision Assist (iOS)
 
 This branch contains the first iOS prototype for a low-power, zero-retention realtime vision/audio assistant.
 
@@ -13,11 +13,13 @@ Design constraints:
 - Thermal throttling reduces analysis FPS automatically.
 - UI output is intentionally minimal.
 
-## First prototype
+## LiteView 0.2.0
 
-The initial implementation uses Apple Vision human-rectangle detection as a dependency-free baseline. Generic small-object infrastructure is separated into thermal budgeting, bounded secondary ROI scheduling, and RAM-only temporal candidate accumulation so a small Core ML detector can later be evaluated without changing the realtime coordinator architecture.
+The Broadcast Extension uses Apple Vision human-rectangle detection at an adaptive low rate and a direct BGRA sound-cue sampler. It does not load the bundled Core ML model, preventing the extension memory spike that caused ReplayKit to stop. Thermal pressure automatically slows or disables analysis while the heartbeat remains alive.
 
-`BroadcastSampleHandler` is designed for a ReplayKit Broadcast Upload Extension. The app and extension share only minimal runtime counters through an App Group. No image/audio payload or history is written to shared storage.
+`BroadcastSampleHandler` is designed for a ReplayKit Broadcast Upload Extension. The app and extension share only minimal runtime counters through an App Group. Entitlement-free Darwin heartbeats and a screen-capture fallback keep lifecycle reporting usable if a sideload signer strips App Group access. No image/audio payload or history is written to shared storage.
+
+Start, stop, and start-again are handled by an explicit lifecycle state machine. A finished or stale session moves the UI into recovery, waits for the ReplayKit sheet to dismiss, and then replaces `RPSystemBroadcastPickerView` with a fresh instance.
 
 The app itself provides a local status/test surface. iOS does not provide a general-purpose permission for one app to draw arbitrary overlays on top of another app, so this project does not attempt to bypass that platform restriction.
 

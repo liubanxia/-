@@ -1,12 +1,6 @@
 name: LiteView iOS Build
 
 on:
-  push:
-    branches:
-      - feature/ios-realtime-vision-assist
-    paths:
-      - 'ios/PhoenixRealtimeVisionAssist/**'
-      - '.github/workflows/ios-liteview-build.yml'
   workflow_dispatch:
 
 permissions:
@@ -133,7 +127,10 @@ jobs:
           test -d "$APP"
           test -d "$EXT"
           test -d "$APP/yolo11n.mlmodelc"
-          test -d "$EXT/yolo11n.mlmodelc"
+          test ! -d "$EXT/yolo11n.mlmodelc"
+
+          EXT_SIZE_BYTES="$(du -sk "$EXT" | awk '{print $1 * 1024}')"
+          test "$EXT_SIZE_BYTES" -lt 12582912
 
           APP_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
           EXT_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$EXT/Info.plist")"
@@ -147,7 +144,7 @@ jobs:
 
           echo "DEVICE_APP=$APP"
           echo "DEVICE_EXT=$EXT"
-          du -sh "$APP" "$EXT" "$APP/yolo11n.mlmodelc" "$EXT/yolo11n.mlmodelc"
+          du -sh "$APP" "$EXT" "$APP/yolo11n.mlmodelc"
 
       - name: Package and verify unsigned sideload IPA
         shell: bash
@@ -178,7 +175,7 @@ jobs:
           test -f "$VAPP/Info.plist"
           test -f "$VEXT/Info.plist"
           test -d "$VAPP/yolo11n.mlmodelc"
-          test -d "$VEXT/yolo11n.mlmodelc"
+          test ! -d "$VEXT/yolo11n.mlmodelc"
 
           VAPP_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$VAPP/Info.plist")"
           VEXT_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$VEXT/Info.plist")"
@@ -193,11 +190,15 @@ jobs:
           cat > "$MANIFEST" <<EOF
           LiteView unsigned sideload package
           commit=${GITHUB_SHA}
+          version=0.2.0
           app_bundle_id=${VAPP_ID}
           extension_bundle_id=${VEXT_ID}
           extension_point=${VEXT_POINT}
           extension_class=${VEXT_CLASS}
           app_group=group.com.phoenix.realtimevisionassist
+          broadcast_extension_model=none
+          broadcast_extension_analysis=adaptive Vision human rectangles plus direct BGRA sound-cue sampling
+          lifecycle=Darwin heartbeat plus App Group snapshot plus ReplayKit picker rebuild
           signing=unsigned; SideStore/Feather must re-sign the app and embedded Broadcast Extension
           EOF
 
@@ -229,10 +230,11 @@ jobs:
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
+            gh release edit "$TAG" --title 'LiteView 0.2.0 stable restart sideload package' --notes 'Start → stop → start-again lifecycle rebuilt as a state machine. The extension keeps adaptive lightweight analysis, App Group snapshots, entitlement-free heartbeats, stale-session recovery, and no frame retention.'
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" \
-              --title 'LiteView unsigned sideload test package' \
-              --notes 'Unsigned iPhone test package for local re-signing with SideStore/Feather. Includes the ReplayKit Broadcast Extension and Core ML resources.'
+              --title 'LiteView 0.2.0 stable restart sideload package' \
+              --notes 'Start → stop → start-again lifecycle rebuilt as a state machine. The extension keeps adaptive lightweight analysis, App Group snapshots, entitlement-free heartbeats, stale-session recovery, and no frame retention.'
           fi
 
       - name: Upload device build log on failure
