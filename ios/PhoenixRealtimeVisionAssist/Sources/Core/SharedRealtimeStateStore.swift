@@ -1,6 +1,33 @@
 import Darwin
 import Foundation
 
+// Darwin's notify(3) state functions are exported by libSystem on Apple platforms but
+// are not imported into Swift by every SDK/toolchain combination. Bind only the small,
+// stable C surface we use for a 64-bit cross-process status word.
+@_silgen_name("notify_register_check")
+private func liteview_notify_register_check(
+    _ name: UnsafePointer<CChar>,
+    _ token: UnsafeMutablePointer<Int32>
+) -> UInt32
+
+@_silgen_name("notify_get_state")
+private func liteview_notify_get_state(
+    _ token: Int32,
+    _ state: UnsafeMutablePointer<UInt64>
+) -> UInt32
+
+@_silgen_name("notify_set_state")
+private func liteview_notify_set_state(
+    _ token: Int32,
+    _ state: UInt64
+) -> UInt32
+
+@_silgen_name("notify_post")
+private func liteview_notify_post(_ name: UnsafePointer<CChar>) -> UInt32
+
+@_silgen_name("notify_cancel")
+private func liteview_notify_cancel(_ token: Int32) -> UInt32
+
 enum BroadcastSignalName {
     static let started = "com.phoenix.realtimevisionassist.broadcast.started"
     static let heartbeat = "com.phoenix.realtimevisionassist.broadcast.heartbeat"
@@ -228,7 +255,7 @@ final class EntitlementFreeBroadcastStateChannel {
     init() {
         var newToken: Int32 = -1
         let status = Self.notificationName.withCString {
-            notify_register_check($0, &newToken)
+            liteview_notify_register_check($0, &newToken)
         }
         token = newToken
         isAvailable = status == 0 && newToken >= 0
@@ -236,7 +263,7 @@ final class EntitlementFreeBroadcastStateChannel {
 
     deinit {
         if isAvailable {
-            _ = notify_cancel(token)
+            _ = liteview_notify_cancel(token)
         }
     }
 
@@ -244,14 +271,14 @@ final class EntitlementFreeBroadcastStateChannel {
     func publish(_ snapshot: SharedRealtimeSnapshot) -> Bool {
         guard isAvailable else { return false }
         let state = CompactBroadcastState(snapshot: snapshot).rawValue
-        guard notify_set_state(token, state) == 0 else { return false }
-        return Self.notificationName.withCString { notify_post($0) } == 0
+        guard liteview_notify_set_state(token, state) == 0 else { return false }
+        return Self.notificationName.withCString { liteview_notify_post($0) } == 0
     }
 
     func read(at currentUptime: TimeInterval) -> SharedRealtimeSnapshot? {
         guard isAvailable else { return nil }
         var raw: UInt64 = 0
-        guard notify_get_state(token, &raw) == 0,
+        guard liteview_notify_get_state(token, &raw) == 0,
               let state = CompactBroadcastState(rawValue: raw) else {
             return nil
         }
@@ -260,8 +287,8 @@ final class EntitlementFreeBroadcastStateChannel {
 
     func clear() {
         guard isAvailable else { return }
-        _ = notify_set_state(token, 0)
-        _ = Self.notificationName.withCString { notify_post($0) }
+        _ = liteview_notify_set_state(token, 0)
+        _ = Self.notificationName.withCString { liteview_notify_post($0) }
     }
 }
 
