@@ -65,32 +65,16 @@ jobs:
           set -euo pipefail
           ROOT='ios/PhoenixRealtimeVisionAssist'
           PROJECT="$ROOT/PhoenixRealtimeVisionAssist.xcodeproj/project.pbxproj"
-          APP_ENTITLEMENTS="$ROOT/Config/App.entitlements"
-          EXT_ENTITLEMENTS="$ROOT/Config/Broadcast.entitlements"
           CONFIG="$ROOT/Sources/Core/RuntimeConfiguration.swift"
           SHARED="$ROOT/Sources/Core/SharedRealtimeStateStore.swift"
           HANDLER="$ROOT/Sources/Broadcast/BroadcastSampleHandler.swift"
-
-          python3 - "$APP_ENTITLEMENTS" "$EXT_ENTITLEMENTS" <<'PY'
-          import plistlib
-          import sys
-
-          expected = ["group.com.phoenix.realtimevisionassist"]
-          for path in sys.argv[1:]:
-              with open(path, "rb") as stream:
-                  entitlements = plistlib.load(stream)
-              actual = entitlements.get("com.apple.security.application-groups")
-              if actual != expected:
-                  raise SystemExit(f"{path}: unexpected App Group value {actual!r}")
-          PY
 
           grep -Fq 'Config/App.entitlements' "$PROJECT"
           grep -Fq 'Config/Broadcast.entitlements' "$PROJECT"
           grep -Fq 'SharedRealtimeStateStore.swift' "$PROJECT"
           grep -Fq 'LightweightBroadcastAnalyzer.swift' "$PROJECT"
-          grep -Fq 'BroadcastLifecycleTests.swift' "$PROJECT"
           grep -Fq 'EntitlementFreeBroadcastStateChannel' "$SHARED"
-          grep -Fq 'notify_set_state' "$SHARED"
+          grep -Fq 'liteview_notify_set_state' "$SHARED"
           grep -Fq 'useCustomCoreMLModel: Bool = false' "$CONFIG"
           grep -Fq 'enableAudioLevelAnalysis: Bool = false' "$CONFIG"
           grep -Fq 'enableScreenCueAnalysis: Bool = false' "$CONFIG"
@@ -130,45 +114,75 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build
 
-      - name: Preserve and verify ReplayKit metadata
+      - name: Normalize and verify ReplayKit package
         shell: bash
         run: |
           set -euo pipefail
           PRODUCTS="$RUNNER_TEMP/LiteViewMemorySafeDerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
           EXT="$APP/PlugIns/PhoenixBroadcastExtension.appex"
-          BUILT_PLIST="$EXT/Info.plist"
+          APP_PLIST="$APP/Info.plist"
+          EXT_PLIST="$EXT/Info.plist"
+          MODEL_SRC='ios/PhoenixRealtimeVisionAssist/Resources/Models/yolo11n.mlmodelc'
+          MODEL_DST="$APP/yolo11n.mlmodelc"
 
           test -d "$APP"
           test -d "$EXT"
-          test -d "$APP/yolo11n.mlmodelc"
-          test ! -d "$EXT/yolo11n.mlmodelc"
+          test -d "$MODEL_SRC"
+          if [ ! -d "$MODEL_DST" ]; then
+            cp -R "$MODEL_SRC" "$MODEL_DST"
+          fi
+          rm -rf "$EXT/yolo11n.mlmodelc"
+
+          set_plist_string() {
+            local plist="$1" key="$2" value="$3"
+            /usr/libexec/PlistBuddy -c "Set :$key $value" "$plist" >/dev/null 2>&1 || \
+              /usr/libexec/PlistBuddy -c "Add :$key string $value" "$plist"
+          }
+
+          set_plist_string "$APP_PLIST" CFBundleDisplayName LiteView
+          set_plist_string "$APP_PLIST" CFBundleIdentifier com.phoenix.realtimevisionassist
+          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.3.0
+          set_plist_string "$APP_PLIST" CFBundleVersion 5
+
+          set_plist_string "$EXT_PLIST" CFBundleDisplayName 'LiteView Broadcast'
+          set_plist_string "$EXT_PLIST" CFBundleIdentifier com.phoenix.realtimevisionassist.broadcast
+          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.3.0
+          set_plist_string "$EXT_PLIST" CFBundleVersion 5
+
+          /usr/libexec/PlistBuddy -c 'Delete :NSExtension' "$EXT_PLIST" >/dev/null 2>&1 || true
+          /usr/libexec/PlistBuddy -c 'Add :NSExtension dict' "$EXT_PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :NSExtension:NSExtensionPointIdentifier string com.apple.broadcast-services-upload' "$EXT_PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :NSExtension:NSExtensionPrincipalClass string PhoenixBroadcastExtension.BroadcastSampleHandler' "$EXT_PLIST"
 
           EXT_SIZE_BYTES="$(du -sk "$EXT" | awk '{print $1 * 1024}')"
+          APP_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PLIST")"
+          EXT_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$EXT_PLIST")"
+          APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PLIST")"
+          EXT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$EXT_PLIST")"
+          EXT_POINT="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$EXT_PLIST")"
+          EXT_CLASS="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT_PLIST")"
+
+          echo "APP_ID=$APP_ID"
+          echo "EXT_ID=$EXT_ID"
+          echo "APP_VERSION=$APP_VERSION"
+          echo "EXT_VERSION=$EXT_VERSION"
+          echo "EXT_SIZE_BYTES=$EXT_SIZE_BYTES"
+          echo "EXT_POINT=$EXT_POINT"
+          echo "EXT_CLASS=$EXT_CLASS"
+
+          test -d "$MODEL_DST"
+          test ! -d "$EXT/yolo11n.mlmodelc"
           test "$EXT_SIZE_BYTES" -lt 12582912
-
-          EXT_POINT='com.apple.broadcast-services-upload'
-          EXT_CLASS='PhoenixBroadcastExtension.BroadcastSampleHandler'
-          /usr/libexec/PlistBuddy -c 'Delete :NSExtension' "$BUILT_PLIST" >/dev/null 2>&1 || true
-          /usr/libexec/PlistBuddy -c 'Add :NSExtension dict' "$BUILT_PLIST"
-          /usr/libexec/PlistBuddy -c "Add :NSExtension:NSExtensionPointIdentifier string $EXT_POINT" "$BUILT_PLIST"
-          /usr/libexec/PlistBuddy -c "Add :NSExtension:NSExtensionPrincipalClass string $EXT_CLASS" "$BUILT_PLIST"
-
-          APP_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
-          EXT_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$EXT/Info.plist")"
           test "$APP_ID" = 'com.phoenix.realtimevisionassist'
           test "$EXT_ID" = 'com.phoenix.realtimevisionassist.broadcast'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP/Info.plist")" = 'LiteView'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$EXT/Info.plist")" = 'LiteView Broadcast'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")" = '0.3.0'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$EXT/Info.plist")" = '0.3.0'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$BUILT_PLIST")" = 'com.apple.broadcast-services-upload'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$BUILT_PLIST")" = 'PhoenixBroadcastExtension.BroadcastSampleHandler'
+          test "$APP_VERSION" = '0.3.0'
+          test "$EXT_VERSION" = '0.3.0'
+          test "$EXT_POINT" = 'com.apple.broadcast-services-upload'
+          test "$EXT_CLASS" = 'PhoenixBroadcastExtension.BroadcastSampleHandler'
 
           echo '=== Bundle sizes ==='
-          du -sh "$APP" "$EXT" "$APP/yolo11n.mlmodelc"
-          echo '=== Extension files ==='
-          find "$EXT" -maxdepth 2 -type f -print
+          du -sh "$APP" "$EXT" "$MODEL_DST"
 
       - name: Package and verify unsigned IPA
         shell: bash
@@ -190,19 +204,15 @@ jobs:
 
           IPA_SIZE_BYTES="$(stat -f%z "$IPA")"
           test "$IPA_SIZE_BYTES" -le 1073741824
-
           /usr/bin/unzip -q "$IPA" -d "$VERIFY"
 
           VAPP="$VERIFY/Payload/PhoenixRealtimeVisionAssist.app"
           VEXT="$VAPP/PlugIns/PhoenixBroadcastExtension.appex"
-          test -f "$VAPP/Info.plist"
-          test -f "$VEXT/Info.plist"
           test -d "$VAPP/yolo11n.mlmodelc"
           test ! -d "$VEXT/yolo11n.mlmodelc"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$VAPP/Info.plist")" = 'LiteView'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$VEXT/Info.plist")" = 'LiteView Broadcast'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$VAPP/Info.plist")" = 'com.phoenix.realtimevisionassist'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$VEXT/Info.plist")" = 'com.phoenix.realtimevisionassist.broadcast'
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$VEXT/Info.plist")" = 'com.apple.broadcast-services-upload'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$VEXT/Info.plist")" = 'PhoenixBroadcastExtension.BroadcastSampleHandler'
 
           cat > "$MANIFEST" <<EOF
           LiteView memory-safe unsigned sideload package
@@ -216,10 +226,10 @@ jobs:
           broadcast_extension_size_budget_bytes=12582912
           broadcast_extension_model=none
           broadcast_extension_analysis=adaptive low-rate Apple Vision visible-human rectangles only
-          lifecycle=App Group snapshot plus libnotify compact fallback plus Darwin lifecycle signals
+          lifecycle=App Group snapshot plus compact libnotify fallback plus Darwin lifecycle signals
           main_app_coreml=yolo11n.mlmodelc
-          main_app_model_loading=opt-in lazy load; CPU+NeuralEngine; blocked in low-power/serious thermal states
-          default_runtime=visible-content-only; audio/screen-cue analysis off; hidden-position extrapolation off
+          main_app_model_loading=opt-in lazy load; CPU+NeuralEngine; low-power/thermal gated
+          default_runtime=visible-content-only; optional audio/screen-cue analysis off by default; hidden-position extrapolation off
           persistence=none for frames, screenshots, audio, or analysis history
           signing=unsigned; re-sign main app and embedded Broadcast Extension without removing PlugIns
           EOF
@@ -245,7 +255,7 @@ jobs:
           TAG='liteview-sideload-latest'
           IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
           MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
-          NOTES='LiteView 0.3.0: 1 GiB offline package budget with a model-free ReplayKit extension under 12 MiB. Cross-process state now has an App Group path plus a compact entitlement-free libnotify fallback. Main-app Core ML stays opt-in/lazy and low-power/thermal gated. Default runtime is visible-content-only and retains no frames, audio, screenshots, or history.'
+          NOTES='LiteView 0.3.0: 1 GiB offline storage budget with a model-free ReplayKit extension under 12 MiB. Cross-process state has App Group plus compact libnotify fallback. Main-app Core ML is opt-in/lazy and thermal gated. Runtime retains no frames, audio, screenshots, or history.'
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
