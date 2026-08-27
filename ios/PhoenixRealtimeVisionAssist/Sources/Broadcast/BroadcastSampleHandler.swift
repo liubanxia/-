@@ -5,25 +5,18 @@ import ReplayKit
 
 /// ReplayKit upload handler tuned for extension memory limits.
 ///
-/// The extension keeps only counters and the current lightweight result. Frames are
-/// processed at an adaptive low rate, never encoded, written to disk, or retained.
+/// The extension keeps only counters and the current visible-content result. Frames are
+/// processed at a deliberately low adaptive rate, never encoded, written to disk, or retained.
 final class BroadcastSampleHandler: RPBroadcastSampleHandler {
     private struct Metrics {
         let generation: UInt64
         let sessionID: String
         let phase: SharedBroadcastPhase
         let targetCount: Int
-        let soundIndicatorCount: Int
         let videoFrameCount: UInt64
         let videoFramesPerSecond: Double
         let droppedAnalysisFrameCount: UInt64
         let analysisLatencyMilliseconds: Double
-    }
-
-    private struct FrameWork {
-        let generation: UInt64
-        let runSoundAnalysis: Bool
-        let runVisionAnalysis: Bool
     }
 
     private let sharedState = SharedRealtimeStateStore()
@@ -47,14 +40,12 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
     private var isBroadcasting = false
     private var analysisInFlight = false
     private var lastVisionAnalysisUptime: TimeInterval = 0
-    private var lastSoundAnalysisUptime: TimeInterval = 0
     private var frameRateWindowStartedAt: TimeInterval = 0
     private var frameRateWindowFrameCount: UInt64 = 0
     private var videoFrameCount: UInt64 = 0
     private var videoFramesPerSecond: Double = 0
     private var droppedAnalysisFrameCount: UInt64 = 0
     private var targetCount = 0
-    private var soundIndicatorCount = 0
     private var analysisLatencyMilliseconds: Double = 0
 
     override func broadcastStarted(withSetupInfo setupInfo: [String: NSObject]?) {
@@ -70,14 +61,12 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
         isBroadcasting = true
         analysisInFlight = false
         lastVisionAnalysisUptime = now
-        lastSoundAnalysisUptime = now
         frameRateWindowStartedAt = now
         frameRateWindowFrameCount = 0
         videoFrameCount = 0
         videoFramesPerSecond = 0
         droppedAnalysisFrameCount = 0
         targetCount = 0
-        soundIndicatorCount = 0
         analysisLatencyMilliseconds = 0
         let metrics = currentMetricsLocked()
         let activeGeneration = generation
@@ -115,11 +104,12 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
         isBroadcasting = false
         phase = .finished
         analysisInFlight = false
-        generation &+= 1
         let metrics = currentMetricsLocked()
+        generation &+= 1
         stateLock.unlock()
 
-        publish(metrics)
+        // Publish the final state before the generation changes invalidate future work.
+        publishFinished(metrics)
         BroadcastSignalName.post(BroadcastSignalName.finished)
     }
 
@@ -127,52 +117,39 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
         _ sampleBuffer: CMSampleBuffer,
         with sampleBufferType: RPSampleBufferType
     ) {
+        guard sampleBufferType == .video else { return }
         let now = ProcessInfo.processInfo.systemUptime
-        let isVideo = sampleBufferType == .video
 
         stateLock.lock()
         guard isBroadcasting else {
             stateLock.unlock()
             return
         }
-
-        if isVideo {
-            recordVideoFrameLocked(now: now)
-        }
+        recordVideoFrameLocked(now: now)
         stateLock.unlock()
 
-        guard isVideo,
-              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
+              let workGeneration = reserveVisionWork(now: now) else {
             return
         }
 
-        let work = reserveFrameWork(now: now)
-        guard work.runSoundAnalysis || work.runVisionAnalysis else { return }
-
-        if work.runSoundAnalysis {
-            let count = analyzer.countSoundIndicators(in: pixelBuffer)
-            completeSoundAnalysis(count: count, generation: work.generation)
-        }
-
-        if work.runVisionAnalysis {
-            let orientation = videoOrientation(of: sampleBuffer)
-            analysisQueue.async { [weak self, pixelBuffer] in
-                guard let self else { return }
-                let result = self.analyzer.detectVisibleHumans(
-                    in: pixelBuffer,
-                    orientation: orientation
-                )
-                self.completeVisionAnalysis(result, generation: work.generation)
-            }
+        let orientation = videoOrientation(of: sampleBuffer)
+        analysisQueue.async { [weak self, pixelBuffer] in
+            guard let self else { return }
+            let result = self.analyzer.detectVisibleHumans(
+                in: pixelBuffer,
+                orientation: orientation
+            )
+            self.completeVisionAnalysis(result, generation: workGeneration)
         }
     }
 
     private func startHeartbeatTimer(for expectedGeneration: UInt64) {
         let timer = DispatchSource.makeTimerSource(queue: heartbeatQueue)
         timer.schedule(
-            deadline: .now() + .milliseconds(350),
+            deadline: .now() + .milliseconds(250),
             repeating: .milliseconds(750),
-            leeway: .milliseconds(100)
+            leeway: .milliseconds(125)
         )
         timer.setEventHandler { [weak self] in
             self?.emitHeartbeat(expectedGeneration: expectedGeneration)
@@ -198,11 +175,11 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
         stateLock.unlock()
 
         publish(metrics)
-        if currentPhase == .paused {
-            BroadcastSignalName.post(BroadcastSignalName.paused)
-        } else {
-            BroadcastSignalName.post(BroadcastSignalName.heartbeat)
-        }
+        BroadcastSignalName.post(
+            currentPhase == .paused
+                ? BroadcastSignalName.paused
+                : BroadcastSignalName.heartbeat
+        )
     }
 
     private func updatePhase(_ newPhase: SharedBroadcastPhase) -> Metrics? {
@@ -225,54 +202,25 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
         }
     }
 
-    private func reserveFrameWork(now: TimeInterval) -> FrameWork {
+    private func reserveVisionWork(now: TimeInterval) -> UInt64? {
         stateLock.lock()
         defer { stateLock.unlock() }
 
-        guard isBroadcasting, phase == .running else {
-            return FrameWork(
-                generation: generation,
-                runSoundAnalysis: false,
-                runVisionAnalysis: false
-            )
+        guard isBroadcasting, phase == .running else { return nil }
+        let interval = adaptiveVisionIntervalLocked()
+        guard interval.isFinite,
+              now - lastVisionAnalysisUptime >= interval else {
+            return nil
         }
 
-        let soundInterval = adaptiveSoundInterval()
-        let runSound = soundInterval.isFinite
-            && now - lastSoundAnalysisUptime >= soundInterval
-        if runSound {
-            lastSoundAnalysisUptime = now
+        if analysisInFlight {
+            droppedAnalysisFrameCount &+= 1
+            return nil
         }
 
-        let visionInterval = adaptiveVisionIntervalLocked()
-        let visionIsDue = visionInterval.isFinite
-            && now - lastVisionAnalysisUptime >= visionInterval
-        var runVision = false
-        if visionIsDue {
-            if analysisInFlight {
-                droppedAnalysisFrameCount &+= 1
-            } else {
-                analysisInFlight = true
-                lastVisionAnalysisUptime = now
-                runVision = true
-            }
-        }
-
-        return FrameWork(
-            generation: generation,
-            runSoundAnalysis: runSound,
-            runVisionAnalysis: runVision
-        )
-    }
-
-    private func completeSoundAnalysis(count: Int, generation workGeneration: UInt64) {
-        stateLock.lock()
-        guard isBroadcasting, generation == workGeneration else {
-            stateLock.unlock()
-            return
-        }
-        soundIndicatorCount = max(0, count)
-        stateLock.unlock()
+        analysisInFlight = true
+        lastVisionAnalysisUptime = now
+        return generation
     }
 
     private func completeVisionAnalysis(
@@ -298,24 +246,41 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
     private func publish(_ metrics: Metrics) {
         stateLock.lock()
         let isCurrentGeneration = metrics.generation == generation
-        let phaseMatchesRuntime = metrics.phase == phase
-            && (metrics.phase == .finished ? !isBroadcasting : isBroadcasting)
+        let phaseMatchesRuntime = metrics.phase == phase && isBroadcasting
         guard isCurrentGeneration, phaseMatchesRuntime else {
             stateLock.unlock()
             return
         }
+        stateLock.unlock()
+
         let snapshot = sharedState.publish(
             sessionID: metrics.sessionID,
             phase: metrics.phase,
             targetCount: metrics.targetCount,
-            soundIndicatorCount: metrics.soundIndicatorCount,
+            soundIndicatorCount: 0,
             videoFrameCount: metrics.videoFrameCount,
             videoFramesPerSecond: metrics.videoFramesPerSecond,
             droppedAnalysisFrameCount: metrics.droppedAnalysisFrameCount,
             analysisLatencyMilliseconds: metrics.analysisLatencyMilliseconds,
             analysisMode: .lightweightVision
         )
-        stateLock.unlock()
+        if snapshot != nil {
+            BroadcastSignalName.post(BroadcastSignalName.snapshot)
+        }
+    }
+
+    private func publishFinished(_ metrics: Metrics) {
+        let snapshot = sharedState.publish(
+            sessionID: metrics.sessionID,
+            phase: .finished,
+            targetCount: metrics.targetCount,
+            soundIndicatorCount: 0,
+            videoFrameCount: metrics.videoFrameCount,
+            videoFramesPerSecond: metrics.videoFramesPerSecond,
+            droppedAnalysisFrameCount: metrics.droppedAnalysisFrameCount,
+            analysisLatencyMilliseconds: metrics.analysisLatencyMilliseconds,
+            analysisMode: .lightweightVision
+        )
         if snapshot != nil {
             BroadcastSignalName.post(BroadcastSignalName.snapshot)
         }
@@ -327,7 +292,6 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
             sessionID: sessionID,
             phase: phase,
             targetCount: targetCount,
-            soundIndicatorCount: soundIndicatorCount,
             videoFrameCount: videoFrameCount,
             videoFramesPerSecond: videoFramesPerSecond,
             droppedAnalysisFrameCount: droppedAnalysisFrameCount,
@@ -339,34 +303,20 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
         let thermalInterval: TimeInterval
         switch ProcessInfo.processInfo.thermalState {
         case .nominal:
-            thermalInterval = 1.0
+            thermalInterval = 0.85
         case .fair:
             thermalInterval = 1.35
         case .serious:
-            thermalInterval = 2.25
+            thermalInterval = 2.5
         case .critical:
             return .infinity
         @unknown default:
-            thermalInterval = 2.25
+            thermalInterval = 2.5
         }
 
-        let latencyInterval = min(3.0, analysisLatencyMilliseconds / 1_000 * 1.8)
-        return max(thermalInterval, latencyInterval)
-    }
-
-    private func adaptiveSoundInterval() -> TimeInterval {
-        switch ProcessInfo.processInfo.thermalState {
-        case .nominal:
-            return 0.25
-        case .fair:
-            return 0.4
-        case .serious:
-            return 0.8
-        case .critical:
-            return .infinity
-        @unknown default:
-            return 0.8
-        }
+        let powerInterval: TimeInterval = ProcessInfo.processInfo.isLowPowerModeEnabled ? 2.5 : 0
+        let latencyInterval = min(3.5, analysisLatencyMilliseconds / 1_000 * 2.0)
+        return max(thermalInterval, powerInterval, latencyInterval)
     }
 
     private func videoOrientation(of sampleBuffer: CMSampleBuffer) -> CGImagePropertyOrientation {

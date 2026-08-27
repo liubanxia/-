@@ -70,4 +70,44 @@ final class BroadcastLifecycleTests: XCTestCase {
         )
         XCTAssertEqual(state.phase, .recovering)
     }
+
+    func testCompactDarwinStateRoundTrip() {
+        let source = SharedRealtimeSnapshot(
+            sessionID: "test",
+            sequence: 250,
+            phase: .paused,
+            timestamp: 1_234.25,
+            targetCount: 7,
+            soundIndicatorCount: 2,
+            videoFrameCount: 100,
+            videoFramesPerSecond: 59.5,
+            droppedAnalysisFrameCount: 3,
+            analysisLatencyMilliseconds: 84,
+            analysisMode: .lightweightVision
+        )
+
+        let packed = CompactBroadcastState(snapshot: source).rawValue
+        let decoded = CompactBroadcastState(rawValue: packed)
+        XCTAssertNotNil(decoded)
+
+        let restored = decoded?.makeSnapshot(at: 1_234.5)
+        XCTAssertEqual(restored?.phase, .paused)
+        XCTAssertEqual(restored?.targetCount, 7)
+        XCTAssertEqual(restored?.soundIndicatorCount, 2)
+        XCTAssertEqual(restored?.videoFramesPerSecond, 59.5, accuracy: 0.51)
+        XCTAssertEqual(restored?.analysisLatencyMilliseconds, 84, accuracy: 4.1)
+        XCTAssertTrue(restored?.isFresh(at: 1_234.5) == true)
+    }
+
+    func testDefaultRuntimeIsLightweightVisibleOnly() {
+        let configuration = RuntimeConfiguration.default
+        XCTAssertFalse(configuration.useCustomCoreMLModel)
+        XCTAssertFalse(configuration.enableAudioLevelAnalysis)
+        XCTAssertFalse(configuration.enableScreenCueAnalysis)
+        XCTAssertEqual(configuration.predictionCount, 0)
+        XCTAssertEqual(configuration.predictionHoldSeconds, 0)
+        XCTAssertEqual(configuration.maxPredictionOffsetPerStep, 0)
+        XCTAssertEqual(RuntimeResourcePolicy.packageSizeBudgetBytes, 1_073_741_824)
+        XCTAssertEqual(RuntimeResourcePolicy.broadcastExtensionSizeBudgetBytes, 12_582_912)
+    }
 }

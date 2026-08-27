@@ -2,6 +2,7 @@ import CoreMedia
 import Foundation
 
 final class RealtimeAnalysisCoordinator {
+    private let configuration: RuntimeConfiguration
     private let detector: RealtimePersonDetector
     private let audioAnalyzer: RealtimeAudioAnalyzer
     private let soundIndicatorAnalyzer: SoundIndicatorROIAnalyzer
@@ -10,24 +11,33 @@ final class RealtimeAnalysisCoordinator {
     private(set) var soundIndicators: [SoundIndicatorObservation] = []
 
     init(configuration: RuntimeConfiguration = .default) {
+        self.configuration = configuration
         self.detector = RealtimePersonDetector(configuration: configuration)
         self.audioAnalyzer = RealtimeAudioAnalyzer()
         self.soundIndicatorAnalyzer = SoundIndicatorROIAnalyzer()
         self.soundIndicatorStabilizer = SoundIndicatorStabilizer()
     }
 
-    func consumeVideo(_ sampleBuffer: CMSampleBuffer, onTargets: @escaping @Sendable ([RealtimeTarget]) -> Void) {
-        let rawIndicators = soundIndicatorAnalyzer.analyze(sampleBuffer)
-        soundIndicators = soundIndicatorStabilizer.update(rawIndicators)
+    func consumeVideo(
+        _ sampleBuffer: CMSampleBuffer,
+        onTargets: @escaping @Sendable ([RealtimeTarget]) -> Void
+    ) {
+        if configuration.enableScreenCueAnalysis {
+            let rawIndicators = soundIndicatorAnalyzer.analyze(sampleBuffer)
+            soundIndicators = soundIndicatorStabilizer.update(rawIndicators)
+        } else if !soundIndicators.isEmpty {
+            soundIndicators.removeAll(keepingCapacity: false)
+        }
 
         detector.analyze(
             sampleBuffer: sampleBuffer,
-            audioProximity: audioAnalyzer.proximity,
+            audioProximity: configuration.enableAudioLevelAnalysis ? audioAnalyzer.proximity : 0,
             completion: onTargets
         )
     }
 
     func consumeAudio(_ sampleBuffer: CMSampleBuffer) {
+        guard configuration.enableAudioLevelAnalysis else { return }
         audioAnalyzer.consume(sampleBuffer: sampleBuffer)
     }
 
@@ -44,7 +54,7 @@ final class RealtimeAnalysisCoordinator {
     }
 
     func reset() {
-        detector.reset()
+        detector.releaseHeavyResources()
         audioAnalyzer.reset()
         soundIndicatorAnalyzer.reset()
         soundIndicatorStabilizer.reset()

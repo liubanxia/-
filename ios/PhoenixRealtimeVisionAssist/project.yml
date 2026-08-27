@@ -9,8 +9,8 @@ settings:
     IPHONEOS_DEPLOYMENT_TARGET: 17.0
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: ""
-    CURRENT_PROJECT_VERSION: 4
-    MARKETING_VERSION: 0.2.0
+    CURRENT_PROJECT_VERSION: 5
+    MARKETING_VERSION: 0.3.0
 targets:
   PhoenixRealtimeVisionAssist:
     type: application

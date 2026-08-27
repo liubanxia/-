@@ -1,19 +1,81 @@
 import Foundation
 
 struct RuntimeConfiguration: Sendable {
-    var nominalFPS: Double = 8
-    var fairFPS: Double = 6
-    var seriousFPS: Double = 3
+    var nominalFPS: Double = 5
+    var fairFPS: Double = 3
+    var seriousFPS: Double = 1.5
     var minimumConfidence: Float = 0.45
-    var audioWindowMilliseconds: Double = 160
-    var useHeadBiasedPoint: Bool = true
-    var predictionCount: Int = 2
+    var audioWindowMilliseconds: Double = 180
+    var useHeadBiasedPoint: Bool = false
+
+    // Heavy optional features are dormant by default. Package size may grow, but the
+    // running process should stay small unless the user explicitly opts in later.
+    var useCustomCoreMLModel: Bool = false
+    var enableAudioLevelAnalysis: Bool = false
+    var enableScreenCueAnalysis: Bool = false
+
+    // Legacy extrapolation fields are kept for source compatibility only. The default
+    // realtime path is visible-content-only and does not synthesize hidden positions.
+    var predictionCount: Int = 0
     var predictionStepSeconds: Double = 0.18
-    var predictionHoldSeconds: Double = 0.45
+    var predictionHoldSeconds: Double = 0
     var predictionMatchRadius: Double = 0.18
-    var maxPredictionOffsetPerStep: Double = 0.10
+    var maxPredictionOffsetPerStep: Double = 0
 
     static let `default` = RuntimeConfiguration()
+}
+
+enum RuntimeResourcePolicy {
+    static let packageSizeBudgetBytes: UInt64 = 1_073_741_824
+    static let broadcastExtensionSizeBudgetBytes: UInt64 = 12_582_912
+    static let preferredMainAppResidentModelBytes: UInt64 = 268_435_456
+
+    static var allowsCustomCoreMLLoad: Bool {
+        guard !ProcessInfo.processInfo.isLowPowerModeEnabled else { return false }
+        switch ThermalBudget.current {
+        case .nominal, .fair:
+            return true
+        case .serious, .critical:
+            return false
+        }
+    }
+
+    static func effectiveVisionFPS(configuration: RuntimeConfiguration) -> Double {
+        let thermalFPS: Double
+        switch ThermalBudget.current {
+        case .nominal:
+            thermalFPS = configuration.nominalFPS
+        case .fair:
+            thermalFPS = configuration.fairFPS
+        case .serious:
+            thermalFPS = configuration.seriousFPS
+        case .critical:
+            return 0
+        }
+
+        if ProcessInfo.processInfo.isLowPowerModeEnabled {
+            return min(thermalFPS, 2)
+        }
+        return max(0, thermalFPS)
+    }
+
+    static var allowsSecondaryVisionPass: Bool {
+        guard !ProcessInfo.processInfo.isLowPowerModeEnabled else { return false }
+        switch ThermalBudget.current {
+        case .nominal, .fair: return true
+        case .serious, .critical: return false
+        }
+    }
+
+    static var audioAnalysisInterval: TimeInterval {
+        if ProcessInfo.processInfo.isLowPowerModeEnabled { return 0.25 }
+        switch ThermalBudget.current {
+        case .nominal: return 0.08
+        case .fair: return 0.14
+        case .serious: return 0.25
+        case .critical: return .infinity
+        }
+    }
 }
 
 enum ThermalBudget: Sendable {

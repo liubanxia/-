@@ -33,7 +33,11 @@ final class CoreMLPersonDetector {
         request.imageCropAndScaleOption = .scaleFill
         request.preferBackgroundProcessing = true
 
-        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+        let handler = VNImageRequestHandler(
+            cvPixelBuffer: pixelBuffer,
+            orientation: .up,
+            options: [:]
+        )
         try handler.perform([request])
 
         guard let observation = request.results?
@@ -47,15 +51,11 @@ final class CoreMLPersonDetector {
         let filtered = nonMaximumSuppression(candidates, threshold: 0.45)
 
         return filtered.map { candidate in
-            let centerX = candidate.x
-            let pointY: Double
-            if useHeadBiasedPoint {
-                pointY = candidate.y - candidate.h * 0.28
-            } else {
-                pointY = candidate.y
-            }
+            let pointY = useHeadBiasedPoint
+                ? candidate.y - candidate.h * 0.28
+                : candidate.y
             return (
-                min(max(centerX, 0), 1),
+                min(max(candidate.x, 0), 1),
                 min(max(pointY, 0), 1),
                 candidate.confidence
             )
@@ -70,6 +70,8 @@ final class CoreMLPersonDetector {
     }
 
     private func ensureVisionModel() -> VNCoreMLModel? {
+        guard RuntimeResourcePolicy.allowsCustomCoreMLLoad else { return nil }
+
         modelLock.lock()
         defer { modelLock.unlock() }
 
@@ -96,7 +98,7 @@ final class CoreMLPersonDetector {
         guard featureCount >= 5 else { return [] }
 
         var result: [Candidate] = []
-        result.reserveCapacity(32)
+        result.reserveCapacity(24)
 
         for index in 0..<count {
             let x = value(array, feature: 0, index: index, channelsFirst: channelsFirst)
@@ -142,8 +144,9 @@ final class CoreMLPersonDetector {
     ) -> [Candidate] {
         var remaining = candidates.sorted { $0.confidence > $1.confidence }
         var kept: [Candidate] = []
+        kept.reserveCapacity(min(remaining.count, 16))
 
-        while let best = remaining.first {
+        while let best = remaining.first, kept.count < 16 {
             kept.append(best)
             remaining.removeFirst()
             remaining.removeAll { intersectionOverUnion(best, $0) >= threshold }
@@ -173,8 +176,11 @@ final class CoreMLPersonDetector {
     }
 
     private static func loadVisionModel() -> VNCoreMLModel? {
+        let configuration = MLModelConfiguration()
+        configuration.computeUnits = .cpuAndNeuralEngine
+
         if let compiledURL = Bundle.main.url(forResource: "yolo11n", withExtension: "mlmodelc"),
-           let model = try? MLModel(contentsOf: compiledURL),
+           let model = try? MLModel(contentsOf: compiledURL, configuration: configuration),
            let visionModel = try? VNCoreMLModel(for: model) {
             return visionModel
         }
@@ -190,7 +196,7 @@ final class CoreMLPersonDetector {
 
         for case let url as URL in enumerator {
             guard url.lastPathComponent == "yolo11n.mlmodelc" else { continue }
-            if let model = try? MLModel(contentsOf: url),
+            if let model = try? MLModel(contentsOf: url, configuration: configuration),
                let visionModel = try? VNCoreMLModel(for: model) {
                 return visionModel
             }

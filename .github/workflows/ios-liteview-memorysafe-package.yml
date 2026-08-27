@@ -59,7 +59,7 @@ jobs:
         working-directory: ios/PhoenixRealtimeVisionAssist
         run: xcodegen generate
 
-      - name: Verify lifecycle and App Group wiring
+      - name: Verify lightweight runtime wiring
         shell: bash
         run: |
           set -euo pipefail
@@ -67,6 +67,9 @@ jobs:
           PROJECT="$ROOT/PhoenixRealtimeVisionAssist.xcodeproj/project.pbxproj"
           APP_ENTITLEMENTS="$ROOT/Config/App.entitlements"
           EXT_ENTITLEMENTS="$ROOT/Config/Broadcast.entitlements"
+          CONFIG="$ROOT/Sources/Core/RuntimeConfiguration.swift"
+          SHARED="$ROOT/Sources/Core/SharedRealtimeStateStore.swift"
+          HANDLER="$ROOT/Sources/Broadcast/BroadcastSampleHandler.swift"
 
           python3 - "$APP_ENTITLEMENTS" "$EXT_ENTITLEMENTS" <<'PY'
           import plistlib
@@ -80,11 +83,24 @@ jobs:
               if actual != expected:
                   raise SystemExit(f"{path}: unexpected App Group value {actual!r}")
           PY
+
           grep -Fq 'Config/App.entitlements' "$PROJECT"
           grep -Fq 'Config/Broadcast.entitlements' "$PROJECT"
           grep -Fq 'SharedRealtimeStateStore.swift' "$PROJECT"
           grep -Fq 'LightweightBroadcastAnalyzer.swift' "$PROJECT"
           grep -Fq 'BroadcastLifecycleTests.swift' "$PROJECT"
+          grep -Fq 'EntitlementFreeBroadcastStateChannel' "$SHARED"
+          grep -Fq 'notify_set_state' "$SHARED"
+          grep -Fq 'useCustomCoreMLModel: Bool = false' "$CONFIG"
+          grep -Fq 'enableAudioLevelAnalysis: Bool = false' "$CONFIG"
+          grep -Fq 'enableScreenCueAnalysis: Bool = false' "$CONFIG"
+          grep -Fq 'predictionCount: Int = 0' "$CONFIG"
+          grep -Fq 'soundIndicatorCount: 0' "$HANDLER"
+
+          if grep -R -Fq 'import CoreML' "$ROOT/Sources/Broadcast"; then
+            echo 'Broadcast Extension must stay free of custom Core ML.' >&2
+            exit 1
+          fi
 
       - name: Run start-stop-start lifecycle smoke test
         shell: bash
@@ -118,7 +134,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ROOT='ios/PhoenixRealtimeVisionAssist'
           PRODUCTS="$RUNNER_TEMP/LiteViewMemorySafeDerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
           EXT="$APP/PlugIns/PhoenixBroadcastExtension.appex"
@@ -145,6 +160,8 @@ jobs:
           test "$EXT_ID" = 'com.phoenix.realtimevisionassist.broadcast'
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP/Info.plist")" = 'LiteView'
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$EXT/Info.plist")" = 'LiteView Broadcast'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")" = '0.3.0'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$EXT/Info.plist")" = '0.3.0'
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$BUILT_PLIST")" = 'com.apple.broadcast-services-upload'
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$BUILT_PLIST")" = 'PhoenixBroadcastExtension.BroadcastSampleHandler'
 
@@ -190,7 +207,7 @@ jobs:
           cat > "$MANIFEST" <<EOF
           LiteView memory-safe unsigned sideload package
           commit=${GITHUB_SHA}
-          version=0.2.0
+          version=0.3.0
           app_bundle_id=com.phoenix.realtimevisionassist
           extension_bundle_id=com.phoenix.realtimevisionassist.broadcast
           extension_point=com.apple.broadcast-services-upload
@@ -198,11 +215,12 @@ jobs:
           package_size_budget_bytes=1073741824
           broadcast_extension_size_budget_bytes=12582912
           broadcast_extension_model=none
-          broadcast_extension_analysis=adaptive Vision human rectangles plus direct BGRA sound-cue sampling
-          lifecycle=Darwin heartbeat plus App Group snapshot plus ReplayKit picker rebuild
+          broadcast_extension_analysis=adaptive low-rate Apple Vision visible-human rectangles only
+          lifecycle=App Group snapshot plus libnotify compact fallback plus Darwin lifecycle signals
           main_app_coreml=yolo11n.mlmodelc
-          main_app_model_loading=lazy on first analysis request
-          runtime_policy=large offline package allowed; ReplayKit extension stays model-free and under 12 MiB
+          main_app_model_loading=opt-in lazy load; CPU+NeuralEngine; blocked in low-power/serious thermal states
+          default_runtime=visible-content-only; audio/screen-cue analysis off; hidden-position extrapolation off
+          persistence=none for frames, screenshots, audio, or analysis history
           signing=unsigned; re-sign main app and embedded Broadcast Extension without removing PlugIns
           EOF
 
@@ -227,14 +245,13 @@ jobs:
           TAG='liteview-sideload-latest'
           IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
           MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
-
-          NOTES='Start → stop → start-again lifecycle rebuilt as a state machine. Package resources may grow up to 1 GiB, while the Broadcast Extension stays model-free, below 12 MiB, and uses adaptive lightweight analysis with entitlement-free heartbeat fallback. Main-app Core ML is loaded lazily.'
+          NOTES='LiteView 0.3.0: 1 GiB offline package budget with a model-free ReplayKit extension under 12 MiB. Cross-process state now has an App Group path plus a compact entitlement-free libnotify fallback. Main-app Core ML stays opt-in/lazy and low-power/thermal gated. Default runtime is visible-content-only and retains no frames, audio, screenshots, or history.'
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
-            gh release edit "$TAG" --title 'LiteView 0.2.0 lightweight-runtime sideload package' --notes "$NOTES"
+            gh release edit "$TAG" --title 'LiteView 0.3.0 lightweight-runtime sideload package' --notes "$NOTES"
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" \
-              --title 'LiteView 0.2.0 lightweight-runtime sideload package' \
+              --title 'LiteView 0.3.0 lightweight-runtime sideload package' \
               --notes "$NOTES"
           fi
