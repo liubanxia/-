@@ -217,7 +217,7 @@ final class LightweightBroadcastAnalyzer {
                     on: pixelBuffer,
                     orientation: orientation
                 )
-                guard let result = request.results?.first,
+                guard let result = request.results?.first as? VNDetectedObjectObservation,
                       result.confidence >= 0.24 else {
                     return nil
                 }
