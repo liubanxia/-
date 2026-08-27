@@ -1,5 +1,6 @@
 import CoreML
 import CoreVideo
+import Foundation
 import Vision
 
 final class CoreMLPersonDetector {
@@ -11,14 +12,14 @@ final class CoreMLPersonDetector {
         let confidence: Double
     }
 
-    private let visionModel: VNCoreMLModel?
+    private let modelLock = NSLock()
+    private var visionModel: VNCoreMLModel?
+    private var didAttemptLoad = false
 
-    init() {
-        visionModel = Self.loadVisionModel()
-    }
+    init() {}
 
     var isAvailable: Bool {
-        visionModel != nil
+        ensureVisionModel() != nil
     }
 
     func detect(
@@ -26,10 +27,11 @@ final class CoreMLPersonDetector {
         minimumConfidence: Double,
         useHeadBiasedPoint: Bool
     ) throws -> [(Double, Double, Double)] {
-        guard let visionModel else { return [] }
+        guard let visionModel = ensureVisionModel() else { return [] }
 
         let request = VNCoreMLRequest(model: visionModel)
         request.imageCropAndScaleOption = .scaleFill
+        request.preferBackgroundProcessing = true
 
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
         try handler.perform([request])
@@ -58,6 +60,27 @@ final class CoreMLPersonDetector {
                 candidate.confidence
             )
         }
+    }
+
+    func unload() {
+        modelLock.lock()
+        visionModel = nil
+        didAttemptLoad = false
+        modelLock.unlock()
+    }
+
+    private func ensureVisionModel() -> VNCoreMLModel? {
+        modelLock.lock()
+        defer { modelLock.unlock() }
+
+        if let visionModel {
+            return visionModel
+        }
+        guard !didAttemptLoad else { return nil }
+
+        didAttemptLoad = true
+        visionModel = Self.loadVisionModel()
+        return visionModel
     }
 
     private func decodeYOLO(
