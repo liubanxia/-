@@ -33,14 +33,19 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
         qos: .utility,
         autoreleaseFrequency: .workItem
     )
+    private let heartbeatQueue = DispatchQueue(
+        label: "com.phoenix.liteview.broadcast.heartbeat",
+        qos: .utility,
+        autoreleaseFrequency: .workItem
+    )
     private let stateLock = NSLock()
 
+    private var heartbeatTimer: DispatchSourceTimer?
     private var generation: UInt64 = 0
     private var sessionID = ""
     private var phase: SharedBroadcastPhase = .finished
     private var isBroadcasting = false
     private var analysisInFlight = false
-    private var lastHeartbeatUptime: TimeInterval = 0
     private var lastVisionAnalysisUptime: TimeInterval = 0
     private var lastSoundAnalysisUptime: TimeInterval = 0
     private var frameRateWindowStartedAt: TimeInterval = 0
@@ -56,13 +61,14 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
         let now = ProcessInfo.processInfo.systemUptime
         let newSessionID = UUID().uuidString
 
+        stopHeartbeatTimer()
+
         stateLock.lock()
         generation &+= 1
         sessionID = newSessionID
         phase = .running
         isBroadcasting = true
         analysisInFlight = false
-        lastHeartbeatUptime = now
         lastVisionAnalysisUptime = now
         lastSoundAnalysisUptime = now
         frameRateWindowStartedAt = now
@@ -74,12 +80,14 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
         soundIndicatorCount = 0
         analysisLatencyMilliseconds = 0
         let metrics = currentMetricsLocked()
+        let activeGeneration = generation
         stateLock.unlock()
 
         sharedState.clear()
         publish(metrics)
         BroadcastSignalName.post(BroadcastSignalName.started)
         BroadcastSignalName.post(BroadcastSignalName.heartbeat)
+        startHeartbeatTimer(for: activeGeneration)
     }
 
     override func broadcastPaused() {
@@ -96,6 +104,8 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
     }
 
     override func broadcastFinished() {
+        stopHeartbeatTimer()
+
         stateLock.lock()
         guard isBroadcasting else {
             stateLock.unlock()
@@ -129,18 +139,7 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
         if isVideo {
             recordVideoFrameLocked(now: now)
         }
-
-        let shouldHeartbeat = now - lastHeartbeatUptime >= 0.75
-        if shouldHeartbeat {
-            lastHeartbeatUptime = now
-        }
-        let heartbeatMetrics = shouldHeartbeat ? currentMetricsLocked() : nil
         stateLock.unlock()
-
-        if let heartbeatMetrics {
-            publish(heartbeatMetrics)
-            BroadcastSignalName.post(BroadcastSignalName.heartbeat)
-        }
 
         guard isVideo,
               let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
@@ -168,12 +167,49 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
         }
     }
 
+    private func startHeartbeatTimer(for expectedGeneration: UInt64) {
+        let timer = DispatchSource.makeTimerSource(queue: heartbeatQueue)
+        timer.schedule(
+            deadline: .now() + .milliseconds(350),
+            repeating: .milliseconds(750),
+            leeway: .milliseconds(100)
+        )
+        timer.setEventHandler { [weak self] in
+            self?.emitHeartbeat(expectedGeneration: expectedGeneration)
+        }
+        heartbeatTimer = timer
+        timer.resume()
+    }
+
+    private func stopHeartbeatTimer() {
+        heartbeatTimer?.setEventHandler {}
+        heartbeatTimer?.cancel()
+        heartbeatTimer = nil
+    }
+
+    private func emitHeartbeat(expectedGeneration: UInt64) {
+        stateLock.lock()
+        guard isBroadcasting, generation == expectedGeneration else {
+            stateLock.unlock()
+            return
+        }
+        let currentPhase = phase
+        let metrics = currentMetricsLocked()
+        stateLock.unlock()
+
+        publish(metrics)
+        if currentPhase == .paused {
+            BroadcastSignalName.post(BroadcastSignalName.paused)
+        } else {
+            BroadcastSignalName.post(BroadcastSignalName.heartbeat)
+        }
+    }
+
     private func updatePhase(_ newPhase: SharedBroadcastPhase) -> Metrics? {
         stateLock.lock()
         defer { stateLock.unlock() }
         guard isBroadcasting else { return nil }
         phase = newPhase
-        lastHeartbeatUptime = ProcessInfo.processInfo.systemUptime
         return currentMetricsLocked()
     }
 
