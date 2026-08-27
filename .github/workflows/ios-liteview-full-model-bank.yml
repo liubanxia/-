@@ -1,0 +1,294 @@
+name: LiteView Full Offline Model Bank
+
+on:
+  push:
+    branches:
+      - feature/ios-realtime-vision-assist
+    paths:
+      - '.github/workflows/ios-liteview-full-model-bank.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Stage full offline Core ML model bank
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          MODEL_DIR="$ROOT/Resources/Models"
+          WORK="$RUNNER_TEMP/liteview-full-model-bank"
+          COMPILED_ROOT="$WORK/compiled"
+          mkdir -p "$MODEL_DIR" "$WORK" "$COMPILED_ROOT"
+          rm -rf "$MODEL_DIR"/*
+
+          download() {
+            local url="$1" out="$2"
+            curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 30 \
+              -o "$out" "$url"
+          }
+
+          compile_mlmodel() {
+            local name="$1" url="$2"
+            local src="$WORK/$name.mlmodel"
+            local out="$COMPILED_ROOT/$name"
+            rm -rf "$out"
+            mkdir -p "$out"
+            download "$url" "$src"
+            xcrun coremlc compile "$src" "$out"
+            local compiled
+            compiled="$(find "$out" -type d -name '*.mlmodelc' -print -quit)"
+            test -n "$compiled"
+            cp -R "$compiled" "$MODEL_DIR/$name.mlmodelc"
+          }
+
+          compile_mlpackage_zip() {
+            local name="$1" url="$2"
+            local zip="$WORK/$name.zip"
+            local unpack="$WORK/$name-unpack"
+            local out="$COMPILED_ROOT/$name"
+            rm -rf "$unpack" "$out"
+            mkdir -p "$unpack" "$out"
+            download "$url" "$zip"
+            unzip -q "$zip" -d "$unpack"
+            local package
+            package="$(find "$unpack" -type d -name '*.mlpackage' -print -quit)"
+            test -n "$package"
+            xcrun coremlc compile "$package" "$out"
+            local compiled
+            compiled="$(find "$out" -type d -name '*.mlmodelc' -print -quit)"
+            test -n "$compiled"
+            cp -R "$compiled" "$MODEL_DIR/$name.mlmodelc"
+          }
+
+          # Existing LiteView nano detector: first detector lane and smallest resident model.
+          YOLO_ZIP="$WORK/liteview-yolo11n-coreml.zip"
+          YOLO_UNPACK="$WORK/yolo11n-unpack"
+          YOLO_COMPILE="$COMPILED_ROOT/yolo11n"
+          download \
+            'https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip' \
+            "$YOLO_ZIP"
+          mkdir -p "$YOLO_UNPACK" "$YOLO_COMPILE"
+          unzip -q "$YOLO_ZIP" -d "$YOLO_UNPACK"
+          YOLO_PACKAGE="$(find "$YOLO_UNPACK" -type d -name 'yolo11n.mlpackage' -print -quit)"
+          test -n "$YOLO_PACKAGE"
+          xcrun coremlc compile "$YOLO_PACKAGE" "$YOLO_COMPILE"
+          YOLO_COMPILED="$(find "$YOLO_COMPILE" -type d -name '*.mlmodelc' -print -quit)"
+          test -n "$YOLO_COMPILED"
+          cp -R "$YOLO_COMPILED" "$MODEL_DIR/yolo11n.mlmodelc"
+
+          # Apple-hosted detector bank. These stay in the main app, never in ReplayKit Extension.
+          # Nano/Tiny lanes are preferred. Full YOLOv3 lanes are cold fallbacks only.
+          compile_mlmodel \
+            'YOLOv3TinyFP16' \
+            'https://ml-assets.apple.com/coreml/models/Image/ObjectDetection/YOLOv3Tiny/YOLOv3TinyFP16.mlmodel'
+          compile_mlmodel \
+            'YOLOv3TinyInt8LUT' \
+            'https://ml-assets.apple.com/coreml/models/Image/ObjectDetection/YOLOv3Tiny/YOLOv3TinyInt8LUT.mlmodel'
+          compile_mlmodel \
+            'YOLOv3Int8LUT' \
+            'https://ml-assets.apple.com/coreml/models/Image/ObjectDetection/YOLOv3/YOLOv3Int8LUT.mlmodel'
+          compile_mlmodel \
+            'YOLOv3FP16' \
+            'https://ml-assets.apple.com/coreml/models/Image/ObjectDetection/YOLOv3/YOLOv3FP16.mlmodel'
+
+          # Cold utility bank. Present offline, but never resident unless a future runtime lane asks for it.
+          compile_mlmodel \
+            'MobileNetV2FP16' \
+            'https://ml-assets.apple.com/coreml/models/Image/ImageClassification/MobileNetV2/MobileNetV2FP16.mlmodel'
+          compile_mlmodel \
+            'Resnet50FP16' \
+            'https://ml-assets.apple.com/coreml/models/Image/ImageClassification/Resnet50/Resnet50FP16.mlmodel'
+          compile_mlpackage_zip \
+            'FastViTT8F16' \
+            'https://ml-assets.apple.com/coreml/models/Image/ImageClassification/FastViT/FastViTT8F16.mlpackage.zip'
+          compile_mlpackage_zip \
+            'DepthAnythingV2SmallF16P6' \
+            'https://ml-assets.apple.com/coreml/models/Image/DepthEstimation/DepthAnything/DepthAnythingV2SmallF16P6.mlpackage.zip'
+
+          echo '=== Compiled model bank ==='
+          du -sh "$MODEL_DIR"/*.mlmodelc | sort -h
+          MODEL_BANK_BYTES="$(du -sk "$MODEL_DIR" | awk '{print $1 * 1024}')"
+          echo "MODEL_BANK_BYTES=$MODEL_BANK_BYTES"
+          test "$MODEL_BANK_BYTES" -ge 220000000
+          test "$MODEL_BANK_BYTES" -le 800000000
+
+      - name: Generate project
+        working-directory: ios/PhoenixRealtimeVisionAssist
+        run: xcodegen generate
+
+      - name: Build unsigned iPhone device target
+        working-directory: ios/PhoenixRealtimeVisionAssist
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/LiteViewFullBankDerivedData"
+          xcodebuild \
+            -project PhoenixRealtimeVisionAssist.xcodeproj \
+            -scheme PhoenixRealtimeVisionAssist \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/LiteViewFullBankDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Normalize and verify lightweight runtime package
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRODUCTS="$RUNNER_TEMP/LiteViewFullBankDerivedData/Build/Products/Release-iphoneos"
+          APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
+          EXT="$APP/PlugIns/PhoenixBroadcastExtension.appex"
+          APP_PLIST="$APP/Info.plist"
+          EXT_PLIST="$EXT/Info.plist"
+
+          test -d "$APP"
+          test -d "$EXT"
+
+          # Never let the large bank leak into the constrained Broadcast Upload Extension.
+          find "$EXT" -type d -name '*.mlmodelc' -prune -exec rm -rf {} + || true
+
+          set_plist_string() {
+            local plist="$1" key="$2" value="$3"
+            /usr/libexec/PlistBuddy -c "Set :$key $value" "$plist" >/dev/null 2>&1 || \
+              /usr/libexec/PlistBuddy -c "Add :$key string $value" "$plist"
+          }
+
+          set_plist_string "$APP_PLIST" CFBundleDisplayName LiteView
+          set_plist_string "$APP_PLIST" CFBundleIdentifier com.phoenix.realtimevisionassist
+          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.5.0
+          set_plist_string "$APP_PLIST" CFBundleVersion 8
+
+          set_plist_string "$EXT_PLIST" CFBundleDisplayName 'LiteView Broadcast'
+          set_plist_string "$EXT_PLIST" CFBundleIdentifier com.phoenix.realtimevisionassist.broadcast
+          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.5.0
+          set_plist_string "$EXT_PLIST" CFBundleVersion 8
+
+          /usr/libexec/PlistBuddy -c 'Delete :NSExtension' "$EXT_PLIST" >/dev/null 2>&1 || true
+          /usr/libexec/PlistBuddy -c 'Add :NSExtension dict' "$EXT_PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :NSExtension:NSExtensionPointIdentifier string com.apple.broadcast-services-upload' "$EXT_PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :NSExtension:NSExtensionPrincipalClass string PhoenixBroadcastExtension.BroadcastSampleHandler' "$EXT_PLIST"
+
+          EXT_SIZE_BYTES="$(du -sk "$EXT" | awk '{print $1 * 1024}')"
+          MODEL_COUNT="$(find "$APP" -type d -name '*.mlmodelc' -prune | wc -l | tr -d ' ')"
+          MODEL_BYTES="$(find "$APP" -type d -name '*.mlmodelc' -prune -exec du -sk {} + | awk '{sum += $1} END {print sum * 1024}')"
+
+          echo "EXT_SIZE_BYTES=$EXT_SIZE_BYTES"
+          echo "MODEL_COUNT=$MODEL_COUNT"
+          echo "MODEL_BYTES=$MODEL_BYTES"
+          test "$EXT_SIZE_BYTES" -lt 12582912
+          test -z "$(find "$EXT" -type d -name '*.mlmodelc' -print -quit)"
+          test "$MODEL_COUNT" -ge 9
+          test "$MODEL_BYTES" -ge 220000000
+
+          cat > "$APP/LiteViewModelBank.txt" <<EOF
+          LiteView 0.5.0 offline model bank
+          Runtime rule: package may be large; only the selected lane may become resident.
+          ReplayKit Extension: no custom Core ML models.
+          Primary: yolo11n
+          Detector backups: YOLOv3TinyFP16, YOLOv3TinyInt8LUT, YOLOv3Int8LUT, YOLOv3FP16
+          Cold utility bank: MobileNetV2FP16, Resnet50FP16, FastViTT8F16, DepthAnythingV2SmallF16P6
+          Apple Vision lanes remain available without loading any bundled model.
+          EOF
+
+          du -sh "$APP" "$EXT"
+
+      - name: Package and verify full-bank IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRODUCTS="$RUNNER_TEMP/LiteViewFullBankDerivedData/Build/Products/Release-iphoneos"
+          APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
+          ROOT="$RUNNER_TEMP/LiteViewFullBankPackage"
+          PAYLOAD="$ROOT/Payload"
+          IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
+          VERIFY="$RUNNER_TEMP/LiteViewFullBankVerify"
+
+          rm -rf "$ROOT" "$IPA" "$MANIFEST" "$VERIFY"
+          mkdir -p "$PAYLOAD" "$VERIFY"
+          cp -R "$APP" "$PAYLOAD/"
+          (cd "$ROOT" && /usr/bin/zip -qry "$IPA" Payload)
+          test -s "$IPA"
+
+          IPA_SIZE_BYTES="$(stat -f%z "$IPA")"
+          echo "IPA_SIZE_BYTES=$IPA_SIZE_BYTES"
+          test "$IPA_SIZE_BYTES" -ge 180000000
+          test "$IPA_SIZE_BYTES" -le 1073741824
+
+          /usr/bin/unzip -q "$IPA" -d "$VERIFY"
+          VAPP="$VERIFY/Payload/PhoenixRealtimeVisionAssist.app"
+          VEXT="$VAPP/PlugIns/PhoenixBroadcastExtension.appex"
+          MODEL_COUNT="$(find "$VAPP" -type d -name '*.mlmodelc' -prune | wc -l | tr -d ' ')"
+          test "$MODEL_COUNT" -ge 9
+          test -z "$(find "$VEXT" -type d -name '*.mlmodelc' -print -quit)"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VAPP/Info.plist")" = '0.5.0'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VEXT/Info.plist")" = '0.5.0'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$VEXT/Info.plist")" = 'com.apple.broadcast-services-upload'
+
+          cat > "$MANIFEST" <<EOF
+          LiteView full offline model-bank unsigned sideload package
+          commit=${GITHUB_SHA}
+          version=0.5.0
+          build=8
+          package_size_budget_bytes=1073741824
+          package_minimum_bytes=180000000
+          broadcast_extension_size_budget_bytes=12582912
+          broadcast_extension_custom_models=none
+          custom_model_residency=one detector model at a time; all other bundled models cold
+          detector_matrix=yolo11n + YOLOv3TinyFP16 + YOLOv3TinyInt8LUT + YOLOv3Int8LUT + YOLOv3FP16 + Apple Vision fallbacks
+          utility_cold_bank=MobileNetV2FP16 + Resnet50FP16 + FastViTT8F16 + DepthAnythingV2SmallF16P6
+          lifecycle=App Group snapshot + compact libnotify + live Darwin events + notify_check latch + UIScreen capture fallback
+          persistence=none for frames, screenshots, audio, or analysis history
+          signing=unsigned; re-sign main app and embedded Broadcast Extension without removing PlugIns
+          EOF
+
+          ls -lh "$IPA" "$MANIFEST"
+          shasum -a 256 "$IPA"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-fullbank-unsigned-sideload
+          path: |
+            ${{ runner.temp }}/LiteView-unsigned-sideload.ipa
+            ${{ runner.temp }}/LiteView-sideload-manifest.txt
+          if-no-files-found: error
+
+      - name: Publish full-bank sideload release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='liteview-sideload-latest'
+          IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
+          NOTES='LiteView 0.5.0 Full Model Bank: a substantial offline detector and utility model bank lives in the main app, while the ReplayKit Extension remains model-free and lightweight. Only one custom detector is allowed resident at a time; Apple Vision remains the zero-download fallback. The package is required to exceed 180 MB and remain below the 1 GiB budget.'
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
+            gh release edit "$TAG" --title 'LiteView 0.5.0 Full Model Bank' --notes "$NOTES"
+          else
+            gh release create "$TAG" "$IPA" "$MANIFEST" \
+              --title 'LiteView 0.5.0 Full Model Bank' \
+              --notes "$NOTES"
+          fi
