@@ -68,8 +68,18 @@ jobs:
           APP_ENTITLEMENTS="$ROOT/Config/App.entitlements"
           EXT_ENTITLEMENTS="$ROOT/Config/Broadcast.entitlements"
 
-          test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' "$APP_ENTITLEMENTS")" = 'group.com.phoenix.realtimevisionassist'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' "$EXT_ENTITLEMENTS")" = 'group.com.phoenix.realtimevisionassist'
+          python3 - "$APP_ENTITLEMENTS" "$EXT_ENTITLEMENTS" <<'PY'
+          import plistlib
+          import sys
+
+          expected = ["group.com.phoenix.realtimevisionassist"]
+          for path in sys.argv[1:]:
+              with open(path, "rb") as stream:
+                  entitlements = plistlib.load(stream)
+              actual = entitlements.get("com.apple.security.application-groups")
+              if actual != expected:
+                  raise SystemExit(f"{path}: unexpected App Group value {actual!r}")
+          PY
           grep -Fq 'Config/App.entitlements' "$PROJECT"
           grep -Fq 'Config/Broadcast.entitlements' "$PROJECT"
           grep -Fq 'SharedRealtimeStateStore.swift' "$PROJECT"
