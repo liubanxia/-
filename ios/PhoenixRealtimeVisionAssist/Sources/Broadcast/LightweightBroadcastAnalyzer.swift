@@ -124,8 +124,8 @@ final class LightweightBroadcastAnalyzer {
 
         let successful = results.filter(\.succeeded)
         let fusedTargets = fuseTargets(successful.flatMap(\.observations))
-        let primary = selectPrimaryTarget(from: fusedTargets)
-        let stabilized = updateStability(with: primary)
+        let selectedTarget = selectPrimaryTarget(from: fusedTargets)
+        let stabilized = updateStability(with: selectedTarget)
 
         return LightweightVisionAnalysis(
             targetCount: fusedTargets.count,
