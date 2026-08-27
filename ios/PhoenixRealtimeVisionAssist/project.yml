@@ -39,6 +39,9 @@ targets:
           fi
     info:
       path: Sources/App/Info.plist
+      properties:
+        CFBundleDisplayName: LiteView
+        UILaunchScreen: {}
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.phoenix.realtimevisionassist
@@ -63,7 +66,7 @@ targets:
         CFBundleDisplayName: LiteView Broadcast
         NSExtension:
           NSExtensionPointIdentifier: com.apple.broadcast-services-upload
-          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).BroadcastSampleHandler"
+          NSExtensionPrincipalClass: PhoenixBroadcastExtension.BroadcastSampleHandler
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.phoenix.realtimevisionassist.broadcast

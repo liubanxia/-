@@ -19,7 +19,7 @@
         <key>NSExtensionPointIdentifier</key>
         <string>com.apple.broadcast-services-upload</string>
         <key>NSExtensionPrincipalClass</key>
-        <string>$(PRODUCT_MODULE_NAME).BroadcastSampleHandler</string>
+        <string>PhoenixBroadcastExtension.BroadcastSampleHandler</string>
     </dict>
 </dict>
 </plist>

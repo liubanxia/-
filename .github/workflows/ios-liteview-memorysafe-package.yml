@@ -119,7 +119,6 @@ jobs:
         run: |
           set -euo pipefail
           ROOT='ios/PhoenixRealtimeVisionAssist'
-          SOURCE_PLIST="$ROOT/Sources/Broadcast/Info.plist"
           PRODUCTS="$RUNNER_TEMP/LiteViewMemorySafeDerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
           EXT="$APP/PlugIns/PhoenixBroadcastExtension.appex"
@@ -133,8 +132,8 @@ jobs:
           EXT_SIZE_BYTES="$(du -sk "$EXT" | awk '{print $1 * 1024}')"
           test "$EXT_SIZE_BYTES" -lt 12582912
 
-          EXT_POINT="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$SOURCE_PLIST")"
-          EXT_CLASS="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$SOURCE_PLIST")"
+          EXT_POINT='com.apple.broadcast-services-upload'
+          EXT_CLASS='PhoenixBroadcastExtension.BroadcastSampleHandler'
           /usr/libexec/PlistBuddy -c 'Delete :NSExtension' "$BUILT_PLIST" >/dev/null 2>&1 || true
           /usr/libexec/PlistBuddy -c 'Add :NSExtension dict' "$BUILT_PLIST"
           /usr/libexec/PlistBuddy -c "Add :NSExtension:NSExtensionPointIdentifier string $EXT_POINT" "$BUILT_PLIST"
@@ -144,8 +143,10 @@ jobs:
           EXT_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$EXT/Info.plist")"
           test "$APP_ID" = 'com.phoenix.realtimevisionassist'
           test "$EXT_ID" = 'com.phoenix.realtimevisionassist.broadcast'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP/Info.plist")" = 'LiteView'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$EXT/Info.plist")" = 'LiteView Broadcast'
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$BUILT_PLIST")" = 'com.apple.broadcast-services-upload'
-          /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$BUILT_PLIST" | grep -Fq 'BroadcastSampleHandler'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$BUILT_PLIST")" = 'PhoenixBroadcastExtension.BroadcastSampleHandler'
 
           echo '=== Bundle sizes ==='
           du -sh "$APP" "$EXT" "$APP/yolo11n.mlmodelc"
@@ -177,8 +178,10 @@ jobs:
           test -f "$VEXT/Info.plist"
           test -d "$VAPP/yolo11n.mlmodelc"
           test ! -d "$VEXT/yolo11n.mlmodelc"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$VAPP/Info.plist")" = 'LiteView'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$VEXT/Info.plist")" = 'LiteView Broadcast'
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$VEXT/Info.plist")" = 'com.apple.broadcast-services-upload'
-          /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$VEXT/Info.plist" | grep -Fq 'BroadcastSampleHandler'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$VEXT/Info.plist")" = 'PhoenixBroadcastExtension.BroadcastSampleHandler'
 
           cat > "$MANIFEST" <<EOF
           LiteView memory-safe unsigned sideload package
