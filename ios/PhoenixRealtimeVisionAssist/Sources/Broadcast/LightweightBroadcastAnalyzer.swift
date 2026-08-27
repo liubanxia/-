@@ -208,7 +208,7 @@ final class LightweightBroadcastAnalyzer {
         pixelBuffer: CVPixelBuffer,
         orientation: CGImagePropertyOrientation
     ) -> TargetObservation? {
-        autoreleasepool {
+        return autoreleasepool { () -> TargetObservation? in
             let request = VNTrackObjectRequest(detectedObjectObservation: observation)
             request.trackingLevel = .fast
             do {
@@ -238,7 +238,7 @@ final class LightweightBroadcastAnalyzer {
         pixelBuffer: CVPixelBuffer,
         orientation: CGImagePropertyOrientation
     ) -> (count: Int, primary: TargetObservation?)? {
-        autoreleasepool {
+        return autoreleasepool { () -> (count: Int, primary: TargetObservation?)? in
             let request = VNDetectHumanRectanglesRequest()
             request.upperBodyOnly = false
             request.preferBackgroundProcessing = true
