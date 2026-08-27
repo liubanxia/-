@@ -45,6 +45,9 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
     entitlements:
       path: Config/App.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.phoenix.realtimevisionassist
     dependencies:
       - target: PhoenixBroadcastExtension
         embed: true
@@ -57,7 +60,7 @@ targets:
     info:
       path: Sources/Broadcast/Info.plist
       properties:
-        CFBundleDisplayName: Phoenix Broadcast
+        CFBundleDisplayName: LiteView Broadcast
         NSExtension:
           NSExtensionPointIdentifier: com.apple.broadcast-services-upload
           NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).BroadcastSampleHandler"
@@ -69,6 +72,9 @@ targets:
         APPLICATION_EXTENSION_API_ONLY: YES
     entitlements:
       path: Config/Broadcast.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.phoenix.realtimevisionassist
   PhoenixRealtimeVisionAssistTests:
     type: bundle.unit-test
     platform: iOS
