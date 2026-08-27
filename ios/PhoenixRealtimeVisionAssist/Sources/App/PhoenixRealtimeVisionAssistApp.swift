@@ -82,10 +82,13 @@ final class RuntimeStatusModel: ObservableObject {
     @Published private(set) var snapshot: SharedRealtimeSnapshot?
     @Published private(set) var pickerGeneration = 0
     @Published private(set) var isUsingCaptureFallback = false
+    @Published private(set) var extensionHeartbeatConfirmed = false
 
     let appGroupAvailable: Bool
+    let eventLatchAvailable: Bool
 
     private let store: SharedRealtimeStateStore
+    private let signalLatch: DarwinBroadcastSignalLatch
     private var lifecycle = BroadcastLifecycleState()
     private var timer: Timer?
     private var pickerRebuildTask: Task<Void, Never>?
@@ -102,8 +105,11 @@ final class RuntimeStatusModel: ObservableObject {
     }()
 
     init(store: SharedRealtimeStateStore = SharedRealtimeStateStore()) {
+        let signalLatch = DarwinBroadcastSignalLatch()
         self.store = store
+        self.signalLatch = signalLatch
         appGroupAvailable = store.isAvailable
+        eventLatchAvailable = signalLatch.isAvailable
     }
 
     var isBroadcastActive: Bool {
@@ -144,6 +150,8 @@ final class RuntimeStatusModel: ObservableObject {
         let now = ProcessInfo.processInfo.systemUptime
         guard !lifecycle.isBroadcastActive else { return }
         _ = lifecycle.apply(.stale, now: now)
+        extensionHeartbeatConfirmed = false
+        isUsingCaptureFallback = false
         publishPhase()
         schedulePickerRebuild(after: 0.05)
     }
@@ -153,12 +161,23 @@ final class RuntimeStatusModel: ObservableObject {
 
         switch event {
         case .snapshot:
+            extensionHeartbeatConfirmed = true
+            isUsingCaptureFallback = false
             refreshSnapshot(now: now)
 
         case let .lifecycle(lifecycleEvent):
             if lifecycleEvent == .started || lifecycleEvent == .heartbeat || lifecycleEvent == .resumed {
                 pickerRebuildTask?.cancel()
                 pickerRebuildTask = nil
+                extensionHeartbeatConfirmed = true
+                isUsingCaptureFallback = false
+            }
+            if lifecycleEvent == .paused {
+                extensionHeartbeatConfirmed = true
+                isUsingCaptureFallback = false
+            }
+            if lifecycleEvent == .finished {
+                extensionHeartbeatConfirmed = false
                 isUsingCaptureFallback = false
             }
 
@@ -173,23 +192,77 @@ final class RuntimeStatusModel: ObservableObject {
 
     private func refresh() {
         let now = ProcessInfo.processInfo.systemUptime
+        consumeLatchedSignals(now: now)
         refreshSnapshot(now: now)
 
         let hasFreshActiveSnapshot = snapshot.map {
             $0.phase != .finished && $0.isFresh(at: now)
         } ?? false
+
         if lifecycle.phase != .recovering,
            !hasFreshActiveSnapshot,
            UIScreen.main.isCaptured {
             _ = lifecycle.apply(.heartbeat, now: now)
-            isUsingCaptureFallback = true
+            isUsingCaptureFallback = !extensionHeartbeatConfirmed
             publishPhase()
         }
 
+        if !UIScreen.main.isCaptured,
+           lifecycle.phase == .running,
+           isUsingCaptureFallback {
+            extensionHeartbeatConfirmed = false
+        }
+
         if lifecycle.evaluateStaleness(now: now) {
+            extensionHeartbeatConfirmed = false
             isUsingCaptureFallback = false
             publishPhase()
             schedulePickerRebuild(after: 0.45)
+        }
+    }
+
+    private func consumeLatchedSignals(now: TimeInterval) {
+        guard eventLatchAvailable else { return }
+        let posted = signalLatch.consume()
+        guard !posted.isEmpty else { return }
+
+        if posted.contains(BroadcastSignalName.snapshot) {
+            refreshSnapshot(now: now)
+        }
+
+        // If the system still reports capture, any latched start/heartbeat/resume edge wins over
+        // an older finish edge from the previous session.
+        let captured = UIScreen.main.isCaptured
+        let hasActiveEdge = posted.contains(BroadcastSignalName.started)
+            || posted.contains(BroadcastSignalName.heartbeat)
+            || posted.contains(BroadcastSignalName.resumed)
+
+        if captured, hasActiveEdge {
+            pickerRebuildTask?.cancel()
+            pickerRebuildTask = nil
+            extensionHeartbeatConfirmed = true
+            isUsingCaptureFallback = false
+            _ = lifecycle.apply(.heartbeat, now: now)
+            publishPhase()
+            return
+        }
+
+        if captured, posted.contains(BroadcastSignalName.paused) {
+            extensionHeartbeatConfirmed = true
+            isUsingCaptureFallback = false
+            _ = lifecycle.apply(.paused, now: now)
+            publishPhase()
+            return
+        }
+
+        if !captured, posted.contains(BroadcastSignalName.finished) {
+            extensionHeartbeatConfirmed = false
+            isUsingCaptureFallback = false
+            let needsPickerRebuild = lifecycle.apply(.finished, now: now)
+            publishPhase()
+            if needsPickerRebuild {
+                schedulePickerRebuild(after: 0.65)
+            }
         }
     }
 
@@ -200,6 +273,7 @@ final class RuntimeStatusModel: ObservableObject {
         guard value.isFresh(at: now) else { return }
         pickerRebuildTask?.cancel()
         pickerRebuildTask = nil
+        extensionHeartbeatConfirmed = value.phase != .finished
         isUsingCaptureFallback = false
 
         let needsPickerRebuild = lifecycle.applySnapshot(
@@ -266,7 +340,8 @@ struct ContentView: View {
 
                 BroadcastStatusCard(
                     phase: status.phase,
-                    isUsingCaptureFallback: status.isUsingCaptureFallback
+                    isUsingCaptureFallback: status.isUsingCaptureFallback,
+                    extensionHeartbeatConfirmed: status.extensionHeartbeatConfirmed
                 )
 
                 DirectBroadcastButton(
@@ -290,11 +365,25 @@ struct ContentView: View {
                 )
 
                 VStack(spacing: 8) {
-                    Label(
-                        status.appGroupAvailable ? "App Group 共享状态正常" : "共享状态不可用，已自动使用心跳通道",
-                        systemImage: status.appGroupAvailable ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
-                    )
-                    .foregroundStyle(status.appGroupAvailable ? .green : .orange)
+                    if status.extensionHeartbeatConfirmed {
+                        Label("扩展心跳已确认", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    } else if status.isUsingCaptureFallback {
+                        Label("系统广播已确认；扩展状态回传暂不可读", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    } else {
+                        Label(
+                            status.appGroupAvailable ? "App Group 共享状态正常" : "等待广播启动",
+                            systemImage: status.appGroupAvailable ? "checkmark.circle.fill" : "circle.dashed"
+                        )
+                        .foregroundStyle(status.appGroupAvailable ? .green : .secondary)
+                    }
+
+                    if status.eventLatchAvailable {
+                        Text("已启用挂起期间心跳锁存；从控制中心启动后返回 App 也能补收广播事件。")
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(.secondary)
+                    }
 
                     Text("停止广播后等待按钮恢复为“开始屏幕广播”，即可再次启动；无需退出或重装 App。")
                         .multilineTextAlignment(.center)
@@ -323,6 +412,7 @@ struct ContentView: View {
 private struct BroadcastStatusCard: View {
     let phase: BroadcastLifecyclePhase
     let isUsingCaptureFallback: Bool
+    let extensionHeartbeatConfirmed: Bool
 
     private var title: String {
         switch phase {
@@ -334,12 +424,15 @@ private struct BroadcastStatusCard: View {
     }
 
     private var detail: String {
+        if phase == .running, extensionHeartbeatConfirmed {
+            return "扩展心跳已确认；广播运行正常"
+        }
         if isUsingCaptureFallback {
-            return "已检测到系统屏幕采集，等待扩展心跳确认"
+            return "系统广播正在运行；扩展状态通道暂未回传，不再阻塞运行状态"
         }
         switch phase {
         case .ready: return "点下面按钮，再在系统窗口确认开始广播"
-        case .running: return "心跳正常；点按钮可打开停止控制"
+        case .running: return "系统广播已启动"
         case .paused: return "可从系统广播控制中继续或停止"
         case .recovering: return "清理上一轮 ReplayKit 控件，请稍候"
         }
@@ -396,7 +489,7 @@ private struct RealtimeMetricsCard: View {
             }
 
             if isBroadcastActive, snapshot == nil {
-                Text("广播已启动，正在等待第一份轻量分析结果。")
+                Text("系统广播已运行；若第三方重签名阻断跨进程指标，界面会保留“—”，但不再把它误判成广播未启动。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

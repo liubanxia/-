@@ -67,6 +67,8 @@ jobs:
           PROJECT="$ROOT/PhoenixRealtimeVisionAssist.xcodeproj/project.pbxproj"
           CONFIG="$ROOT/Sources/Core/RuntimeConfiguration.swift"
           SHARED="$ROOT/Sources/Core/SharedRealtimeStateStore.swift"
+          LATCH="$ROOT/Sources/Core/DarwinBroadcastSignalLatch.swift"
+          APP="$ROOT/Sources/App/PhoenixRealtimeVisionAssistApp.swift"
           HANDLER="$ROOT/Sources/Broadcast/BroadcastSampleHandler.swift"
           ANALYZER="$ROOT/Sources/Broadcast/LightweightBroadcastAnalyzer.swift"
           DETECTOR="$ROOT/Sources/Vision/RealtimePersonDetector.swift"
@@ -75,9 +77,13 @@ jobs:
           grep -Fq 'Config/App.entitlements' "$PROJECT"
           grep -Fq 'Config/Broadcast.entitlements' "$PROJECT"
           grep -Fq 'SharedRealtimeStateStore.swift' "$PROJECT"
+          grep -Fq 'DarwinBroadcastSignalLatch.swift' "$PROJECT"
           grep -Fq 'LightweightBroadcastAnalyzer.swift' "$PROJECT"
           grep -Fq 'EntitlementFreeBroadcastStateChannel' "$SHARED"
           grep -Fq 'liteview_notify_set_state' "$SHARED"
+          grep -Fq 'notify_check' "$LATCH"
+          grep -Fq 'DarwinBroadcastSignalLatch' "$APP"
+          grep -Fq 'extensionHeartbeatConfirmed' "$APP"
           grep -Fq 'enableModelMatrix: Bool = true' "$CONFIG"
           grep -Fq 'useCustomCoreMLModel: Bool = true' "$CONFIG"
           grep -Fq 'enableAudioLevelAnalysis: Bool = false' "$CONFIG"
@@ -150,13 +156,13 @@ jobs:
 
           set_plist_string "$APP_PLIST" CFBundleDisplayName LiteView
           set_plist_string "$APP_PLIST" CFBundleIdentifier com.phoenix.realtimevisionassist
-          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.4.0
-          set_plist_string "$APP_PLIST" CFBundleVersion 6
+          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.4.1
+          set_plist_string "$APP_PLIST" CFBundleVersion 7
 
           set_plist_string "$EXT_PLIST" CFBundleDisplayName 'LiteView Broadcast'
           set_plist_string "$EXT_PLIST" CFBundleIdentifier com.phoenix.realtimevisionassist.broadcast
-          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.4.0
-          set_plist_string "$EXT_PLIST" CFBundleVersion 6
+          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.4.1
+          set_plist_string "$EXT_PLIST" CFBundleVersion 7
 
           /usr/libexec/PlistBuddy -c 'Delete :NSExtension' "$EXT_PLIST" >/dev/null 2>&1 || true
           /usr/libexec/PlistBuddy -c 'Add :NSExtension dict' "$EXT_PLIST"
@@ -184,8 +190,8 @@ jobs:
           test "$EXT_SIZE_BYTES" -lt 12582912
           test "$APP_ID" = 'com.phoenix.realtimevisionassist'
           test "$EXT_ID" = 'com.phoenix.realtimevisionassist.broadcast'
-          test "$APP_VERSION" = '0.4.0'
-          test "$EXT_VERSION" = '0.4.0'
+          test "$APP_VERSION" = '0.4.1'
+          test "$EXT_VERSION" = '0.4.1'
           test "$EXT_POINT" = 'com.apple.broadcast-services-upload'
           test "$EXT_CLASS" = 'PhoenixBroadcastExtension.BroadcastSampleHandler'
 
@@ -225,7 +231,7 @@ jobs:
           cat > "$MANIFEST" <<EOF
           LiteView memory-safe unsigned sideload package
           commit=${GITHUB_SHA}
-          version=0.4.0
+          version=0.4.1
           app_bundle_id=com.phoenix.realtimevisionassist
           extension_bundle_id=com.phoenix.realtimevisionassist.broadcast
           extension_point=com.apple.broadcast-services-upload
@@ -238,7 +244,8 @@ jobs:
           main_app_coreml_primary=yolo11n.mlmodelc
           main_app_coreml_pool=drop-in compatible compiled models; one custom model resident at a time; automatic failover
           runtime_policy=secondary lanes only on empty/failure or periodic verification; low-power/thermal states reduce matrix work
-          lifecycle=App Group snapshot plus compact libnotify fallback plus Darwin lifecycle signals
+          lifecycle=App Group snapshot + compact libnotify state + live Darwin events + pollable notify_check latch + UIScreen capture fallback
+          heartbeat_recovery=latched lifecycle events survive main-app suspension; capture fallback no longer reports broadcast as waiting
           default_runtime=visible-content-only; optional audio/screen-cue analysis off by default; hidden-position extrapolation off
           persistence=none for frames, screenshots, audio, or analysis history
           signing=unsigned; re-sign main app and embedded Broadcast Extension without removing PlugIns
@@ -265,13 +272,13 @@ jobs:
           TAG='liteview-sideload-latest'
           IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
           MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
-          NOTES='LiteView 0.4.0 adds an automatic lightweight model matrix. ReplayKit rotates among multiple Apple Vision lanes without bundling custom models in the extension. The main app uses a lazy Core ML model pool plus Apple Vision fallbacks, so an empty or unsupported model cannot become the only detection path. Secondary lanes run only when needed or periodically, and thermals/low-power mode reduce work automatically.'
+          NOTES='LiteView 0.4.1 keeps the lightweight AI matrix and fixes the persistent waiting-for-heartbeat state. The main app now arms pollable Darwin notify_check latches before broadcast, so lifecycle posts made while the app is suspended can be consumed after returning. UIScreen capture remains a system fallback and no longer blocks the running state when third-party re-signing prevents richer cross-process metrics.'
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
-            gh release edit "$TAG" --title 'LiteView 0.4.0 matrix-runtime sideload package' --notes "$NOTES"
+            gh release edit "$TAG" --title 'LiteView 0.4.1 heartbeat-recovery sideload package' --notes "$NOTES"
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" \
-              --title 'LiteView 0.4.0 matrix-runtime sideload package' \
+              --title 'LiteView 0.4.1 heartbeat-recovery sideload package' \
               --notes "$NOTES"
           fi
