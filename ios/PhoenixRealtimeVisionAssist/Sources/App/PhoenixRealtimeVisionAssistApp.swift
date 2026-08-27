@@ -455,7 +455,7 @@ struct DirectBroadcastButton: View {
     }
 }
 
-private final class BroadcastPickerHostView: UIView {
+final class BroadcastPickerHostView: UIView {
     private let picker = RPSystemBroadcastPickerView(frame: .zero)
 
     override init(frame: CGRect) {
