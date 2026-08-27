@@ -53,25 +53,7 @@ targets:
     platform: iOS
     sources:
       - path: Sources/Broadcast
-      - path: Sources/Core
-      - path: Sources/Vision
-      - path: Sources/Audio
-      - path: Sources/Map
-    resources:
-      - path: Resources/Models/yolo11n.mlmodelc
-        optional: true
-        type: folder
-    postBuildScripts:
-      - name: Copy LiteView Core ML model
-        script: |
-          set -e
-          SRC="${SRCROOT}/Resources/Models/yolo11n.mlmodelc"
-          DST="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/yolo11n.mlmodelc"
-          if [ -d "$SRC" ]; then
-            rm -rf "$DST"
-            mkdir -p "$(dirname "$DST")"
-            cp -R "$SRC" "$DST"
-          fi
+      - path: Sources/Core/SharedRealtimeStateStore.swift
     info:
       path: Sources/Broadcast/Info.plist
       properties:
