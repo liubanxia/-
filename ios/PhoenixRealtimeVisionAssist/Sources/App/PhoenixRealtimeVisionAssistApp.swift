@@ -1,3 +1,4 @@
+import CoreFoundation
 import ReplayKit
 import SwiftUI
 import UIKit
@@ -11,13 +12,87 @@ struct PhoenixRealtimeVisionAssistApp: App {
     }
 }
 
+private enum BroadcastSignalName {
+    static let started = "com.phoenix.realtimevisionassist.broadcast.started" as CFString
+    static let heartbeat = "com.phoenix.realtimevisionassist.broadcast.heartbeat" as CFString
+    static let finished = "com.phoenix.realtimevisionassist.broadcast.finished" as CFString
+}
+
+private final class DarwinBroadcastMonitor {
+    enum Event {
+        case started
+        case heartbeat
+        case finished
+    }
+
+    var onEvent: ((Event) -> Void)?
+    private let center = CFNotificationCenterGetDarwinNotifyCenter()
+
+    init() {
+        let observer = Unmanaged.passUnretained(self).toOpaque()
+        for name in [BroadcastSignalName.started, BroadcastSignalName.heartbeat, BroadcastSignalName.finished] {
+            CFNotificationCenterAddObserver(
+                center,
+                observer,
+                { _, observer, notificationName, _, _ in
+                    guard let observer, let notificationName else { return }
+                    let monitor = Unmanaged<DarwinBroadcastMonitor>
+                        .fromOpaque(observer)
+                        .takeUnretainedValue()
+                    monitor.receive(notificationName.rawValue as String)
+                },
+                name,
+                nil,
+                .deliverImmediately
+            )
+        }
+    }
+
+    deinit {
+        CFNotificationCenterRemoveEveryObserver(
+            center,
+            Unmanaged.passUnretained(self).toOpaque()
+        )
+    }
+
+    private func receive(_ name: String) {
+        let event: Event?
+        switch name {
+        case BroadcastSignalName.started as String:
+            event = .started
+        case BroadcastSignalName.heartbeat as String:
+            event = .heartbeat
+        case BroadcastSignalName.finished as String:
+            event = .finished
+        default:
+            event = nil
+        }
+
+        guard let event else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.onEvent?(event)
+        }
+    }
+}
+
 @MainActor
 final class RuntimeStatusModel: ObservableObject {
-    @Published private(set) var isScreenCaptured = false
+    @Published private(set) var isBroadcastActive = false
 
+    private var lastBroadcastSignalUptime: TimeInterval?
     private var timer: Timer?
+    private lazy var monitor: DarwinBroadcastMonitor = {
+        let monitor = DarwinBroadcastMonitor()
+        monitor.onEvent = { [weak self] event in
+            Task { @MainActor in
+                self?.handle(event)
+            }
+        }
+        return monitor
+    }()
 
     func start() {
+        _ = monitor
         guard timer == nil else { return }
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -32,8 +107,22 @@ final class RuntimeStatusModel: ObservableObject {
         timer = nil
     }
 
+    private func handle(_ event: DarwinBroadcastMonitor.Event) {
+        switch event {
+        case .started, .heartbeat:
+            lastBroadcastSignalUptime = ProcessInfo.processInfo.systemUptime
+            isBroadcastActive = true
+        case .finished:
+            lastBroadcastSignalUptime = nil
+            isBroadcastActive = false
+        }
+    }
+
     private func refresh() {
-        isScreenCaptured = UIScreen.main.isCaptured
+        guard isBroadcastActive, let lastBroadcastSignalUptime else { return }
+        if ProcessInfo.processInfo.systemUptime - lastBroadcastSignalUptime > 2.5 {
+            isBroadcastActive = false
+        }
     }
 }
 
@@ -52,7 +141,7 @@ struct ContentView: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 
-            Text("不用进控制中心，直接点下面的按钮")
+            Text("直接点下面的按钮启动")
                 .font(.headline)
                 .multilineTextAlignment(.center)
 
@@ -64,9 +153,9 @@ struct ContentView: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 
-            RuntimeStatusView(isScreenCaptured: status.isScreenCaptured)
+            RuntimeStatusView(isBroadcastActive: status.isBroadcastActive)
 
-            Text("iOS 出于隐私限制，不允许普通 App 在无用户确认的情况下静默开启全屏录制。这个版本先验证广播是否能够稳定保持。")
+            Text("状态由 Broadcast Extension 的实时心跳确认，不再依赖 UIScreen.isCaptured，也不需要 App Group。")
                 .font(.footnote)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
@@ -78,16 +167,16 @@ struct ContentView: View {
 }
 
 struct RuntimeStatusView: View {
-    let isScreenCaptured: Bool
+    let isBroadcastActive: Bool
 
     var body: some View {
         Group {
-            if isScreenCaptured {
-                Label("屏幕广播已启动", systemImage: "record.circle.fill")
+            if isBroadcastActive {
+                Label("Phoenix 广播正在运行", systemImage: "record.circle.fill")
                     .font(.caption.bold())
                     .foregroundStyle(.green)
             } else {
-                Text("等待屏幕广播")
+                Text("等待 Phoenix 广播")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -96,9 +185,6 @@ struct RuntimeStatusView: View {
     }
 }
 
-/// A large, obvious button backed by Apple's RPSystemBroadcastPickerView.
-/// The transparent system picker remains on top and receives the actual tap,
-/// so iOS still presents its required broadcast confirmation sheet.
 struct DirectBroadcastButton: View {
     var body: some View {
         ZStack {
