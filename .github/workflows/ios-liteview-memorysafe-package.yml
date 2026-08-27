@@ -1,0 +1,182 @@
+name: LiteView Memory-Safe iOS Package
+
+on:
+  push:
+    branches:
+      - feature/ios-realtime-vision-assist
+    paths:
+      - 'ios/PhoenixRealtimeVisionAssist/**'
+      - '.github/workflows/ios-liteview-memorysafe-package.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Stage and compile Core ML model for main app only
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          MODEL_DIR="$ROOT/Resources/Models"
+          PACKAGE="$MODEL_DIR/yolo11n.mlpackage"
+          COMPILED="$MODEL_DIR/yolo11n.mlmodelc"
+          ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
+          UNZIP_DIR="$RUNNER_TEMP/liteview-yolo11n-coreml"
+          COMPILE_DIR="$RUNNER_TEMP/liteview-coreml-compiled"
+          URL='https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
+
+          rm -rf "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
+          mkdir -p "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
+          curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 -o "$ZIP" "$URL"
+          unzip -q "$ZIP" -d "$UNZIP_DIR"
+          SRC="$(find "$UNZIP_DIR" -type d -name 'yolo11n.mlpackage' -print -quit)"
+          test -n "$SRC"
+          cp -R "$SRC" "$PACKAGE"
+          xcrun coremlc compile "$PACKAGE" "$COMPILE_DIR"
+          SRC_COMPILED="$(find "$COMPILE_DIR" -type d -name '*.mlmodelc' -print -quit)"
+          test -n "$SRC_COMPILED"
+          cp -R "$SRC_COMPILED" "$COMPILED"
+          test -d "$COMPILED"
+
+      - name: Generate project
+        working-directory: ios/PhoenixRealtimeVisionAssist
+        run: xcodegen generate
+
+      - name: Build unsigned iPhone device target
+        working-directory: ios/PhoenixRealtimeVisionAssist
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/LiteViewMemorySafeDerivedData"
+          xcodebuild \
+            -project PhoenixRealtimeVisionAssist.xcodeproj \
+            -scheme PhoenixRealtimeVisionAssist \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/LiteViewMemorySafeDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Preserve and verify ReplayKit metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          SOURCE_PLIST="$ROOT/Sources/Broadcast/Info.plist"
+          PRODUCTS="$RUNNER_TEMP/LiteViewMemorySafeDerivedData/Build/Products/Release-iphoneos"
+          APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
+          EXT="$APP/PlugIns/PhoenixBroadcastExtension.appex"
+          BUILT_PLIST="$EXT/Info.plist"
+
+          test -d "$APP"
+          test -d "$EXT"
+          test -d "$APP/yolo11n.mlmodelc"
+          test ! -d "$EXT/yolo11n.mlmodelc"
+
+          EXT_POINT="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$SOURCE_PLIST")"
+          EXT_CLASS="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$SOURCE_PLIST")"
+          /usr/libexec/PlistBuddy -c 'Delete :NSExtension' "$BUILT_PLIST" >/dev/null 2>&1 || true
+          /usr/libexec/PlistBuddy -c 'Add :NSExtension dict' "$BUILT_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :NSExtension:NSExtensionPointIdentifier string $EXT_POINT" "$BUILT_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :NSExtension:NSExtensionPrincipalClass string $EXT_CLASS" "$BUILT_PLIST"
+
+          APP_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
+          EXT_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$EXT/Info.plist")"
+          test "$APP_ID" = 'com.phoenix.realtimevisionassist'
+          test "$EXT_ID" = 'com.phoenix.realtimevisionassist.broadcast'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$BUILT_PLIST")" = 'com.apple.broadcast-services-upload'
+          /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$BUILT_PLIST" | grep -Fq 'BroadcastSampleHandler'
+
+          echo '=== Bundle sizes ==='
+          du -sh "$APP" "$EXT" "$APP/yolo11n.mlmodelc"
+          echo '=== Extension files ==='
+          find "$EXT" -maxdepth 2 -type f -print
+
+      - name: Package and verify unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRODUCTS="$RUNNER_TEMP/LiteViewMemorySafeDerivedData/Build/Products/Release-iphoneos"
+          APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
+          ROOT="$RUNNER_TEMP/LiteViewMemorySafePackage"
+          PAYLOAD="$ROOT/Payload"
+          IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
+          VERIFY="$RUNNER_TEMP/LiteViewMemorySafeVerify"
+
+          rm -rf "$ROOT" "$IPA" "$MANIFEST" "$VERIFY"
+          mkdir -p "$PAYLOAD" "$VERIFY"
+          cp -R "$APP" "$PAYLOAD/"
+          (cd "$ROOT" && /usr/bin/zip -qry "$IPA" Payload)
+          test -s "$IPA"
+          /usr/bin/unzip -q "$IPA" -d "$VERIFY"
+
+          VAPP="$VERIFY/Payload/PhoenixRealtimeVisionAssist.app"
+          VEXT="$VAPP/PlugIns/PhoenixBroadcastExtension.appex"
+          test -f "$VAPP/Info.plist"
+          test -f "$VEXT/Info.plist"
+          test -d "$VAPP/yolo11n.mlmodelc"
+          test ! -d "$VEXT/yolo11n.mlmodelc"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$VEXT/Info.plist")" = 'com.apple.broadcast-services-upload'
+          /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$VEXT/Info.plist" | grep -Fq 'BroadcastSampleHandler'
+
+          cat > "$MANIFEST" <<EOF
+          LiteView memory-safe unsigned sideload package
+          commit=${GITHUB_SHA}
+          app_bundle_id=com.phoenix.realtimevisionassist
+          extension_bundle_id=com.phoenix.realtimevisionassist.broadcast
+          extension_point=com.apple.broadcast-services-upload
+          app_group=group.com.phoenix.realtimevisionassist
+          broadcast_extension_model=none
+          main_app_coreml=yolo11n.mlmodelc
+          signing=unsigned; re-sign main app and embedded Broadcast Extension without removing PlugIns
+          EOF
+
+          ls -lh "$IPA" "$MANIFEST"
+          shasum -a 256 "$IPA"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-memorysafe-unsigned-sideload
+          path: |
+            ${{ runner.temp }}/LiteView-unsigned-sideload.ipa
+            ${{ runner.temp }}/LiteView-sideload-manifest.txt
+          if-no-files-found: error
+
+      - name: Publish public sideload release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='liteview-sideload-latest'
+          IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
+            gh release edit "$TAG" --title 'LiteView unsigned sideload test package' --notes 'Memory-safe ReplayKit build. Core ML remains in the main app; the Broadcast Extension is intentionally lightweight for iOS extension memory limits. Re-sign the app and embedded Broadcast Extension without removing PlugIns.'
+          else
+            gh release create "$TAG" "$IPA" "$MANIFEST" \
+              --title 'LiteView unsigned sideload test package' \
+              --notes 'Memory-safe ReplayKit build. Core ML remains in the main app; the Broadcast Extension is intentionally lightweight for iOS extension memory limits. Re-sign the app and embedded Broadcast Extension without removing PlugIns.'
+          fi
