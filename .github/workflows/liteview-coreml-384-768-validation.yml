@@ -1,0 +1,226 @@
+name: LiteView CoreML 384 vs 768 Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/ios-realtime-vision-assist
+    paths:
+      - '.github/workflows/liteview-coreml-384-768-validation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-coreml-input-size:
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install export dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy<=2.3.5' 'coremltools>=9.0' 'ultralytics[export-coreml]'
+
+      - name: Download YOLO11n
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/models
+          MODEL='build/models/yolo11n.pt'
+          URLS=(
+            'https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt'
+            'https://ghproxy.net/https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt'
+            'https://ghfast.top/https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt'
+          )
+          ok=0
+          for url in "${URLS[@]}"; do
+            echo ">>> $url"
+            if curl -fL -C - --retry 8 --retry-delay 3 --retry-all-errors --connect-timeout 20 -o "$MODEL" "$url"; then
+              if [[ -s "$MODEL" ]]; then ok=1; break; fi
+            fi
+          done
+          [[ "$ok" -eq 1 ]] || { echo 'ERROR: model download failed'; exit 2; }
+          shasum -a 256 "$MODEL"
+
+      - name: Export and compile 384 and 768 Core ML models
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/export build/compiled build/report
+          for SIZE in 384 768; do
+            DIR="build/export/$SIZE"
+            mkdir -p "$DIR" "build/compiled/$SIZE"
+            cp build/models/yolo11n.pt "$DIR/yolo11n.pt"
+            (
+              cd "$DIR"
+              SIZE="$SIZE" python - <<'PY'
+          import os
+          from pathlib import Path
+          import coremltools as ct
+          from ultralytics import YOLO
+
+          size = int(os.environ['SIZE'])
+          result = YOLO('yolo11n.pt').export(format='coreml', imgsz=size, nms=False)
+          package = Path(result)
+          spec = ct.utils.load_spec(str(package))
+          image_inputs = [
+              value.type.imageType
+              for value in spec.description.input
+              if value.type.WhichOneof('Type') == 'imageType'
+          ]
+          if len(image_inputs) != 1:
+              raise SystemExit(f'expected one image input, got {len(image_inputs)}')
+          actual = (int(image_inputs[0].width), int(image_inputs[0].height))
+          if actual != (size, size):
+              raise SystemExit(f'expected {size}x{size}, got {actual}')
+          outputs = [value.name for value in spec.description.output]
+          if not outputs:
+              raise SystemExit('Core ML export has no outputs')
+          print(f'COREML_EXPORT_CONTRACT size={size} input={actual} outputs={outputs}')
+          PY
+            )
+            PKG="$(find "$DIR" -maxdepth 2 -type d -name '*.mlpackage' -print -quit)"
+            test -n "$PKG"
+            xcrun coremlc compile "$PKG" "build/compiled/$SIZE"
+            COMPILED="$(find "build/compiled/$SIZE" -maxdepth 1 -type d -name '*.mlmodelc' -print -quit)"
+            test -n "$COMPILED"
+            du -sk "$PKG" "$COMPILED"
+          done
+
+      - name: Build Core ML runtime smoke probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/coreml_runtime_probe.swift" <<'SWIFT'
+          import CoreFoundation
+          import CoreML
+          import CoreVideo
+          import Foundation
+
+          guard CommandLine.arguments.count == 2 else {
+              fatalError("usage: coreml_runtime_probe <compiled.mlmodelc>")
+          }
+
+          let modelURL = URL(fileURLWithPath: CommandLine.arguments[1])
+          let configuration = MLModelConfiguration()
+          configuration.computeUnits = .all
+          let model = try MLModel(contentsOf: modelURL, configuration: configuration)
+
+          guard let input = model.modelDescription.inputDescriptionsByName.first(where: { $0.value.type == .image }),
+                let constraint = input.value.imageConstraint else {
+              fatalError("expected image input")
+          }
+
+          var buffer: CVPixelBuffer?
+          let attributes: [CFString: Any] = [
+              kCVPixelBufferCGImageCompatibilityKey: true,
+              kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+          ]
+          let status = CVPixelBufferCreate(
+              kCFAllocatorDefault,
+              constraint.pixelsWide,
+              constraint.pixelsHigh,
+              kCVPixelFormatType_32BGRA,
+              attributes as CFDictionary,
+              &buffer
+          )
+          guard status == kCVReturnSuccess, let pixelBuffer = buffer else {
+              fatalError("CVPixelBufferCreate failed: \(status)")
+          }
+
+          CVPixelBufferLockBaseAddress(pixelBuffer, [])
+          if let base = CVPixelBufferGetBaseAddress(pixelBuffer) {
+              memset(base, 0, CVPixelBufferGetDataSize(pixelBuffer))
+          }
+          CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+
+          let provider = try MLDictionaryFeatureProvider(dictionary: [
+              input.key: MLFeatureValue(pixelBuffer: pixelBuffer)
+          ])
+
+          for _ in 0..<2 {
+              _ = try model.prediction(from: provider)
+          }
+
+          var times: [Double] = []
+          times.reserveCapacity(10)
+          var outputNames: [String] = []
+          for _ in 0..<10 {
+              let started = CFAbsoluteTimeGetCurrent()
+              let output = try model.prediction(from: provider)
+              let elapsed = (CFAbsoluteTimeGetCurrent() - started) * 1000.0
+              times.append(elapsed)
+              outputNames = output.featureNames.sorted()
+          }
+
+          let sorted = times.sorted()
+          let median = sorted[sorted.count / 2]
+          let p90 = sorted[min(sorted.count - 1, Int(Double(sorted.count - 1) * 0.90))]
+          print(
+              String(
+                  format: "COREML_RUNTIME input=%dx%d median_ms=%.3f p90_ms=%.3f outputs=%@",
+                  constraint.pixelsWide,
+                  constraint.pixelsHigh,
+                  median,
+                  p90,
+                  outputNames.joined(separator: ",")
+              )
+          )
+          SWIFT
+          xcrun swiftc "$RUNNER_TEMP/coreml_runtime_probe.swift" -o "$RUNNER_TEMP/coreml_runtime_probe"
+
+      - name: Run compiled Core ML models and record memory
+        shell: bash
+        run: |
+          set -euo pipefail
+          SUMMARY='build/report/summary.md'
+          cat > "$SUMMARY" <<'EOF'
+          ## LiteView Core ML 384 vs 768 validation
+
+          | input | runtime result | median ms | p90 ms | max RSS bytes | compiled KiB |
+          |---:|---|---:|---:|---:|---:|
+          EOF
+
+          for SIZE in 384 768; do
+            COMPILED="$(find "build/compiled/$SIZE" -maxdepth 1 -type d -name '*.mlmodelc' -print -quit)"
+            test -n "$COMPILED"
+            STDOUT="build/report/runtime_${SIZE}.stdout"
+            STDERR="build/report/runtime_${SIZE}.time"
+            /usr/bin/time -l "$RUNNER_TEMP/coreml_runtime_probe" "$COMPILED" >"$STDOUT" 2>"$STDERR"
+            cat "$STDOUT"
+            cat "$STDERR"
+            grep -q "COREML_RUNTIME input=${SIZE}x${SIZE}" "$STDOUT"
+            MEDIAN="$(sed -n 's/.*median_ms=\([0-9.]*\).*/\1/p' "$STDOUT" | head -1)"
+            P90="$(sed -n 's/.*p90_ms=\([0-9.]*\).*/\1/p' "$STDOUT" | head -1)"
+            RSS="$(awk '/maximum resident set size/{print $1; exit}' "$STDERR")"
+            KIB="$(du -sk "$COMPILED" | awk '{print $1}')"
+            test -n "$MEDIAN" && test -n "$P90" && test -n "$RSS" && test -n "$KIB"
+            echo "| $SIZE | PASS | $MEDIAN | $P90 | $RSS | $KIB |" >> "$SUMMARY"
+          done
+
+          cat >> "$SUMMARY" <<'EOF'
+
+          This validation checks Core ML export contract, `coremlc` compilation, and repeated inference on the same Apple-silicon macOS runner. It does not prove iPhone ReplayKit memory or latency and does not publish or replace the production model asset.
+          EOF
+          cat "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+          cat "$SUMMARY"
+
+      - name: Upload validation evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-coreml-384-vs-768-validation
+          path: |
+            build/report/
+          retention-days: 7
+          if-no-files-found: error
