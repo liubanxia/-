@@ -1,4 +1,4 @@
-name: LiteView 0.9.0 Stable PiP Radar Test
+name: LiteView 0.9.1 Hybrid Game Detector Radar
 
 on:
   push:
@@ -15,7 +15,7 @@ permissions:
 jobs:
   package:
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     steps:
       - name: Checkout
@@ -28,6 +28,30 @@ jobs:
 
       - name: Install XcodeGen
         run: brew install xcodegen
+
+      - name: Stage one transient 384px game detector
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          MODEL_DIR="$ROOT/Resources/BroadcastModels"
+          ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
+          UNZIP_DIR="$RUNNER_TEMP/liteview-yolo11n-coreml"
+          COMPILE_DIR="$RUNNER_TEMP/liteview-yolo11n-compiled"
+          URL='https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
+
+          rm -rf "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
+          mkdir -p "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
+          curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 -o "$ZIP" "$URL"
+          unzip -q "$ZIP" -d "$UNZIP_DIR"
+          SRC="$(find "$UNZIP_DIR" -type d -name 'yolo11n.mlpackage' -print -quit)"
+          test -n "$SRC"
+          xcrun coremlc compile "$SRC" "$COMPILE_DIR"
+          SRC_COMPILED="$(find "$COMPILE_DIR" -type d -name '*.mlmodelc' -print -quit)"
+          test -n "$SRC_COMPILED"
+          cp -R "$SRC_COMPILED" "$MODEL_DIR/yolo11n.mlmodelc"
+          test -d "$MODEL_DIR/yolo11n.mlmodelc"
+          du -sh "$MODEL_DIR/yolo11n.mlmodelc"
 
       - name: Generate project
         working-directory: ios/PhoenixRealtimeVisionAssist
@@ -62,7 +86,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build
 
-      - name: Stage small stable radar package
+      - name: Stage hybrid detector radar package
         shell: bash
         run: |
           set -euo pipefail
@@ -72,7 +96,6 @@ jobs:
           test -d "$APP"
           test -d "$EXT"
 
-          rm -rf "$EXT/BroadcastModels"
           rm -rf "$APP"/*.mlmodelc
           rm -f "$APP/PhoenixCapabilityBank.json"
 
@@ -84,36 +107,41 @@ jobs:
 
           set_plist_string "$APP/Info.plist" CFBundleDisplayName LiteView
           set_plist_string "$APP/Info.plist" CFBundleIdentifier com.phoenix.realtimevisionassist
-          set_plist_string "$APP/Info.plist" CFBundleShortVersionString 0.9.0
-          set_plist_string "$APP/Info.plist" CFBundleVersion 16
+          set_plist_string "$APP/Info.plist" CFBundleShortVersionString 0.9.1
+          set_plist_string "$APP/Info.plist" CFBundleVersion 17
           set_plist_string "$EXT/Info.plist" CFBundleDisplayName 'LiteView Broadcast'
           set_plist_string "$EXT/Info.plist" CFBundleIdentifier com.phoenix.realtimevisionassist.broadcast
-          set_plist_string "$EXT/Info.plist" CFBundleShortVersionString 0.9.0
-          set_plist_string "$EXT/Info.plist" CFBundleVersion 16
+          set_plist_string "$EXT/Info.plist" CFBundleShortVersionString 0.9.1
+          set_plist_string "$EXT/Info.plist" CFBundleVersion 17
 
           /usr/libexec/PlistBuddy -c 'Delete :NSExtension' "$EXT/Info.plist" >/dev/null 2>&1 || true
           /usr/libexec/PlistBuddy -c 'Add :NSExtension dict' "$EXT/Info.plist"
           /usr/libexec/PlistBuddy -c 'Add :NSExtension:NSExtensionPointIdentifier string com.apple.broadcast-services-upload' "$EXT/Info.plist"
           /usr/libexec/PlistBuddy -c 'Add :NSExtension:NSExtensionPrincipalClass string PhoenixBroadcastExtension.BroadcastSampleHandler' "$EXT/Info.plist"
 
+          MODEL_COUNT="$(find "$EXT" -type d -name '*.mlmodelc' -prune -print | wc -l | tr -d ' ')"
+          echo "MODEL_COUNT=$MODEL_COUNT"
+          test "$MODEL_COUNT" = '1'
+          test -n "$(find "$EXT" -type d -name 'yolo11n.mlmodelc' -prune -print -quit)"
+          test -z "$(find "$EXT" -type d -name 'YOLOv3TinyInt8LUT.mlmodelc' -prune -print -quit)"
+
           EXT_SIZE_BYTES="$(du -sk "$EXT" | awk '{print $1 * 1024}')"
           APP_SIZE_BYTES="$(du -sk "$APP" | awk '{print $1 * 1024}')"
           echo "EXT_SIZE_BYTES=$EXT_SIZE_BYTES"
           echo "APP_SIZE_BYTES=$APP_SIZE_BYTES"
-          test "$EXT_SIZE_BYTES" -lt 12582912
-          test ! -d "$EXT/BroadcastModels"
+          test "$EXT_SIZE_BYTES" -lt 33554432
 
-      - name: Package and verify LiteView 0.9.0 radar IPA
+      - name: Package and verify LiteView 0.9.1 radar IPA
         shell: bash
         run: |
           set -euo pipefail
           PRODUCTS="$RUNNER_TEMP/LiteViewRadarDerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
-          ROOT="$RUNNER_TEMP/liteview-090-package"
+          ROOT="$RUNNER_TEMP/liteview-091-package"
           PAYLOAD="$ROOT/Payload"
           IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
           MANIFEST="$RUNNER_TEMP/LiteView-radar-manifest.txt"
-          VERIFY="$RUNNER_TEMP/liteview-090-verify"
+          VERIFY="$RUNNER_TEMP/liteview-091-verify"
 
           rm -rf "$ROOT" "$VERIFY" "$IPA" "$MANIFEST"
           mkdir -p "$PAYLOAD" "$VERIFY"
@@ -124,22 +152,25 @@ jobs:
 
           VAPP="$VERIFY/Payload/PhoenixRealtimeVisionAssist.app"
           VEXT="$VAPP/PlugIns/PhoenixBroadcastExtension.appex"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VAPP/Info.plist")" = '0.9.0'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$VAPP/Info.plist")" = '16'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VEXT/Info.plist")" = '0.9.0'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$VEXT/Info.plist")" = '16'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VAPP/Info.plist")" = '0.9.1'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$VAPP/Info.plist")" = '17'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VEXT/Info.plist")" = '0.9.1'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$VEXT/Info.plist")" = '17'
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$VEXT/Info.plist")" = 'com.apple.broadcast-services-upload'
-          test ! -d "$VEXT/BroadcastModels"
+          test -n "$(find "$VEXT" -type d -name 'yolo11n.mlmodelc' -prune -print -quit)"
+          test "$(find "$VEXT" -type d -name '*.mlmodelc' -prune -print | wc -l | tr -d ' ')" = '1'
           /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "$VAPP/Info.plist" | grep -q audio
 
           cat > "$MANIFEST" <<EOF
-          LiteView 0.9.0 stable PiP radar test
+          LiteView 0.9.1 hybrid game detector radar
           commit=${GITHUB_SHA}
-          build=16
-          replaykit_runtime=Apple Vision human rectangles + fast Vision tracker; no custom Core ML model load in Broadcast Extension
-          extension_models=none
+          build=17
+          replaykit_runtime=single yolo11n 384 Core ML sparse reacquisition + fast Vision tracker
+          extension_models=yolo11n only; no second fallback model; no cold bank
+          model_residency=transient; released immediately after sparse global scan
           display=system Picture in Picture radar window; red observed target + blue short-horizon prediction
-          foreground_game_priority=adaptive scan interval + one frame in flight + thermal/latency/frame-pressure backoff
+          foreground_game_priority=one frame in flight + sparse global scans + tracker between scans + thermal/latency/frame-pressure backoff
+          confidence_floor=0.12 for rendered game-character reacquisition
           hidden_position_extrapolation=disabled
           persistence=none for frames, screenshots, audio, or analysis history
           note=PiP is a floating radar, not a transparent arbitrary overlay over another app
@@ -152,13 +183,13 @@ jobs:
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-090-radar
+          name: liteview-091-hybrid-radar
           path: |
             ${{ runner.temp }}/LiteView-unsigned-sideload.ipa
             ${{ runner.temp }}/LiteView-radar-manifest.txt
           if-no-files-found: error
 
-      - name: Publish radar test release
+      - name: Publish hybrid radar test release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -167,7 +198,7 @@ jobs:
           TAG='liteview-radar-latest'
           IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
           MANIFEST="$RUNNER_TEMP/LiteView-radar-manifest.txt"
-          NOTES='LiteView 0.9.0 removes custom Core ML model loading from the ReplayKit extension to target long-session stability and adds a real system Picture in Picture radar visible over the foreground game. Red shows the currently observed visible target and blue shows a short-horizon motion prediction. This is a deliberately small functional test build; the cold model bank is excluded.'
+          NOTES='LiteView 0.9.1 restores one game-capable yolo11n detector only for sparse global reacquisition while keeping fast Vision tracking between scans. The Core ML model is released after each global scan to reduce ReplayKit memory residency. No second detector and no cold model bank are bundled. Red is observed target; blue is short-horizon prediction.'
 
           git tag -f "$TAG" "$GITHUB_SHA"
           git push origin "refs/tags/$TAG" --force
@@ -175,8 +206,8 @@ jobs:
           if gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber --repo "${GITHUB_REPOSITORY}"
             gh release edit "$TAG" --repo "${GITHUB_REPOSITORY}" \
-              --title 'LiteView 0.9.0 Stable PiP Radar Test' --notes "$NOTES"
+              --title 'LiteView 0.9.1 Hybrid Game Detector Radar' --notes "$NOTES"
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" --repo "${GITHUB_REPOSITORY}" \
-              --title 'LiteView 0.9.0 Stable PiP Radar Test' --notes "$NOTES"
+              --title 'LiteView 0.9.1 Hybrid Game Detector Radar' --notes "$NOTES"
           fi

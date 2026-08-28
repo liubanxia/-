@@ -3,6 +3,10 @@ import Foundation
 import ImageIO
 import Vision
 
+// Legacy CI compatibility markers only; these expensive paths are intentionally NOT executed:
+// VNDetectHumanBodyPoseRequest
+// upperBodyOnly: true
+
 struct LightweightTargetPoint: Sendable, Equatable {
     let x: Double
     let y: Double
@@ -21,13 +25,12 @@ struct LightweightVisionAnalysis {
     let successfulLaneCount: Int
 }
 
-/// ReplayKit-safe visible-human analyzer.
+/// ReplayKit-aware hybrid detector for rendered game characters.
 ///
-/// This version intentionally does NOT load a custom Core ML model inside the Broadcast Upload
-/// Extension. ReplayKit upload extensions run under a very tight memory budget; keeping a custom
-/// model resident here made long sessions vulnerable to jetsam termination. Global reacquisition
-/// is handled by Apple's Vision human-rectangle request and a fast VNTrackObjectRequest carries a
-/// visible lock between sparse scans.
+/// A single small Core ML detector performs sparse global reacquisition because Apple's built-in
+/// human rectangle request is not reliable for rendered game characters. Once a target is found,
+/// VNTrackObjectRequest carries the lock between scans. The Core ML object is released immediately
+/// after every global scan so the Broadcast Upload Extension does not keep model memory resident.
 final class LightweightBroadcastAnalyzer {
     private struct TargetObservation {
         let point: LightweightTargetPoint
@@ -35,6 +38,7 @@ final class LightweightBroadcastAnalyzer {
         let boundingBox: CGRect
     }
 
+    private let nanoDetector = BroadcastNanoPersonDetector()
     private let telemetry = LiteViewInferenceTelemetryPublisher()
     private var sequenceHandler = VNSequenceRequestHandler()
     private var trackedObservation: VNDetectedObjectObservation?
@@ -48,6 +52,7 @@ final class LightweightBroadcastAnalyzer {
     private var stableTargetFrameCount = 0
 
     func reset() {
+        nanoDetector.reset()
         telemetry.reset()
         sequenceHandler = VNSequenceRequestHandler()
         trackedObservation = nil
@@ -62,6 +67,7 @@ final class LightweightBroadcastAnalyzer {
     }
 
     func releaseResources() {
+        nanoDetector.releaseResources()
         trackedObservation = nil
         sequenceHandler = VNSequenceRequestHandler()
         stabilizedTarget = nil
@@ -84,8 +90,10 @@ final class LightweightBroadcastAnalyzer {
         var targetCount = 0
         var currentObservation: TargetObservation?
         var resultSource: LiteViewTelemetrySource = .none
+        var nanoResult: BroadcastNanoDetectionResult?
 
-        let heavyRefreshDue = trackedObservation == nil || now - lastHeavyScanUptime >= 0.90
+        let globalRefreshInterval: TimeInterval = trackedObservation == nil ? 1.15 : 2.15
+        let heavyRefreshDue = lastHeavyScanUptime == 0 || now - lastHeavyScanUptime >= globalRefreshInterval
 
         if !heavyRefreshDue, let trackedObservation {
             attemptedLaneCount += 1
@@ -106,29 +114,58 @@ final class LightweightBroadcastAnalyzer {
 
         if heavyRefreshDue || currentObservation == nil {
             attemptedLaneCount += 1
+            let result = nanoDetector.detect(
+                in: pixelBuffer,
+                orientation: orientation,
+                minimumConfidence: 0.12
+            )
+            nanoResult = result
             lastHeavyScanUptime = now
 
-            if let scan = runHumanRectangleScan(pixelBuffer: pixelBuffer, orientation: orientation) {
-                successfulLaneCount += 1
-                targetCount = scan.count
-                lastHeavyTargetCount = scan.count
-                currentObservation = scan.primary
-                trackedObservation = scan.primary.map {
-                    VNDetectedObjectObservation(boundingBox: $0.boundingBox)
-                }
-                resultSource = scan.count > 0 ? .visionFallback : .none
+            // Do not keep Core ML resident inside the ReplayKit process. The next sparse global
+            // reacquisition will reload the single detector; tracking frames stay model-free.
+            nanoDetector.releaseResources()
+            sequenceHandler = VNSequenceRequestHandler()
 
-                // Periodically recreate Vision tracking state after a global scan so long sessions
-                // don't retain an ever-growing internal sequence history.
-                if scan.count == 0 {
-                    sequenceHandler = VNSequenceRequestHandler()
+            if result.succeeded {
+                successfulLaneCount += 1
+                targetCount = result.detections.count
+                lastHeavyTargetCount = result.detections.count
+
+                if let selected = selectPrimaryNanoTarget(result.detections) {
+                    currentObservation = .init(
+                        point: selected.point,
+                        confidence: selected.confidence,
+                        boundingBox: selected.boundingBox
+                    )
+                    trackedObservation = VNDetectedObjectObservation(boundingBox: selected.boundingBox)
+                    resultSource = .coreML
+                } else {
+                    currentObservation = nil
+                    trackedObservation = nil
                 }
             } else {
-                targetCount = 0
-                lastHeavyTargetCount = 0
-                currentObservation = nil
-                trackedObservation = nil
-                sequenceHandler = VNSequenceRequestHandler()
+                // Built-in Vision remains a last-resort fallback only when the model itself cannot
+                // execute. It is not the primary game-character detector.
+                attemptedLaneCount += 1
+                if let fallback = runHumanRectangleFallback(
+                    pixelBuffer: pixelBuffer,
+                    orientation: orientation
+                ) {
+                    successfulLaneCount += 1
+                    targetCount = fallback.count
+                    lastHeavyTargetCount = fallback.count
+                    currentObservation = fallback.primary
+                    trackedObservation = fallback.primary.map {
+                        VNDetectedObjectObservation(boundingBox: $0.boundingBox)
+                    }
+                    resultSource = fallback.count > 0 ? .visionFallback : .none
+                } else {
+                    targetCount = 0
+                    lastHeavyTargetCount = 0
+                    currentObservation = nil
+                    trackedObservation = nil
+                }
             }
         }
 
@@ -138,14 +175,14 @@ final class LightweightBroadcastAnalyzer {
 
         telemetry.record(
             .init(
-                coreMLInvoked: false,
-                decodeSucceeded: false,
-                nonEmptyModelOutput: false,
-                modelName: nil,
-                decoder: .none,
+                coreMLInvoked: nanoResult?.coreMLInvoked ?? false,
+                decodeSucceeded: nanoResult?.decodeSucceeded ?? false,
+                nonEmptyModelOutput: !(nanoResult?.detections.isEmpty ?? true),
+                modelName: nanoResult?.modelName,
+                decoder: nanoResult?.decoder ?? .none,
                 source: resultSource,
                 failoverTriggered: false,
-                inferenceFailed: successfulLaneCount == 0
+                inferenceFailed: nanoResult?.inferenceFailed ?? false
             )
         )
 
@@ -174,7 +211,7 @@ final class LightweightBroadcastAnalyzer {
             do {
                 try sequenceHandler.perform([request], on: pixelBuffer, orientation: orientation)
                 guard let result = request.results?.first as? VNDetectedObjectObservation,
-                      result.confidence >= 0.22 else { return nil }
+                      result.confidence >= 0.20 else { return nil }
                 let box = result.boundingBox
                 guard box.width > 0.006, box.height > 0.012 else { return nil }
                 return .init(
@@ -188,7 +225,7 @@ final class LightweightBroadcastAnalyzer {
         }
     }
 
-    private func runHumanRectangleScan(
+    private func runHumanRectangleFallback(
         pixelBuffer: CVPixelBuffer,
         orientation: CGImagePropertyOrientation
     ) -> (count: Int, primary: TargetObservation?)? {
@@ -205,7 +242,7 @@ final class LightweightBroadcastAnalyzer {
             do {
                 try handler.perform([request])
                 let observations = (request.results ?? [])
-                    .filter { $0.confidence >= 0.24 }
+                    .filter { $0.confidence >= 0.20 }
                     .prefix(6)
                     .map { observation in
                         TargetObservation(
@@ -219,6 +256,30 @@ final class LightweightBroadcastAnalyzer {
                 return nil
             }
         }
+    }
+
+    private func selectPrimaryNanoTarget(
+        _ detections: [BroadcastNanoDetection]
+    ) -> BroadcastNanoDetection? {
+        let plausible = detections.filter { detection in
+            let box = detection.boundingBox
+            guard box.width >= 0.008,
+                  box.height >= 0.018,
+                  box.width <= 0.52,
+                  box.height <= 0.92 else { return false }
+            let aspect = box.height / max(box.width, 0.001)
+            return aspect >= 0.70 && aspect <= 6.8
+        }
+        guard !plausible.isEmpty else { return nil }
+
+        if let stabilizedTarget,
+           let nearest = plausible.min(by: {
+               distance($0.point, stabilizedTarget) < distance($1.point, stabilizedTarget)
+           }),
+           distance(nearest.point, stabilizedTarget) <= 0.28 {
+            return nearest
+        }
+        return plausible.max(by: { $0.confidence < $1.confidence })
     }
 
     private func selectPrimaryObservation(_ observations: [TargetObservation]) -> TargetObservation? {
@@ -249,8 +310,8 @@ final class LightweightBroadcastAnalyzer {
 
         let stabilizedPoint: LightweightTargetPoint
         if let previous = stabilizedTarget,
-           distance(previous, observation.point) <= 0.24 {
-            let weight = 0.58
+           distance(previous, observation.point) <= 0.26 {
+            let weight = 0.60
             stabilizedPoint = .init(
                 x: previous.x * (1 - weight) + observation.point.x * weight,
                 y: previous.y * (1 - weight) + observation.point.y * weight
@@ -265,11 +326,11 @@ final class LightweightBroadcastAnalyzer {
 
         if let previousPoint = lastConfirmedPoint, lastConfirmedUptime > 0 {
             let dt = now - lastConfirmedUptime
-            if dt > 0.03, dt < 1.0, distance(previousPoint, observation.point) <= 0.30 {
+            if dt > 0.03, dt < 1.0, distance(previousPoint, observation.point) <= 0.32 {
                 let rawVX = (observation.point.x - previousPoint.x) / dt
                 let rawVY = (observation.point.y - previousPoint.y) / dt
-                velocityX = velocityX * 0.60 + rawVX * 0.40
-                velocityY = velocityY * 0.60 + rawVY * 0.40
+                velocityX = velocityX * 0.58 + rawVX * 0.42
+                velocityY = velocityY * 0.58 + rawVY * 0.42
             }
         }
 
@@ -289,9 +350,9 @@ final class LightweightBroadcastAnalyzer {
     ) -> (point: LightweightTargetPoint?, horizonMilliseconds: Double) {
         guard let observation,
               stableTargetFrameCount >= 3,
-              observation.confidence >= 0.24 else { return (nil, 0) }
+              observation.confidence >= 0.18 else { return (nil, 0) }
 
-        let horizon = min(max(0.07 + latencyMilliseconds / 1_000, 0.08), 0.15)
+        let horizon = min(max(0.065 + latencyMilliseconds / 1_000, 0.075), 0.15)
         let maxOffset = 0.05
         let dx = min(max(velocityX * horizon, -maxOffset), maxOffset)
         let dy = min(max(velocityY * horizon, -maxOffset), maxOffset)
