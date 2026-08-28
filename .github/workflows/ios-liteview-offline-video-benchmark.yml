@@ -5,20 +5,13 @@ on:
     branches:
       - feature/ios-realtime-vision-assist
     paths:
-      - '.github/workflows/ios-liteview-offline-video-benchmark.yml'
       - 'ios/PhoenixRealtimeVisionAssist/Tests/OfflineVisualBenchmark/**'
-      - 'ios/PhoenixRealtimeVisionAssist/Sources/Vision/PixelScalePlanner.swift'
-      - 'ios/PhoenixRealtimeVisionAssist/Sources/Vision/PhoenixCapabilityModelBank.swift'
+      - '.github/workflows/ios-liteview-offline-video-benchmark.yml'
   workflow_dispatch:
-
-permissions:
-  contents: read
 
 jobs:
   benchmark:
     runs-on: macos-15
-    timeout-minutes: 35
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,19 +30,14 @@ jobs:
           python -m pip install yt-dlp ultralytics opencv-python-headless
 
       - name: Download short public Delta Force Mobile gameplay excerpt
-        id: source
+        id: video
         shell: bash
         run: |
           set -euo pipefail
           WORK="$RUNNER_TEMP/liteview-public-video"
           mkdir -p "$WORK"
-
-          # Primary source: public Delta Force Mobile Gameplay 2025 clip. The selected interval
-          # contains active combat in the public transcript. Fallback is a public iOS/Android
-          # gameplay walkthrough. Only a short excerpt is retained as a temporary CI input.
           PRIMARY='https://www.dailymotion.com/video/x9j3ct8'
           FALLBACK='https://www.youtube.com/watch?v=ucgP6Tz7Mck'
-
           download_excerpt() {
             local url="$1"
             rm -f "$WORK"/source.*
@@ -62,14 +50,12 @@ jobs:
               -o "$WORK/source.%(ext)s" \
               "$url"
           }
-
           SOURCE_URL="$PRIMARY"
           if ! download_excerpt "$PRIMARY"; then
             echo 'PRIMARY_SOURCE_FAILED=1'
             SOURCE_URL="$FALLBACK"
             download_excerpt "$FALLBACK"
           fi
-
           VIDEO="$(find "$WORK" -maxdepth 1 -type f \( -name 'source.mp4' -o -name 'source.mkv' -o -name 'source.webm' -o -name 'source.mov' \) -print -quit)"
           test -n "$VIDEO"
           ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate -show_entries format=duration,size -of json "$VIDEO" > "$WORK/source_probe.json"
@@ -81,22 +67,22 @@ jobs:
       - name: Extract source-resolution benchmark frames
         shell: bash
         env:
-          VIDEO: ${{ steps.source.outputs.video }}
-          WORK: ${{ steps.source.outputs.work }}
+          VIDEO: ${{ steps.video.outputs.video }}
+          WORK: ${{ steps.video.outputs.work }}
         run: |
           set -euo pipefail
           mkdir -p "$WORK/frames"
-          # Keep source pixels. One frame per second is enough for this first detector gate.
-          ffmpeg -hide_banner -loglevel error -i "$VIDEO" -vf 'fps=1' -q:v 2 "$WORK/frames/frame_%03d.jpg"
+          # 2 fps gives temporal continuity without making this CPU benchmark excessively heavy.
+          ffmpeg -hide_banner -loglevel error -i "$VIDEO" -vf 'fps=2' -q:v 2 "$WORK/frames/frame_%03d.jpg"
           FRAME_COUNT="$(find "$WORK/frames" -type f -name 'frame_*.jpg' | wc -l | tr -d ' ')"
           echo "FRAME_COUNT=$FRAME_COUNT"
-          test "$FRAME_COUNT" -ge 10
+          test "$FRAME_COUNT" -ge 20
 
-      - name: Run whole-frame vs pixel-preserving tiled yolo11n benchmark
+      - name: Run detector plus segmentation plus temporal replay benchmark
         shell: bash
         env:
-          WORK: ${{ steps.source.outputs.work }}
-          SOURCE_URL: ${{ steps.source.outputs.source_url }}
+          WORK: ${{ steps.video.outputs.work }}
+          SOURCE_URL: ${{ steps.video.outputs.source_url }}
         run: |
           set -euo pipefail
           python ios/PhoenixRealtimeVisionAssist/Tests/OfflineVisualBenchmark/run_yolo_pixel_benchmark.py \
@@ -104,22 +90,24 @@ jobs:
             --output "$WORK/results" \
             --source-url "$SOURCE_URL" \
             --model yolo11n.pt \
-            --confidence 0.12
-
-          cat "$WORK/results/summary.md" >> "$GITHUB_STEP_SUMMARY"
-          echo '--- benchmark.json ---'
-          cat "$WORK/results/benchmark.json"
+            --seg-model yolo11n-seg.pt \
+            --confidence 0.12 \
+            --seg-confidence 0.10 \
+            --min-track-hits 2
+          cat "$WORK/results/summary_verified.md" >> "$GITHUB_STEP_SUMMARY"
+          echo '--- benchmark_verified.json ---'
+          cat "$WORK/results/benchmark_verified.json"
 
       - name: Upload numeric report and visual evidence
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-offline-public-video-benchmark
+          name: liteview-offline-public-video-benchmark-verified
           path: |
-            ${{ steps.source.outputs.work }}/source_probe.json
-            ${{ steps.source.outputs.work }}/source_url.txt
-            ${{ steps.source.outputs.work }}/results/benchmark.json
-            ${{ steps.source.outputs.work }}/results/detections.csv
-            ${{ steps.source.outputs.work }}/results/summary.md
-            ${{ steps.source.outputs.work }}/results/contact_sheet.jpg
+            ${{ steps.video.outputs.work }}/source_probe.json
+            ${{ steps.video.outputs.work }}/source_url.txt
+            ${{ steps.video.outputs.work }}/results/benchmark_verified.json
+            ${{ steps.video.outputs.work }}/results/detections.csv
+            ${{ steps.video.outputs.work }}/results/summary_verified.md
+            ${{ steps.video.outputs.work }}/results/contact_sheet_verified.jpg
           retention-days: 7
           if-no-files-found: error
