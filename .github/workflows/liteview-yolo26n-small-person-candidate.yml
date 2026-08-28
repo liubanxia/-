@@ -1,0 +1,313 @@
+name: LiteView YOLO26n Small-Person Candidate
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/ios-realtime-vision-assist
+    paths:
+      - '.github/workflows/liteview-yolo26n-small-person-candidate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  yolo26n-candidate:
+    runs-on: macos-15
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install benchmark and Core ML dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy<=2.3.5' 'coremltools>=9.0' 'ultralytics[export-coreml]' opencv-python-headless
+
+      - name: Download COCO128
+        id: data
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/yolo26n-candidate"
+          mkdir -p "$WORK/data" "$WORK/results"
+          curl -fL --retry 5 --retry-delay 2 \
+            https://github.com/ultralytics/assets/releases/download/v0.0.0/coco128.zip \
+            -o "$WORK/coco128.zip"
+          unzip -q "$WORK/coco128.zip" -d "$WORK/data"
+          test -d "$WORK/data/coco128/images"
+          test -d "$WORK/data/coco128/labels"
+          echo "work=$WORK" >> "$GITHUB_OUTPUT"
+          echo "dataset=$WORK/data/coco128" >> "$GITHUB_OUTPUT"
+
+      - name: Compare YOLO11n and YOLO26n visible-person recall
+        shell: bash
+        env:
+          WORK: ${{ steps.data.outputs.work }}
+          DATASET: ${{ steps.data.outputs.dataset }}
+        run: |
+          set -euo pipefail
+          python ios/PhoenixRealtimeVisionAssist/Tests/NaturalPersonPixelFloor/run_natural_person_pixel_floor.py \
+            --dataset "$DATASET" \
+            --output "$WORK/results" \
+            --models yolo11n.pt yolo26n.pt \
+            --imgsz 384 448 \
+            --reference-imgsz 640 \
+            --confidence 0.05 \
+            --iou-threshold 0.30
+          cat "$WORK/results/summary_natural_person_pixel_floor.md" >> "$GITHUB_STEP_SUMMARY"
+          cat "$WORK/results/summary_natural_person_pixel_floor.md"
+
+      - name: Export YOLO26n 384 and 448 to Core ML
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/export build/compiled build/report
+          for SIZE in 384 448; do
+            DIR="build/export/$SIZE"
+            mkdir -p "$DIR" "build/compiled/$SIZE"
+            (
+              cd "$DIR"
+              SIZE="$SIZE" python - <<'PY'
+          import os
+          from pathlib import Path
+          import coremltools as ct
+          from ultralytics import YOLO
+
+          size = int(os.environ['SIZE'])
+          package = Path(YOLO('yolo26n.pt').export(format='coreml', imgsz=size))
+          spec = ct.utils.load_spec(str(package))
+          image_inputs = [
+              (x.name, int(x.type.imageType.width), int(x.type.imageType.height))
+              for x in spec.description.input
+              if x.type.WhichOneof('Type') == 'imageType'
+          ]
+          outputs = []
+          for x in spec.description.output:
+              kind = x.type.WhichOneof('Type')
+              if kind == 'multiArrayType':
+                  shape = [int(v) for v in x.type.multiArrayType.shape]
+              else:
+                  shape = []
+              outputs.append({'name': x.name, 'type': kind, 'shape': shape})
+          if len(image_inputs) != 1 or image_inputs[0][1:] != (size, size):
+              raise SystemExit(f'bad image input contract: {image_inputs}')
+          if not outputs:
+              raise SystemExit('missing Core ML outputs')
+          print(f'YOLO26_COREML_CONTRACT size={size} input={image_inputs} outputs={outputs}')
+          PY
+            )
+            PKG="$(find "$DIR" -maxdepth 2 -type d -name '*.mlpackage' -print -quit)"
+            test -n "$PKG"
+            xcrun coremlc compile "$PKG" "build/compiled/$SIZE"
+            COMPILED="$(find "build/compiled/$SIZE" -maxdepth 1 -type d -name '*.mlmodelc' -print -quit)"
+            test -n "$COMPILED"
+            du -sk "$COMPILED"
+          done
+
+      - name: Build direct Core ML runtime probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/yolo26_coreml_probe.swift" <<'SWIFT'
+          import Accelerate
+          import CoreFoundation
+          import CoreML
+          import CoreVideo
+          import Foundation
+
+          guard CommandLine.arguments.count == 3,
+                let expectedSize = Int(CommandLine.arguments[2]) else {
+              fatalError("usage: yolo26_coreml_probe <compiled.mlmodelc> <size>")
+          }
+          let modelURL = URL(fileURLWithPath: CommandLine.arguments[1])
+
+          func makePixelBuffer(width: Int, height: Int) throws -> CVPixelBuffer {
+              var buffer: CVPixelBuffer?
+              let attrs: [CFString: Any] = [
+                  kCVPixelBufferCGImageCompatibilityKey: true,
+                  kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+                  kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+              ]
+              let status = CVPixelBufferCreate(
+                  kCFAllocatorDefault,
+                  width,
+                  height,
+                  kCVPixelFormatType_32BGRA,
+                  attrs as CFDictionary,
+                  &buffer
+              )
+              guard status == kCVReturnSuccess, let buffer else {
+                  throw NSError(domain: "LiteViewYOLO26Probe", code: Int(status))
+              }
+              return buffer
+          }
+
+          let source = try makePixelBuffer(width: 1920, height: 1080)
+          let target = try makePixelBuffer(width: expectedSize, height: expectedSize)
+          CVPixelBufferLockBaseAddress(source, [])
+          if let base = CVPixelBufferGetBaseAddress(source) {
+              memset(base, 127, CVPixelBufferGetDataSize(source))
+          }
+          CVPixelBufferUnlockBaseAddress(source, [])
+
+          func scaleFit() throws -> Double {
+              let started = CFAbsoluteTimeGetCurrent()
+              CVPixelBufferLockBaseAddress(source, .readOnly)
+              CVPixelBufferLockBaseAddress(target, [])
+              defer {
+                  CVPixelBufferUnlockBaseAddress(target, [])
+                  CVPixelBufferUnlockBaseAddress(source, .readOnly)
+              }
+              guard let srcBase = CVPixelBufferGetBaseAddress(source),
+                    let dstBase = CVPixelBufferGetBaseAddress(target) else {
+                  throw NSError(domain: "LiteViewYOLO26Probe", code: -1)
+              }
+              let srcW = CVPixelBufferGetWidth(source)
+              let srcH = CVPixelBufferGetHeight(source)
+              let dstW = CVPixelBufferGetWidth(target)
+              let dstH = CVPixelBufferGetHeight(target)
+              let scale = min(Double(dstW) / Double(srcW), Double(dstH) / Double(srcH))
+              let fitW = max(1, min(dstW, Int((Double(srcW) * scale).rounded())))
+              let fitH = max(1, min(dstH, Int((Double(srcH) * scale).rounded())))
+              let padX = (dstW - fitW) / 2
+              let padY = (dstH - fitH) / 2
+              let dstRowBytes = CVPixelBufferGetBytesPerRow(target)
+              memset(dstBase, 114, CVPixelBufferGetDataSize(target))
+              var src = vImage_Buffer(
+                  data: srcBase,
+                  height: vImagePixelCount(srcH),
+                  width: vImagePixelCount(srcW),
+                  rowBytes: CVPixelBufferGetBytesPerRow(source)
+              )
+              var dst = vImage_Buffer(
+                  data: dstBase.advanced(by: padY * dstRowBytes + padX * 4),
+                  height: vImagePixelCount(fitH),
+                  width: vImagePixelCount(fitW),
+                  rowBytes: dstRowBytes
+              )
+              let error = vImageScale_ARGB8888(&src, &dst, nil, vImage_Flags(kvImageHighQualityResampling))
+              guard error == kvImageNoError else {
+                  throw NSError(domain: "LiteViewYOLO26Probe", code: Int(error))
+              }
+              return (CFAbsoluteTimeGetCurrent() - started) * 1000.0
+          }
+
+          let config = MLModelConfiguration()
+          config.computeUnits = .cpuAndNeuralEngine
+          let model = try MLModel(contentsOf: modelURL, configuration: config)
+          guard let imageInput = model.modelDescription.inputDescriptionsByName.first(where: { $0.value.type == .image }),
+                let constraint = imageInput.value.imageConstraint,
+                constraint.pixelsWide == expectedSize,
+                constraint.pixelsHigh == expectedSize else {
+              fatalError("unexpected image input")
+          }
+
+          func predict() throws -> (Double, String) {
+              let provider = try MLDictionaryFeatureProvider(dictionary: [
+                  imageInput.key: MLFeatureValue(pixelBuffer: target)
+              ])
+              let started = CFAbsoluteTimeGetCurrent()
+              let output = try model.prediction(from: provider)
+              let elapsed = (CFAbsoluteTimeGetCurrent() - started) * 1000.0
+              let signature = output.featureNames.sorted().map { name -> String in
+                  guard let value = output.featureValue(for: name) else { return "\(name):missing" }
+                  if let array = value.multiArrayValue {
+                      return "\(name):" + array.shape.map { String($0.intValue) }.joined(separator: "x")
+                  }
+                  return "\(name):type\(value.type.rawValue)"
+              }.joined(separator: ",")
+              return (elapsed, signature)
+          }
+
+          for _ in 0..<2 {
+              _ = try scaleFit()
+              _ = try predict()
+          }
+          var prepTimes: [Double] = []
+          var predTimes: [Double] = []
+          var totals: [Double] = []
+          var signature = ""
+          for _ in 0..<10 {
+              let totalStart = CFAbsoluteTimeGetCurrent()
+              let prep = try scaleFit()
+              let (pred, sig) = try predict()
+              prepTimes.append(prep)
+              predTimes.append(pred)
+              totals.append((CFAbsoluteTimeGetCurrent() - totalStart) * 1000.0)
+              signature = sig
+          }
+          guard !signature.isEmpty else { fatalError("missing runtime output") }
+          func median(_ values: [Double]) -> Double {
+              let values = values.sorted()
+              return values[values.count / 2]
+          }
+          func p90(_ values: [Double]) -> Double {
+              let values = values.sorted()
+              return values[min(values.count - 1, Int(Double(values.count - 1) * 0.90))]
+          }
+          print(String(
+              format: "YOLO26_COREML_RUNTIME input=%d prep_median_ms=%.3f predict_median_ms=%.3f total_median_ms=%.3f total_p90_ms=%.3f outputs=%@",
+              expectedSize,
+              median(prepTimes),
+              median(predTimes),
+              median(totals),
+              p90(totals),
+              signature
+          ))
+          SWIFT
+          xcrun swiftc "$RUNNER_TEMP/yolo26_coreml_probe.swift" -o "$RUNNER_TEMP/yolo26_coreml_probe"
+
+      - name: Measure YOLO26n Core ML memory and latency
+        shell: bash
+        run: |
+          set -euo pipefail
+          SUMMARY='build/report/summary.md'
+          cat > "$SUMMARY" <<'EOF'
+          ## YOLO26n Core ML 384/448 candidate runtime
+
+          | input | prep median ms | predict median ms | total median ms | total p90 ms | max RSS MiB | peak footprint MiB | runtime outputs |
+          |---:|---:|---:|---:|---:|---:|---:|---|
+          EOF
+          for SIZE in 384 448; do
+            MODEL="$(find "build/compiled/$SIZE" -maxdepth 1 -type d -name '*.mlmodelc' -print -quit)"
+            OUT="build/report/runtime_${SIZE}.stdout"
+            ERR="build/report/runtime_${SIZE}.time"
+            /usr/bin/time -l "$RUNNER_TEMP/yolo26_coreml_probe" "$MODEL" "$SIZE" >"$OUT" 2>"$ERR"
+            cat "$OUT"
+            cat "$ERR"
+            PREP="$(sed -n 's/.*prep_median_ms=\([0-9.]*\).*/\1/p' "$OUT" | head -1)"
+            PRED="$(sed -n 's/.*predict_median_ms=\([0-9.]*\).*/\1/p' "$OUT" | head -1)"
+            TOTAL="$(sed -n 's/.*total_median_ms=\([0-9.]*\).*/\1/p' "$OUT" | head -1)"
+            P90="$(sed -n 's/.*total_p90_ms=\([0-9.]*\).*/\1/p' "$OUT" | head -1)"
+            OUTPUTS="$(sed -n 's/.*outputs=//p' "$OUT" | head -1)"
+            RSS="$(awk '/maximum resident set size/{print $1; exit}' "$ERR")"
+            PEAK="$(awk '/peak memory footprint/{print $1; exit}' "$ERR")"
+            RSS_MIB="$(awk -v b="$RSS" 'BEGIN {printf "%.1f", b/1048576.0}')"
+            PEAK_MIB="$(awk -v b="$PEAK" 'BEGIN {printf "%.1f", b/1048576.0}')"
+            echo "| $SIZE | $PREP | $PRED | $TOTAL | $P90 | $RSS_MIB | $PEAK_MIB | $OUTPUTS |" >> "$SUMMARY"
+          done
+          cat >> "$SUMMARY" <<'EOF'
+
+          This is a generic visible-person / Core ML candidate benchmark only. It does not modify or publish the production LiteView model or IPA.
+          EOF
+          cat "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+          cat "$SUMMARY"
+
+      - name: Upload candidate evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-yolo26n-small-person-candidate
+          path: |
+            ${{ steps.data.outputs.work }}/results/
+            build/report/
+          retention-days: 7
+          if-no-files-found: error
