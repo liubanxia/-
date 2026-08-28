@@ -1,0 +1,177 @@
+name: LiteView Background Processing ROI A-B
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/ios-realtime-vision-assist
+    paths:
+      - '.github/workflows/liteview-background-processing-roi-ab.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  background-processing-ab:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install export dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy<=2.3.5' 'coremltools>=9.0' 'ultralytics[export-coreml]'
+
+      - name: Export and compile YOLO11n 384
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/export build/compiled build/report
+          curl -fL --retry 8 --retry-delay 3 --retry-all-errors \
+            'https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt' \
+            -o build/export/yolo11n.pt
+          (
+            cd build/export
+            python - <<'PY'
+          from pathlib import Path
+          from ultralytics import YOLO
+          package = Path(YOLO('yolo11n.pt').export(format='coreml', imgsz=384, nms=False))
+          assert package.exists()
+          print('EXPORT_PASS')
+          PY
+          )
+          xcrun coremlc compile build/export/yolo11n.mlpackage build/compiled
+          test -d build/compiled/yolo11n.mlmodelc
+
+      - name: Build A-B probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/bg_roi_probe.swift" <<'SWIFT'
+          import CoreFoundation
+          import CoreML
+          import CoreVideo
+          import Foundation
+          import ImageIO
+          import Vision
+
+          guard CommandLine.arguments.count == 4 else {
+              fatalError("usage: probe <model> <global|two_roi> <foreground|background>")
+          }
+          let modelURL = URL(fileURLWithPath: CommandLine.arguments[1])
+          let mode = CommandLine.arguments[2]
+          let background = CommandLine.arguments[3] == "background"
+          guard ["global", "two_roi"].contains(mode) else { fatalError("bad mode") }
+
+          var source: CVPixelBuffer?
+          let attrs: [CFString: Any] = [
+              kCVPixelBufferCGImageCompatibilityKey: true,
+              kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+              kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+          ]
+          let status = CVPixelBufferCreate(kCFAllocatorDefault, 1920, 1080, kCVPixelFormatType_32BGRA, attrs as CFDictionary, &source)
+          guard status == kCVReturnSuccess, let pixelBuffer = source else { fatalError("pixel buffer failed") }
+          CVPixelBufferLockBaseAddress(pixelBuffer, [])
+          if let base = CVPixelBufferGetBaseAddress(pixelBuffer) { memset(base, 0, CVPixelBufferGetDataSize(pixelBuffer)) }
+          CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+
+          let config = MLModelConfiguration()
+          config.computeUnits = .cpuAndNeuralEngine
+          let mlModel = try MLModel(contentsOf: modelURL, configuration: config)
+          let visionModel = try VNCoreMLModel(for: mlModel)
+          let full = CGRect(x: 0, y: 0, width: 1, height: 1)
+          let left = CGRect(x: 0, y: 0, width: 0.68, height: 1)
+          let right = CGRect(x: 0.32, y: 0, width: 0.68, height: 1)
+          let pattern = mode == "global" ? [full] : [left, right]
+
+          func perform(_ roi: CGRect) throws -> (Double, [Int]) {
+              let request = VNCoreMLRequest(model: visionModel)
+              request.imageCropAndScaleOption = .scaleFit
+              request.regionOfInterest = roi
+              request.preferBackgroundProcessing = background
+              let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+              let started = CFAbsoluteTimeGetCurrent()
+              try handler.perform([request])
+              let elapsed = (CFAbsoluteTimeGetCurrent() - started) * 1000
+              let shape = (request.results ?? [])
+                  .compactMap { $0 as? VNCoreMLFeatureValueObservation }
+                  .compactMap { $0.featureValue.multiArrayValue }
+                  .first?.shape.map(\.intValue) ?? []
+              return (elapsed, shape)
+          }
+
+          for _ in 0..<2 { for roi in pattern { _ = try autoreleasepool { try perform(roi) } } }
+          var requestTimes: [Double] = []
+          var cycleTimes: [Double] = []
+          var shape: [Int] = []
+          for _ in 0..<20 {
+              let cycleStart = CFAbsoluteTimeGetCurrent()
+              for roi in pattern {
+                  let result = try autoreleasepool { try perform(roi) }
+                  requestTimes.append(result.0)
+                  shape = result.1
+              }
+              cycleTimes.append((CFAbsoluteTimeGetCurrent() - cycleStart) * 1000)
+          }
+          guard shape.count == 3, shape.contains(84) else { fatalError("bad output shape \(shape)") }
+          func median(_ a: [Double]) -> Double { let s = a.sorted(); return s[s.count / 2] }
+          func p90(_ a: [Double]) -> Double { let s = a.sorted(); return s[min(s.count - 1, Int(Double(s.count - 1) * 0.9))] }
+          print(String(format: "BG_AB mode=%@ background=%@ median_request_ms=%.3f p90_request_ms=%.3f median_cycle_ms=%.3f p90_cycle_ms=%.3f", mode, background.description, median(requestTimes), p90(requestTimes), median(cycleTimes), p90(cycleTimes)))
+          SWIFT
+          xcrun swiftc "$RUNNER_TEMP/bg_roi_probe.swift" -o "$RUNNER_TEMP/bg_roi_probe"
+
+      - name: Run foreground-background A-B
+        shell: bash
+        run: |
+          set -euo pipefail
+          SUMMARY='build/report/summary.md'
+          cat > "$SUMMARY" <<'EOF'
+          ## `preferBackgroundProcessing` A/B — YOLO11n 384
+
+          Same resident model, same 1920x1080 BGRA source, `.cpuAndNeuralEngine`, `.scaleFit`.
+
+          | mode | preference | median request ms | p90 request ms | median cycle ms | p90 cycle ms | max RSS MiB | peak footprint MiB |
+          |---|---|---:|---:|---:|---:|---:|---:|
+          EOF
+          for MODE in global two_roi; do
+            for PREF in foreground background; do
+              KEY="${MODE}_${PREF}"
+              OUT="build/report/${KEY}.stdout"
+              ERR="build/report/${KEY}.time"
+              /usr/bin/time -l "$RUNNER_TEMP/bg_roi_probe" build/compiled/yolo11n.mlmodelc "$MODE" "$PREF" >"$OUT" 2>"$ERR"
+              cat "$OUT"; cat "$ERR"
+              MED="$(sed -n 's/.*median_request_ms=\([0-9.]*\).*/\1/p' "$OUT")"
+              P90="$(sed -n 's/.*p90_request_ms=\([0-9.]*\).*/\1/p' "$OUT")"
+              CMED="$(sed -n 's/.*median_cycle_ms=\([0-9.]*\).*/\1/p' "$OUT")"
+              CP90="$(sed -n 's/.*p90_cycle_ms=\([0-9.]*\).*/\1/p' "$OUT")"
+              RSS="$(awk '/maximum resident set size/{print $1; exit}' "$ERR")"
+              PEAK="$(awk '/peak memory footprint/{print $1; exit}' "$ERR")"
+              RSSM="$(awk -v b="$RSS" 'BEGIN {printf "%.1f", b/1048576}')"
+              PEAKM="$(awk -v b="$PEAK" 'BEGIN {printf "%.1f", b/1048576}')"
+              echo "| $MODE | $PREF | $MED | $P90 | $CMED | $CP90 | $RSSM | $PEAKM |" >> "$SUMMARY"
+            done
+          done
+          cat >> "$SUMMARY" <<'EOF'
+
+          Apple documents `preferBackgroundProcessing` as a resource-burden hint, not a strict guarantee. These are comparative macOS results only; no production code or IPA is changed.
+          EOF
+          cat "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+          cat "$SUMMARY"
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-background-processing-roi-ab
+          path: build/report/
+          retention-days: 7
+          if-no-files-found: error
