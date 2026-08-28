@@ -1,0 +1,76 @@
+name: Natural Person Tile Benchmark
+
+on:
+  push:
+    branches:
+      - feature/ios-realtime-vision-assist
+    paths:
+      - 'ios/PhoenixRealtimeVisionAssist/Tests/NaturalPersonTileBenchmark/**'
+      - '.github/workflows/ios-liteview-natural-person-tile-benchmark.yml'
+  workflow_dispatch:
+
+jobs:
+  natural-person-tile-benchmark:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install benchmark dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install ultralytics opencv-python-headless
+
+      - name: Download COCO128
+        id: data
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/natural-person-tile-benchmark"
+          mkdir -p "$WORK/data" "$WORK/results"
+          curl -fL --retry 4 --retry-delay 2 \
+            https://github.com/ultralytics/assets/releases/download/v0.0.0/coco128.zip \
+            -o "$WORK/coco128.zip"
+          unzip -q "$WORK/coco128.zip" -d "$WORK/data"
+          test -d "$WORK/data/coco128/images"
+          test -d "$WORK/data/coco128/labels"
+          echo "work=$WORK" >> "$GITHUB_OUTPUT"
+          echo "dataset=$WORK/data/coco128" >> "$GITHUB_OUTPUT"
+
+      - name: Compare full-frame and overlap-tile detection
+        shell: bash
+        env:
+          WORK: ${{ steps.data.outputs.work }}
+          DATASET: ${{ steps.data.outputs.dataset }}
+        run: |
+          set -euo pipefail
+          python ios/PhoenixRealtimeVisionAssist/Tests/NaturalPersonTileBenchmark/run_natural_person_tile_benchmark.py \
+            --dataset "$DATASET" \
+            --output "$WORK/results" \
+            --models yolo11n.pt yolo11s.pt \
+            --reference-imgsz 640 \
+            --tile-fraction 0.58 \
+            --confidence 0.05 \
+            --iou-threshold 0.30
+          cat "$WORK/results/summary_natural_person_tile_benchmark.md" >> "$GITHUB_STEP_SUMMARY"
+          echo '--- natural_person_tile_benchmark.json ---'
+          cat "$WORK/results/natural_person_tile_benchmark.json"
+
+      - name: Upload tile benchmark evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: natural-person-tile-benchmark-v1
+          path: |
+            ${{ steps.data.outputs.work }}/results/natural_person_tile_benchmark.json
+            ${{ steps.data.outputs.work }}/results/natural_person_tile_benchmark.csv
+            ${{ steps.data.outputs.work }}/results/summary_natural_person_tile_benchmark.md
+            ${{ steps.data.outputs.work }}/results/natural_person_tile_gallery.jpg
+          retention-days: 7
+          if-no-files-found: error
