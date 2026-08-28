@@ -44,7 +44,7 @@ jobs:
           echo "work=$WORK" >> "$GITHUB_OUTPUT"
           echo "dataset=$WORK/data/coco128" >> "$GITHUB_OUTPUT"
 
-      - name: Compare full-frame and selective ROI second-look
+      - name: Compare full-frame and nano selective ROI second-look
         shell: bash
         env:
           WORK: ${{ steps.data.outputs.work }}
@@ -55,7 +55,7 @@ jobs:
             --dataset "$DATASET" \
             --output "$WORK/results" \
             --proposal-model yolo11n.pt \
-            --second-model yolo11s.pt \
+            --second-model yolo11n.pt \
             --proposal-conf 0.01 \
             --final-conf 0.05 \
             --second-conf 0.08 \
@@ -70,10 +70,10 @@ jobs:
           echo '--- selective_roi_benchmark.json ---'
           cat "$WORK/results/selective_roi_benchmark.json"
 
-      - name: Upload selective ROI evidence
+      - name: Upload nano selective ROI evidence
         uses: actions/upload-artifact@v4
         with:
-          name: natural-person-selective-roi-v1
+          name: natural-person-selective-roi-nano-v2
           path: |
             ${{ steps.data.outputs.work }}/results/selective_roi_benchmark.json
             ${{ steps.data.outputs.work }}/results/selective_roi_benchmark.csv
