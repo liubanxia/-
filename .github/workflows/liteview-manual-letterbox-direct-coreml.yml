@@ -1,0 +1,332 @@
+name: LiteView Manual Letterbox Direct CoreML Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/ios-realtime-vision-assist
+    paths:
+      - '.github/workflows/liteview-manual-letterbox-direct-coreml.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  manual-letterbox-direct-coreml:
+    runs-on: macos-15
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install export dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy<=2.3.5' 'coremltools>=9.0' 'ultralytics[export-coreml]'
+
+      - name: Download YOLO11n
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/models
+          curl -fL --retry 8 --retry-delay 3 --retry-all-errors \
+            'https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt' \
+            -o build/models/yolo11n.pt
+          test -s build/models/yolo11n.pt
+
+      - name: Export and compile 384 448 512
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/export build/compiled build/report
+          for SIZE in 384 448 512; do
+            DIR="build/export/$SIZE"
+            mkdir -p "$DIR" "build/compiled/$SIZE"
+            cp build/models/yolo11n.pt "$DIR/yolo11n.pt"
+            (
+              cd "$DIR"
+              SIZE="$SIZE" python - <<'PY'
+          import os
+          from pathlib import Path
+          import coremltools as ct
+          from ultralytics import YOLO
+
+          size = int(os.environ['SIZE'])
+          package = Path(YOLO('yolo11n.pt').export(format='coreml', imgsz=size, nms=False))
+          spec = ct.utils.load_spec(str(package))
+          images = [x.type.imageType for x in spec.description.input if x.type.WhichOneof('Type') == 'imageType']
+          if len(images) != 1 or (int(images[0].width), int(images[0].height)) != (size, size):
+              raise SystemExit(f'bad input contract for {size}')
+          outputs = [x.name for x in spec.description.output]
+          if not outputs:
+              raise SystemExit('missing output')
+          print(f'EXPORT_PASS {size} outputs={outputs}')
+          PY
+            )
+            PKG="$(find "$DIR" -maxdepth 2 -type d -name '*.mlpackage' -print -quit)"
+            test -n "$PKG"
+            xcrun coremlc compile "$PKG" "build/compiled/$SIZE"
+            test -d "build/compiled/$SIZE/yolo11n.mlmodelc"
+          done
+
+      - name: Build manual letterbox direct Core ML probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/manual_direct_probe.swift" <<'SWIFT'
+          import Accelerate
+          import CoreFoundation
+          import CoreML
+          import CoreVideo
+          import Foundation
+
+          guard CommandLine.arguments.count == 4 else {
+              fatalError("usage: manual_direct_probe <compiled.mlmodelc> <resident|reload> <size>")
+          }
+
+          let modelURL = URL(fileURLWithPath: CommandLine.arguments[1])
+          let mode = CommandLine.arguments[2]
+          guard mode == "resident" || mode == "reload" else { fatalError("bad mode") }
+          guard let expectedSize = Int(CommandLine.arguments[3]), expectedSize > 0 else { fatalError("bad size") }
+
+          func makePixelBuffer(width: Int, height: Int) throws -> CVPixelBuffer {
+              var buffer: CVPixelBuffer?
+              let attrs: [CFString: Any] = [
+                  kCVPixelBufferCGImageCompatibilityKey: true,
+                  kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+                  kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+              ]
+              let status = CVPixelBufferCreate(
+                  kCFAllocatorDefault,
+                  width,
+                  height,
+                  kCVPixelFormatType_32BGRA,
+                  attrs as CFDictionary,
+                  &buffer
+              )
+              guard status == kCVReturnSuccess, let buffer else {
+                  throw NSError(domain: "LiteViewProbe", code: Int(status))
+              }
+              return buffer
+          }
+
+          let source = try makePixelBuffer(width: 1920, height: 1080)
+          let target = try makePixelBuffer(width: expectedSize, height: expectedSize)
+
+          CVPixelBufferLockBaseAddress(source, [])
+          if let base = CVPixelBufferGetBaseAddress(source) {
+              let rowBytes = CVPixelBufferGetBytesPerRow(source)
+              for y in 0..<1080 {
+                  let row = base.advanced(by: y * rowBytes).assumingMemoryBound(to: UInt8.self)
+                  for x in stride(from: 0, to: 1920 * 4, by: 4) {
+                      row[x] = UInt8((x / 4 + y) & 0xFF)
+                      row[x + 1] = UInt8((y * 3) & 0xFF)
+                      row[x + 2] = UInt8(((x / 4) * 5) & 0xFF)
+                      row[x + 3] = 255
+                  }
+              }
+          }
+          CVPixelBufferUnlockBaseAddress(source, [])
+
+          func manualScaleFit(source: CVPixelBuffer, target: CVPixelBuffer) throws -> Double {
+              let started = CFAbsoluteTimeGetCurrent()
+              CVPixelBufferLockBaseAddress(source, .readOnly)
+              CVPixelBufferLockBaseAddress(target, [])
+              defer {
+                  CVPixelBufferUnlockBaseAddress(target, [])
+                  CVPixelBufferUnlockBaseAddress(source, .readOnly)
+              }
+
+              guard let srcBase = CVPixelBufferGetBaseAddress(source),
+                    let dstBase = CVPixelBufferGetBaseAddress(target) else {
+                  throw NSError(domain: "LiteViewProbe", code: -1)
+              }
+
+              let srcW = CVPixelBufferGetWidth(source)
+              let srcH = CVPixelBufferGetHeight(source)
+              let dstW = CVPixelBufferGetWidth(target)
+              let dstH = CVPixelBufferGetHeight(target)
+              let scale = min(Double(dstW) / Double(srcW), Double(dstH) / Double(srcH))
+              let fitW = max(1, min(dstW, Int((Double(srcW) * scale).rounded())))
+              let fitH = max(1, min(dstH, Int((Double(srcH) * scale).rounded())))
+              let padX = max(0, (dstW - fitW) / 2)
+              let padY = max(0, (dstH - fitH) / 2)
+              let dstRowBytes = CVPixelBufferGetBytesPerRow(target)
+
+              memset(dstBase, 114, CVPixelBufferGetDataSize(target))
+
+              var src = vImage_Buffer(
+                  data: srcBase,
+                  height: vImagePixelCount(srcH),
+                  width: vImagePixelCount(srcW),
+                  rowBytes: CVPixelBufferGetBytesPerRow(source)
+              )
+              var dst = vImage_Buffer(
+                  data: dstBase.advanced(by: padY * dstRowBytes + padX * 4),
+                  height: vImagePixelCount(fitH),
+                  width: vImagePixelCount(fitW),
+                  rowBytes: dstRowBytes
+              )
+              let error = vImageScale_ARGB8888(&src, &dst, nil, vImage_Flags(kvImageHighQualityResampling))
+              guard error == kvImageNoError else {
+                  throw NSError(domain: "LiteViewProbe", code: Int(error))
+              }
+              return (CFAbsoluteTimeGetCurrent() - started) * 1000.0
+          }
+
+          func loadModel() throws -> (MLModel, String) {
+              let configuration = MLModelConfiguration()
+              configuration.computeUnits = .cpuAndNeuralEngine
+              let model = try MLModel(contentsOf: modelURL, configuration: configuration)
+              guard let input = model.modelDescription.inputDescriptionsByName.first(where: { $0.value.type == .image }),
+                    let constraint = input.value.imageConstraint,
+                    constraint.pixelsWide == expectedSize,
+                    constraint.pixelsHigh == expectedSize else {
+                  fatalError("unexpected model image input")
+              }
+              return (model, input.key)
+          }
+
+          func predict(model: MLModel, inputName: String) throws -> (Double, [Int]) {
+              let provider = try MLDictionaryFeatureProvider(dictionary: [
+                  inputName: MLFeatureValue(pixelBuffer: target)
+              ])
+              let started = CFAbsoluteTimeGetCurrent()
+              let output = try model.prediction(from: provider)
+              let elapsed = (CFAbsoluteTimeGetCurrent() - started) * 1000.0
+              let shape = output.featureNames
+                  .compactMap { output.featureValue(for: $0)?.multiArrayValue }
+                  .first?
+                  .shape
+                  .map(\.intValue) ?? []
+              return (elapsed, shape)
+          }
+
+          var prepTimes: [Double] = []
+          var predictTimes: [Double] = []
+          var totalTimes: [Double] = []
+          var observedShape: [Int] = []
+
+          if mode == "resident" {
+              let (model, inputName) = try loadModel()
+              for _ in 0..<2 {
+                  _ = try manualScaleFit(source: source, target: target)
+                  _ = try predict(model: model, inputName: inputName)
+              }
+              for _ in 0..<10 {
+                  let totalStart = CFAbsoluteTimeGetCurrent()
+                  let prep = try manualScaleFit(source: source, target: target)
+                  let (pred, shape) = try predict(model: model, inputName: inputName)
+                  prepTimes.append(prep)
+                  predictTimes.append(pred)
+                  totalTimes.append((CFAbsoluteTimeGetCurrent() - totalStart) * 1000.0)
+                  observedShape = shape
+              }
+          } else {
+              for _ in 0..<2 {
+                  autoreleasepool {
+                      _ = try? manualScaleFit(source: source, target: target)
+                      if let loaded = try? loadModel() { _ = try? predict(model: loaded.0, inputName: loaded.1) }
+                  }
+              }
+              for _ in 0..<8 {
+                  let tuple: (Double, Double, Double, [Int]) = try autoreleasepool {
+                      let totalStart = CFAbsoluteTimeGetCurrent()
+                      let prep = try manualScaleFit(source: source, target: target)
+                      let (model, inputName) = try loadModel()
+                      let (pred, shape) = try predict(model: model, inputName: inputName)
+                      let total = (CFAbsoluteTimeGetCurrent() - totalStart) * 1000.0
+                      return (prep, pred, total, shape)
+                  }
+                  prepTimes.append(tuple.0)
+                  predictTimes.append(tuple.1)
+                  totalTimes.append(tuple.2)
+                  observedShape = tuple.3
+              }
+          }
+
+          guard observedShape.count == 3, observedShape.contains(84) else {
+              fatalError("unexpected raw output shape: \(observedShape)")
+          }
+
+          func median(_ values: [Double]) -> Double {
+              let sorted = values.sorted()
+              return sorted[sorted.count / 2]
+          }
+          func p90(_ values: [Double]) -> Double {
+              let sorted = values.sorted()
+              return sorted[min(sorted.count - 1, Int(Double(sorted.count - 1) * 0.90))]
+          }
+
+          print(String(
+              format: "MANUAL_DIRECT mode=%@ source=1920x1080 input=%dx%d prep_median_ms=%.3f predict_median_ms=%.3f total_median_ms=%.3f total_p90_ms=%.3f shape=%@",
+              mode,
+              expectedSize,
+              expectedSize,
+              median(prepTimes),
+              median(predictTimes),
+              median(totalTimes),
+              p90(totalTimes),
+              observedShape.map(String.init).joined(separator: "x")
+          ))
+          SWIFT
+          xcrun swiftc "$RUNNER_TEMP/manual_direct_probe.swift" -o "$RUNNER_TEMP/manual_direct_probe"
+
+      - name: Measure manual letterbox resident and reload paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          SUMMARY='build/report/summary.md'
+          cat > "$SUMMARY" <<'EOF'
+          ## LiteView manual-letterbox direct Core ML validation
+
+          Source is a reusable 1920x1080 BGRA `CVPixelBuffer`. Preprocessing uses reusable square BGRA buffers and `vImageScale_ARGB8888`; inference uses direct `MLModel.prediction` with `cpuAndNeuralEngine`.
+
+          | input | lifecycle | prep median ms | predict median ms | total median ms | total p90 ms | max RSS MiB | peak footprint MiB | raw output |
+          |---:|---|---:|---:|---:|---:|---:|---:|---|
+          EOF
+
+          for SIZE in 384 448 512; do
+            MODEL="build/compiled/$SIZE/yolo11n.mlmodelc"
+            for MODE in resident reload; do
+              OUT="build/report/${SIZE}_${MODE}.stdout"
+              ERR="build/report/${SIZE}_${MODE}.time"
+              /usr/bin/time -l "$RUNNER_TEMP/manual_direct_probe" "$MODEL" "$MODE" "$SIZE" >"$OUT" 2>"$ERR"
+              cat "$OUT"
+              cat "$ERR"
+              grep -q "MANUAL_DIRECT mode=${MODE}" "$OUT"
+              PREP="$(sed -n 's/.*prep_median_ms=\([0-9.]*\).*/\1/p' "$OUT" | head -1)"
+              PRED="$(sed -n 's/.*predict_median_ms=\([0-9.]*\).*/\1/p' "$OUT" | head -1)"
+              TOTAL="$(sed -n 's/.*total_median_ms=\([0-9.]*\).*/\1/p' "$OUT" | head -1)"
+              P90="$(sed -n 's/.*total_p90_ms=\([0-9.]*\).*/\1/p' "$OUT" | head -1)"
+              SHAPE="$(sed -n 's/.*shape=\([^ ]*\).*/\1/p' "$OUT" | head -1)"
+              RSS="$(awk '/maximum resident set size/{print $1; exit}' "$ERR")"
+              PEAK="$(awk '/peak memory footprint/{print $1; exit}' "$ERR")"
+              RSS_MIB="$(awk -v b="$RSS" 'BEGIN {printf "%.1f", b/1048576.0}')"
+              PEAK_MIB="$(awk -v b="$PEAK" 'BEGIN {printf "%.1f", b/1048576.0}')"
+              echo "| $SIZE | $MODE | $PREP | $PRED | $TOTAL | $P90 | $RSS_MIB | $PEAK_MIB | $SHAPE |" >> "$SUMMARY"
+            done
+          done
+
+          cat >> "$SUMMARY" <<'EOF'
+
+          This is comparative macOS evidence, not an iPhone ReplayKit limit measurement. The workflow does not replace the production model or publish an IPA.
+          EOF
+          cat "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+          cat "$SUMMARY"
+
+      - name: Upload manual direct-path evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-manual-letterbox-direct-coreml
+          path: build/report/
+          retention-days: 7
+          if-no-files-found: error
