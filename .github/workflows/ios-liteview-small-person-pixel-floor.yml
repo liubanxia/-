@@ -1,0 +1,78 @@
+name: LiteView Generic Small-Person Pixel Floor
+
+on:
+  push:
+    branches:
+      - feature/ios-realtime-vision-assist
+    paths:
+      - 'ios/PhoenixRealtimeVisionAssist/Tests/OfflineVisualBenchmark/run_small_person_pixel_floor.py'
+      - '.github/workflows/ios-liteview-small-person-pixel-floor.yml'
+  workflow_dispatch:
+
+jobs:
+  small-person-pixel-floor:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install benchmark dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install ultralytics opencv-python-headless
+
+      - name: Download COCO128
+        id: data
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/liteview-small-person-v1"
+          mkdir -p "$WORK/data" "$WORK/results"
+          curl -fL --retry 4 --retry-delay 2 \
+            https://github.com/ultralytics/assets/releases/download/v0.0.0/coco128.zip \
+            -o "$WORK/coco128.zip"
+          unzip -q "$WORK/coco128.zip" -d "$WORK/data"
+          test -d "$WORK/data/coco128/images"
+          test -d "$WORK/data/coco128/labels"
+          echo "work=$WORK" >> "$GITHUB_OUTPUT"
+          echo "dataset=$WORK/data/coco128" >> "$GITHUB_OUTPUT"
+
+      - name: Measure person pixel floor
+        shell: bash
+        env:
+          WORK: ${{ steps.data.outputs.work }}
+          DATASET: ${{ steps.data.outputs.dataset }}
+        run: |
+          set -euo pipefail
+          python ios/PhoenixRealtimeVisionAssist/Tests/OfflineVisualBenchmark/run_small_person_pixel_floor.py \
+            --dataset "$DATASET" \
+            --output "$WORK/results" \
+            --models yolo11n.pt yolo11s.pt \
+            --heights 16 24 32 48 64 96 \
+            --imgsz 640 960 \
+            --samples-per-height 24 \
+            --confidence 0.05 \
+            --iou-threshold 0.30 \
+            --seed 20260828
+          cat "$WORK/results/summary_small_person_pixel_floor.md" >> "$GITHUB_STEP_SUMMARY"
+          echo '--- small_person_pixel_floor.json ---'
+          cat "$WORK/results/small_person_pixel_floor.json"
+
+      - name: Upload pixel-floor evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-generic-small-person-pixel-floor-v1
+          path: |
+            ${{ steps.data.outputs.work }}/results/small_person_pixel_floor.json
+            ${{ steps.data.outputs.work }}/results/small_person_pixel_floor.csv
+            ${{ steps.data.outputs.work }}/results/summary_small_person_pixel_floor.md
+            ${{ steps.data.outputs.work }}/results/small_person_pixel_floor_gallery.jpg
+          retention-days: 7
+          if-no-files-found: error
