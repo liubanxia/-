@@ -25,12 +25,12 @@ struct LightweightVisionAnalysis {
     let successfulLaneCount: Int
 }
 
-/// ReplayKit-aware hybrid detector for rendered game characters.
+/// ReplayKit-aware visible-person analysis with one resident tiny Core ML detector.
 ///
-/// A single small Core ML detector performs sparse global reacquisition because Apple's built-in
-/// human rectangle request is not reliable for rendered game characters. Once a target is found,
-/// VNTrackObjectRequest carries the lock between scans. The Core ML object is released immediately
-/// after every global scan so the Broadcast Upload Extension does not keep model memory resident.
+/// The normal path is VNTrackObjectRequest. Core ML performs a low-frequency full-frame refresh,
+/// and when tracking is lost between full refreshes it scans only one overlapping 68% ROI per
+/// eligible analysis frame. ROI phases alternate so a complete sweep never requires two model
+/// invocations in the same frame. No frame content is persisted.
 final class LightweightBroadcastAnalyzer {
     private struct TargetObservation {
         let point: LightweightTargetPoint
@@ -42,8 +42,9 @@ final class LightweightBroadcastAnalyzer {
     private let telemetry = LiteViewInferenceTelemetryPublisher()
     private var sequenceHandler = VNSequenceRequestHandler()
     private var trackedObservation: VNDetectedObjectObservation?
-    private var lastHeavyScanUptime: TimeInterval = 0
+    private var lastFullScanUptime: TimeInterval = 0
     private var lastHeavyTargetCount = 0
+    private var roiPhase = 0
     private var stabilizedTarget: LightweightTargetPoint?
     private var lastConfirmedPoint: LightweightTargetPoint?
     private var lastConfirmedUptime: TimeInterval = 0
@@ -56,8 +57,9 @@ final class LightweightBroadcastAnalyzer {
         telemetry.reset()
         sequenceHandler = VNSequenceRequestHandler()
         trackedObservation = nil
-        lastHeavyScanUptime = 0
+        lastFullScanUptime = 0
         lastHeavyTargetCount = 0
+        roiPhase = 0
         stabilizedTarget = nil
         lastConfirmedPoint = nil
         lastConfirmedUptime = 0
@@ -70,6 +72,9 @@ final class LightweightBroadcastAnalyzer {
         nanoDetector.releaseResources()
         trackedObservation = nil
         sequenceHandler = VNSequenceRequestHandler()
+        lastFullScanUptime = 0
+        lastHeavyTargetCount = 0
+        roiPhase = 0
         stabilizedTarget = nil
         lastConfirmedPoint = nil
         lastConfirmedUptime = 0
@@ -92,10 +97,12 @@ final class LightweightBroadcastAnalyzer {
         var resultSource: LiteViewTelemetrySource = .none
         var nanoResult: BroadcastNanoDetectionResult?
 
-        let globalRefreshInterval: TimeInterval = trackedObservation == nil ? 1.15 : 2.15
-        let heavyRefreshDue = lastHeavyScanUptime == 0 || now - lastHeavyScanUptime >= globalRefreshInterval
+        // A full scan is deliberately sparse. With no lock, the alternating ROI phases fill the
+        // gaps between global refreshes; with a lock, the fast tracker handles intermediate frames.
+        let fullRefreshInterval: TimeInterval = trackedObservation == nil ? 2.60 : 3.20
+        let fullRefreshDue = lastFullScanUptime == 0 || now - lastFullScanUptime >= fullRefreshInterval
 
-        if !heavyRefreshDue, let trackedObservation {
+        if !fullRefreshDue, let trackedObservation {
             attemptedLaneCount += 1
             if let tracked = runFastTracker(
                 from: trackedObservation,
@@ -112,60 +119,68 @@ final class LightweightBroadcastAnalyzer {
             }
         }
 
-        if heavyRefreshDue || currentObservation == nil {
+        if fullRefreshDue {
             attemptedLaneCount += 1
             let result = nanoDetector.detect(
                 in: pixelBuffer,
                 orientation: orientation,
-                minimumConfidence: 0.12
+                minimumConfidence: 0.12,
+                regionOfInterest: CGRect(x: 0, y: 0, width: 1, height: 1),
+                preferBackgroundProcessing: true
             )
             nanoResult = result
-            lastHeavyScanUptime = now
-
-            // Do not keep Core ML resident inside the ReplayKit process. The next sparse global
-            // reacquisition will reload the single detector; tracking frames stay model-free.
-            nanoDetector.releaseResources()
+            lastFullScanUptime = now
             sequenceHandler = VNSequenceRequestHandler()
+            applyDetectorResult(
+                result,
+                currentObservation: &currentObservation,
+                targetCount: &targetCount,
+                successfulLaneCount: &successfulLaneCount,
+                resultSource: &resultSource
+            )
+        } else if currentObservation == nil {
+            attemptedLaneCount += 1
+            let roi = nextSparseROI(pixelBuffer: pixelBuffer, orientation: orientation)
+            let result = nanoDetector.detect(
+                in: pixelBuffer,
+                orientation: orientation,
+                minimumConfidence: 0.09,
+                regionOfInterest: roi,
+                preferBackgroundProcessing: false
+            )
+            nanoResult = result
+            roiPhase = (roiPhase + 1) & 1
+            sequenceHandler = VNSequenceRequestHandler()
+            applyDetectorResult(
+                result,
+                currentObservation: &currentObservation,
+                targetCount: &targetCount,
+                successfulLaneCount: &successfulLaneCount,
+                resultSource: &resultSource
+            )
+        }
 
-            if result.succeeded {
+        if nanoResult?.succeeded == false {
+            // Built-in Vision is only a last-resort execution fallback. It does not replace the
+            // tiny model when the model executes successfully but returns no visible person.
+            attemptedLaneCount += 1
+            if let fallback = runHumanRectangleFallback(
+                pixelBuffer: pixelBuffer,
+                orientation: orientation
+            ) {
                 successfulLaneCount += 1
-                targetCount = result.detections.count
-                lastHeavyTargetCount = result.detections.count
-
-                if let selected = selectPrimaryNanoTarget(result.detections) {
-                    currentObservation = .init(
-                        point: selected.point,
-                        confidence: selected.confidence,
-                        boundingBox: selected.boundingBox
-                    )
-                    trackedObservation = VNDetectedObjectObservation(boundingBox: selected.boundingBox)
-                    resultSource = .coreML
-                } else {
-                    currentObservation = nil
-                    trackedObservation = nil
+                targetCount = fallback.count
+                lastHeavyTargetCount = fallback.count
+                currentObservation = fallback.primary
+                trackedObservation = fallback.primary.map {
+                    VNDetectedObjectObservation(boundingBox: $0.boundingBox)
                 }
+                resultSource = fallback.count > 0 ? .visionFallback : .none
             } else {
-                // Built-in Vision remains a last-resort fallback only when the model itself cannot
-                // execute. It is not the primary game-character detector.
-                attemptedLaneCount += 1
-                if let fallback = runHumanRectangleFallback(
-                    pixelBuffer: pixelBuffer,
-                    orientation: orientation
-                ) {
-                    successfulLaneCount += 1
-                    targetCount = fallback.count
-                    lastHeavyTargetCount = fallback.count
-                    currentObservation = fallback.primary
-                    trackedObservation = fallback.primary.map {
-                        VNDetectedObjectObservation(boundingBox: $0.boundingBox)
-                    }
-                    resultSource = fallback.count > 0 ? .visionFallback : .none
-                } else {
-                    targetCount = 0
-                    lastHeavyTargetCount = 0
-                    currentObservation = nil
-                    trackedObservation = nil
-                }
+                targetCount = 0
+                lastHeavyTargetCount = 0
+                currentObservation = nil
+                trackedObservation = nil
             }
         }
 
@@ -198,6 +213,61 @@ final class LightweightBroadcastAnalyzer {
             attemptedLaneCount: attemptedLaneCount,
             successfulLaneCount: successfulLaneCount
         )
+    }
+
+    private func applyDetectorResult(
+        _ result: BroadcastNanoDetectionResult,
+        currentObservation: inout TargetObservation?,
+        targetCount: inout Int,
+        successfulLaneCount: inout Int,
+        resultSource: inout LiteViewTelemetrySource
+    ) {
+        guard result.succeeded else { return }
+        successfulLaneCount += 1
+        targetCount = result.detections.count
+        lastHeavyTargetCount = result.detections.count
+
+        if let selected = selectPrimaryNanoTarget(result.detections) {
+            currentObservation = .init(
+                point: selected.point,
+                confidence: selected.confidence,
+                boundingBox: selected.boundingBox
+            )
+            trackedObservation = VNDetectedObjectObservation(boundingBox: selected.boundingBox)
+            resultSource = .coreML
+        } else {
+            currentObservation = nil
+            trackedObservation = nil
+        }
+    }
+
+    private func nextSparseROI(
+        pixelBuffer: CVPixelBuffer,
+        orientation: CGImagePropertyOrientation
+    ) -> CGRect {
+        let rawWidth = Double(CVPixelBufferGetWidth(pixelBuffer))
+        let rawHeight = Double(CVPixelBufferGetHeight(pixelBuffer))
+        let width: Double
+        let height: Double
+        switch orientation {
+        case .left, .leftMirrored, .right, .rightMirrored:
+            width = rawHeight
+            height = rawWidth
+        default:
+            width = rawWidth
+            height = rawHeight
+        }
+
+        let coverage = 0.68
+        let offset = 1.0 - coverage
+        if width >= height {
+            return roiPhase == 0
+                ? CGRect(x: 0, y: 0, width: coverage, height: 1)
+                : CGRect(x: offset, y: 0, width: coverage, height: 1)
+        }
+        return roiPhase == 0
+            ? CGRect(x: 0, y: offset, width: 1, height: coverage)
+            : CGRect(x: 0, y: 0, width: 1, height: coverage)
     }
 
     private func runFastTracker(

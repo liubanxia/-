@@ -22,6 +22,7 @@ struct BroadcastNanoDetectionResult: Sendable {
 
 /// Tiny Core ML detector for the ReplayKit process.
 /// Multiple compatible detectors can live on disk, but only one model is resident at a time.
+/// The same resident model can run either a full-frame request or a sparse Vision ROI request.
 final class BroadcastNanoPersonDetector {
     private struct RawCandidate {
         let x: Double
@@ -52,6 +53,7 @@ final class BroadcastNanoPersonDetector {
     }
 
     private static let preferredNames = ["yolo11n", "YOLOv3TinyInt8LUT"]
+    private static let unitROI = CGRect(x: 0, y: 0, width: 1, height: 1)
 
     private var candidateURLs: [URL]?
     private var activeURL: URL?
@@ -99,9 +101,12 @@ final class BroadcastNanoPersonDetector {
     func detect(
         in pixelBuffer: CVPixelBuffer,
         orientation: CGImagePropertyOrientation,
-        minimumConfidence: Double = 0.22
+        minimumConfidence: Double = 0.22,
+        regionOfInterest requestedROI: CGRect = unitROI,
+        preferBackgroundProcessing: Bool = false
     ) -> BroadcastNanoDetectionResult {
-        guard let model = ensureModel() else {
+        guard let roi = Self.validatedROI(requestedROI),
+              let model = ensureModel() else {
             return .init(
                 detections: [],
                 succeeded: false,
@@ -115,7 +120,13 @@ final class BroadcastNanoPersonDetector {
 
         let request = VNCoreMLRequest(model: model)
         request.imageCropAndScaleOption = .scaleFit
-        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation, options: [:])
+        request.regionOfInterest = roi
+        request.preferBackgroundProcessing = preferBackgroundProcessing
+        let handler = VNImageRequestHandler(
+            cvPixelBuffer: pixelBuffer,
+            orientation: orientation,
+            options: [:]
+        )
         let modelName = activeURL?.deletingPathExtension().lastPathComponent
 
         do {
@@ -133,12 +144,17 @@ final class BroadcastNanoPersonDetector {
             )
         }
 
-        let geometry = Self.sourceGeometry(pixelBuffer: pixelBuffer, orientation: orientation)
+        let fullGeometry = Self.sourceGeometry(pixelBuffer: pixelBuffer, orientation: orientation)
+        let roiGeometry = SourceGeometry(
+            width: fullGeometry.width * Double(roi.width),
+            height: fullGeometry.height * Double(roi.height)
+        )
         switch decodeResults(
             request.results ?? [],
             minimumConfidence: minimumConfidence,
-            geometry: geometry,
-            inputSize: activeModelInputSize
+            geometry: roiGeometry,
+            inputSize: activeModelInputSize,
+            regionOfInterest: roi
         ) {
         case let .detections(detections, decoder):
             if !detections.isEmpty { reportVisibleDetection() }
@@ -205,7 +221,8 @@ final class BroadcastNanoPersonDetector {
         _ results: [VNObservation],
         minimumConfidence: Double,
         geometry: SourceGeometry,
-        inputSize: ModelInputSize?
+        inputSize: ModelInputSize?,
+        regionOfInterest roi: CGRect
     ) -> DecodeResult {
         let objectResults = results.compactMap { $0 as? VNRecognizedObjectObservation }
         if !objectResults.isEmpty {
@@ -214,7 +231,9 @@ final class BroadcastNanoPersonDetector {
                 guard let best = observation.labels.max(by: { $0.confidence < $1.confidence }) else { return nil }
                 let label = best.identifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 guard acceptedLabels.contains(label), Double(best.confidence) >= minimumConfidence else { return nil }
-                let box = observation.boundingBox
+                let localBox = observation.boundingBox
+                guard localBox.width > 0.006, localBox.height > 0.012 else { return nil }
+                let box = Self.fullFrameVisionBox(forLocalBox: localBox, roi: roi)
                 guard box.width > 0.006, box.height > 0.012 else { return nil }
                 return .init(
                     boundingBox: box,
@@ -237,7 +256,7 @@ final class BroadcastNanoPersonDetector {
 
         if let pairCandidates = decodeCoordinateConfidencePair(features, minimumConfidence: minimumConfidence) {
             return .detections(
-                makeDetections(from: pairCandidates, geometry: geometry),
+                makeDetections(from: pairCandidates, geometry: geometry, regionOfInterest: roi),
                 .coordinateConfidence
             )
         }
@@ -255,7 +274,7 @@ final class BroadcastNanoPersonDetector {
                 return .unsupported
             }
             return .detections(
-                makeDetections(from: candidates, geometry: geometry),
+                makeDetections(from: candidates, geometry: geometry, regionOfInterest: roi),
                 .ultralyticsRaw
             )
         }
@@ -349,7 +368,8 @@ final class BroadcastNanoPersonDetector {
 
     private func makeDetections(
         from candidates: [RawCandidate],
-        geometry: SourceGeometry
+        geometry: SourceGeometry,
+        regionOfInterest roi: CGRect
     ) -> [BroadcastNanoDetection] {
         nonMaximumSuppression(candidates, threshold: 0.45)
             .prefix(8)
@@ -362,12 +382,14 @@ final class BroadcastNanoPersonDetector {
                 let height = min(max(sourceCandidate.h, 0.001), 1 - minYTop)
                 guard width > 0.006, height > 0.012 else { return nil }
 
-                let visionBox = CGRect(
+                let localVisionBox = CGRect(
                     x: minX,
                     y: min(max(1 - (minYTop + height), 0), 1),
                     width: width,
                     height: height
                 )
+                let visionBox = Self.fullFrameVisionBox(forLocalBox: localVisionBox, roi: roi)
+                guard visionBox.width > 0.006, visionBox.height > 0.012 else { return nil }
                 return .init(
                     boundingBox: visionBox,
                     point: Self.point(forVisionBox: visionBox),
@@ -484,6 +506,25 @@ final class BroadcastNanoPersonDetector {
         let intersectionArea = intersectionWidth * intersectionHeight
         let unionArea = a.w * a.h + b.w * b.h - intersectionArea
         return unionArea > 0 ? intersectionArea / unionArea : 0
+    }
+
+    private static func validatedROI(_ requested: CGRect) -> CGRect? {
+        guard requested.origin.x.isFinite,
+              requested.origin.y.isFinite,
+              requested.size.width.isFinite,
+              requested.size.height.isFinite else { return nil }
+        let roi = requested.standardized.intersection(unitROI)
+        guard !roi.isNull, roi.width > 0.01, roi.height > 0.01 else { return nil }
+        return roi
+    }
+
+    private static func fullFrameVisionBox(forLocalBox local: CGRect, roi: CGRect) -> CGRect {
+        CGRect(
+            x: roi.minX + local.minX * roi.width,
+            y: roi.minY + local.minY * roi.height,
+            width: local.width * roi.width,
+            height: local.height * roi.height
+        ).intersection(unitROI)
     }
 
     private static func point(forVisionBox box: CGRect) -> LightweightTargetPoint {
