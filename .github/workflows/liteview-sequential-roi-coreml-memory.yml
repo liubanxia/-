@@ -1,0 +1,224 @@
+name: LiteView Sequential ROI Core ML Memory
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/ios-realtime-vision-assist
+    paths:
+      - '.github/workflows/liteview-sequential-roi-coreml-memory.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  sequential-roi-memory:
+    runs-on: macos-15-arm64
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install export dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy<=2.3.5' 'coremltools>=9.0' 'ultralytics[export-coreml]'
+
+      - name: Export and compile YOLO11n 384
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/export build/compiled build/report
+          curl -fL --retry 8 --retry-delay 3 --retry-all-errors \
+            'https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt' \
+            -o build/export/yolo11n.pt
+          (
+            cd build/export
+            python - <<'PY'
+          from pathlib import Path
+          import coremltools as ct
+          from ultralytics import YOLO
+          package = Path(YOLO('yolo11n.pt').export(format='coreml', imgsz=384, nms=False))
+          spec = ct.utils.load_spec(str(package))
+          images = [x.type.imageType for x in spec.description.input if x.type.WhichOneof('Type') == 'imageType']
+          assert len(images) == 1
+          assert (int(images[0].width), int(images[0].height)) == (384, 384)
+          print('EXPORT_384_PASS')
+          PY
+          )
+          xcrun coremlc compile build/export/yolo11n.mlpackage build/compiled
+          test -d build/compiled/yolo11n.mlmodelc
+
+      - name: Build sequential ROI probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/sequential_roi_probe.swift" <<'SWIFT'
+          import CoreFoundation
+          import CoreML
+          import CoreVideo
+          import Foundation
+          import ImageIO
+          import Vision
+
+          guard CommandLine.arguments.count == 3 else {
+              fatalError("usage: probe <model.mlmodelc> <global|two_roi|global_plus_roi>")
+          }
+          let modelURL = URL(fileURLWithPath: CommandLine.arguments[1])
+          let mode = CommandLine.arguments[2]
+          guard ["global", "two_roi", "global_plus_roi"].contains(mode) else { fatalError("bad mode") }
+
+          var source: CVPixelBuffer?
+          let attrs: [CFString: Any] = [
+              kCVPixelBufferCGImageCompatibilityKey: true,
+              kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+              kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+          ]
+          let status = CVPixelBufferCreate(kCFAllocatorDefault, 1920, 1080, kCVPixelFormatType_32BGRA, attrs as CFDictionary, &source)
+          guard status == kCVReturnSuccess, let pixelBuffer = source else { fatalError("pixel buffer failed") }
+          CVPixelBufferLockBaseAddress(pixelBuffer, [])
+          if let base = CVPixelBufferGetBaseAddress(pixelBuffer) {
+              memset(base, 0, CVPixelBufferGetDataSize(pixelBuffer))
+          }
+          CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+
+          let config = MLModelConfiguration()
+          config.computeUnits = .cpuAndNeuralEngine
+          let mlModel = try MLModel(contentsOf: modelURL, configuration: config)
+          let visionModel = try VNCoreMLModel(for: mlModel)
+
+          let leftROI = CGRect(x: 0.0, y: 0.0, width: 0.68, height: 1.0)
+          let rightROI = CGRect(x: 0.32, y: 0.0, width: 0.68, height: 1.0)
+          let fullROI = CGRect(x: 0.0, y: 0.0, width: 1.0, height: 1.0)
+
+          func perform(_ roi: CGRect) throws -> (Double, [Int]) {
+              let request = VNCoreMLRequest(model: visionModel)
+              request.imageCropAndScaleOption = .scaleFit
+              request.regionOfInterest = roi
+              let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+              let start = CFAbsoluteTimeGetCurrent()
+              try handler.perform([request])
+              let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000.0
+              let shape = (request.results ?? [])
+                  .compactMap { $0 as? VNCoreMLFeatureValueObservation }
+                  .compactMap { $0.featureValue.multiArrayValue }
+                  .first?.shape.map(\.intValue) ?? []
+              return (elapsed, shape)
+          }
+
+          let pattern: [CGRect]
+          switch mode {
+          case "global": pattern = [fullROI]
+          case "two_roi": pattern = [leftROI, rightROI]
+          default: pattern = [fullROI, leftROI]
+          }
+
+          for _ in 0..<2 {
+              for roi in pattern { _ = try autoreleasepool { try perform(roi) } }
+          }
+
+          var times: [Double] = []
+          var cycleTimes: [Double] = []
+          var observedShape: [Int] = []
+          for _ in 0..<20 {
+              let cycleStart = CFAbsoluteTimeGetCurrent()
+              for roi in pattern {
+                  let (elapsed, shape) = try autoreleasepool { try perform(roi) }
+                  times.append(elapsed)
+                  observedShape = shape
+              }
+              cycleTimes.append((CFAbsoluteTimeGetCurrent() - cycleStart) * 1000.0)
+          }
+
+          guard observedShape.count == 3, observedShape.contains(84) else {
+              fatalError("unexpected output shape \(observedShape)")
+          }
+          func median(_ values: [Double]) -> Double {
+              let s = values.sorted(); return s[s.count / 2]
+          }
+          func p90(_ values: [Double]) -> Double {
+              let s = values.sorted(); return s[min(s.count - 1, Int(Double(s.count - 1) * 0.90))]
+          }
+          print(String(
+              format: "SEQUENTIAL_ROI mode=%@ invocations=%d median_request_ms=%.3f p90_request_ms=%.3f median_cycle_ms=%.3f p90_cycle_ms=%.3f shape=%@",
+              mode, times.count, median(times), p90(times), median(cycleTimes), p90(cycleTimes), observedShape.map(String.init).joined(separator: "x")
+          ))
+          SWIFT
+          xcrun swiftc "$RUNNER_TEMP/sequential_roi_probe.swift" -o "$RUNNER_TEMP/sequential_roi_probe"
+
+      - name: Measure sequential paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          SUMMARY='build/report/summary.md'
+          cat > "$SUMMARY" <<'EOF'
+          ## Sequential YOLO11n-384 Vision ROI memory
+
+          One resident `VNCoreMLModel`, reusable 1920x1080 BGRA source, `.cpuAndNeuralEngine`, `.scaleFit`. ROI width is 68% with 32% overlap for the two-phase path.
+
+          | mode | invocations | median request ms | p90 request ms | median cycle ms | p90 cycle ms | max RSS MiB | peak footprint MiB |
+          |---|---:|---:|---:|---:|---:|---:|---:|
+          EOF
+          for MODE in global two_roi global_plus_roi; do
+            OUT="build/report/${MODE}.stdout"
+            ERR="build/report/${MODE}.time"
+            /usr/bin/time -l "$RUNNER_TEMP/sequential_roi_probe" build/compiled/yolo11n.mlmodelc "$MODE" >"$OUT" 2>"$ERR"
+            cat "$OUT"
+            cat "$ERR"
+            INV="$(sed -n 's/.*invocations=\([0-9]*\).*/\1/p' "$OUT")"
+            MED="$(sed -n 's/.*median_request_ms=\([0-9.]*\).*/\1/p' "$OUT")"
+            P90="$(sed -n 's/.*p90_request_ms=\([0-9.]*\).*/\1/p' "$OUT")"
+            CMED="$(sed -n 's/.*median_cycle_ms=\([0-9.]*\).*/\1/p' "$OUT")"
+            CP90="$(sed -n 's/.*p90_cycle_ms=\([0-9.]*\).*/\1/p' "$OUT")"
+            RSS="$(awk '/maximum resident set size/{print $1; exit}' "$ERR")"
+            PEAK="$(awk '/peak memory footprint/{print $1; exit}' "$ERR")"
+            RSSM="$(awk -v b="$RSS" 'BEGIN {printf "%.1f", b/1048576.0}')"
+            PEAKM="$(awk -v b="$PEAK" 'BEGIN {printf "%.1f", b/1048576.0}')"
+            echo "| $MODE | $INV | $MED | $P90 | $CMED | $CP90 | $RSSM | $PEAKM |" >> "$SUMMARY"
+          done
+          cat >> "$SUMMARY" <<'EOF'
+
+          This macOS runner probe is comparative evidence only. It does not establish an iPhone ReplayKit jetsam limit and does not modify the production app or publish an IPA.
+          EOF
+          cat "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+          cat "$SUMMARY"
+
+      - name: Guard against ROI memory accumulation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          def rss(mode):
+              text = Path(f'build/report/{mode}.time').read_text(errors='ignore')
+              m = re.search(r'(\d+)\s+maximum resident set size', text)
+              assert m
+              return int(m.group(1)) / 1048576.0
+
+          g = rss('global')
+          r = rss('two_roi')
+          gr = rss('global_plus_roi')
+          print(f'RSS_MIB global={g:.1f} two_roi={r:.1f} global_plus_roi={gr:.1f}')
+          # Comparative guard only: sequential reuse should not add another model-sized allocation.
+          assert r <= g + 12.0, (g, r)
+          assert gr <= g + 12.0, (g, gr)
+          print('SEQUENTIAL_ROI_MEMORY_GUARD_PASS')
+          PY
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-sequential-roi-coreml-memory
+          path: build/report/
+          retention-days: 7
+          if-no-files-found: error
