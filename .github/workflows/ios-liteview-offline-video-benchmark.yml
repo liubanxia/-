@@ -1,4 +1,4 @@
-name: LiteView Offline Cross-Source Domain Calibration
+name: LiteView Offline Negative-Memory Validation
 
 on:
   push:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  domain-calibration:
+  negative-memory-validation:
     runs-on: macos-15
     steps:
       - name: Checkout
@@ -34,12 +34,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          WORK="$RUNNER_TEMP/liteview-domain-v3"
+          WORK="$RUNNER_TEMP/liteview-domain-v4"
           mkdir -p "$WORK/train" "$WORK/validation"
 
           TRAIN_URL='https://www.dailymotion.com/video/x9j3ct8'
-          VALIDATION_PRIMARY='https://www.dailymotion.com/video/x9mta3w'
-          VALIDATION_FALLBACK='https://www.dailymotion.com/video/x9j6rr8'
+          VALIDATION_URL='https://www.dailymotion.com/video/x9j6rr8'
 
           download_excerpt() {
             local url="$1"
@@ -57,16 +56,11 @@ jobs:
           }
 
           download_excerpt "$TRAIN_URL" "$WORK/train" '*00:00:32-00:01:02'
-          TRAIN_VIDEO="$(find "$WORK/train" -maxdepth 1 -type f \( -name 'source.mp4' -o -name 'source.mkv' -o -name 'source.webm' -o -name 'source.mov' \) -print -quit)"
-          test -n "$TRAIN_VIDEO"
+          download_excerpt "$VALIDATION_URL" "$WORK/validation" '*00:00:50-00:01:20'
 
-          VALIDATION_URL="$VALIDATION_PRIMARY"
-          if ! download_excerpt "$VALIDATION_PRIMARY" "$WORK/validation" '*00:00:30-00:01:00'; then
-            echo 'VALIDATION_PRIMARY_FAILED=1'
-            VALIDATION_URL="$VALIDATION_FALLBACK"
-            download_excerpt "$VALIDATION_FALLBACK" "$WORK/validation" '*00:00:50-00:01:20'
-          fi
+          TRAIN_VIDEO="$(find "$WORK/train" -maxdepth 1 -type f \( -name 'source.mp4' -o -name 'source.mkv' -o -name 'source.webm' -o -name 'source.mov' \) -print -quit)"
           VALIDATION_VIDEO="$(find "$WORK/validation" -maxdepth 1 -type f \( -name 'source.mp4' -o -name 'source.mkv' -o -name 'source.webm' -o -name 'source.mov' \) -print -quit)"
+          test -n "$TRAIN_VIDEO"
           test -n "$VALIDATION_VIDEO"
 
           ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate -show_entries format=duration,size -of json "$TRAIN_VIDEO" > "$WORK/train_probe.json"
@@ -103,7 +97,7 @@ jobs:
           test "$TRAIN_COUNT" -ge 30
           test "$VALIDATION_COUNT" -ge 30
 
-      - name: Mine hard negatives train calibrator and validate on independent source
+      - name: Build negative memory and validate independent source
         shell: bash
         env:
           WORK: ${{ steps.video.outputs.work }}
@@ -124,24 +118,24 @@ jobs:
             --seg-confidence 0.10 \
             --pose-confidence 0.10 \
             --min-track-hits 2
-          cat "$WORK/results/summary_domain_v3.md" >> "$GITHUB_STEP_SUMMARY"
-          echo '--- benchmark_domain_v3.json ---'
-          cat "$WORK/results/benchmark_domain_v3.json"
+          cat "$WORK/results/summary_domain_v4.md" >> "$GITHUB_STEP_SUMMARY"
+          echo '--- benchmark_domain_v4.json ---'
+          cat "$WORK/results/benchmark_domain_v4.json"
 
-      - name: Upload domain-calibration numeric report and visual evidence
+      - name: Upload negative-memory report and visual evidence
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-offline-domain-calibration-v3
+          name: liteview-offline-negative-memory-v4
           path: |
             ${{ steps.video.outputs.work }}/train_probe.json
             ${{ steps.video.outputs.work }}/validation_probe.json
             ${{ steps.video.outputs.work }}/train_source_url.txt
             ${{ steps.video.outputs.work }}/validation_source_url.txt
-            ${{ steps.video.outputs.work }}/results/benchmark_domain_v3.json
-            ${{ steps.video.outputs.work }}/results/validation_detections_v3.csv
-            ${{ steps.video.outputs.work }}/results/summary_domain_v3.md
-            ${{ steps.video.outputs.work }}/results/hard_negative_training_bank.jpg
-            ${{ steps.video.outputs.work }}/results/validation_contact_sheet_v3.jpg
-            ${{ steps.video.outputs.work }}/results/fps_hard_negative_linear.npz
+            ${{ steps.video.outputs.work }}/results/benchmark_domain_v4.json
+            ${{ steps.video.outputs.work }}/results/validation_detections_v4.csv
+            ${{ steps.video.outputs.work }}/results/summary_domain_v4.md
+            ${{ steps.video.outputs.work }}/results/hard_negative_memory_bank.jpg
+            ${{ steps.video.outputs.work }}/results/validation_contact_sheet_v4.jpg
+            ${{ steps.video.outputs.work }}/results/fps_hard_negative_memory.npz
           retention-days: 7
           if-no-files-found: error
