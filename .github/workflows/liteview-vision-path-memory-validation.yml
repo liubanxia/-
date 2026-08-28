@@ -1,0 +1,236 @@
+name: LiteView Vision Path Memory Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/ios-realtime-vision-assist
+    paths:
+      - '.github/workflows/liteview-vision-path-memory-validation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  vision-path-memory:
+    runs-on: macos-15
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install export dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy<=2.3.5' 'coremltools>=9.0' 'ultralytics[export-coreml]'
+
+      - name: Download YOLO11n
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/models
+          curl -fL --retry 8 --retry-delay 3 --retry-all-errors \
+            'https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt' \
+            -o build/models/yolo11n.pt
+          test -s build/models/yolo11n.pt
+
+      - name: Export and compile 384 448 512
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/export build/compiled build/report
+          for SIZE in 384 448 512; do
+            DIR="build/export/$SIZE"
+            mkdir -p "$DIR" "build/compiled/$SIZE"
+            cp build/models/yolo11n.pt "$DIR/yolo11n.pt"
+            (
+              cd "$DIR"
+              SIZE="$SIZE" python - <<'PY'
+          import os
+          from pathlib import Path
+          import coremltools as ct
+          from ultralytics import YOLO
+
+          size = int(os.environ['SIZE'])
+          package = Path(YOLO('yolo11n.pt').export(format='coreml', imgsz=size, nms=False))
+          spec = ct.utils.load_spec(str(package))
+          images = [x.type.imageType for x in spec.description.input if x.type.WhichOneof('Type') == 'imageType']
+          if len(images) != 1 or (int(images[0].width), int(images[0].height)) != (size, size):
+              raise SystemExit(f'bad input contract for {size}')
+          print(f'EXPORT_PASS {size} outputs={[x.name for x in spec.description.output]}')
+          PY
+            )
+            PKG="$(find "$DIR" -maxdepth 2 -type d -name '*.mlpackage' -print -quit)"
+            test -n "$PKG"
+            xcrun coremlc compile "$PKG" "build/compiled/$SIZE"
+            test -d "build/compiled/$SIZE/yolo11n.mlmodelc"
+          done
+
+      - name: Build Vision runtime probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/vision_runtime_probe.swift" <<'SWIFT'
+          import CoreFoundation
+          import CoreML
+          import CoreVideo
+          import Foundation
+          import ImageIO
+          import Vision
+
+          guard CommandLine.arguments.count == 3 else {
+              fatalError("usage: vision_runtime_probe <compiled.mlmodelc> <resident|reload>")
+          }
+
+          let modelURL = URL(fileURLWithPath: CommandLine.arguments[1])
+          let mode = CommandLine.arguments[2]
+          guard mode == "resident" || mode == "reload" else { fatalError("bad mode") }
+
+          var sourceBuffer: CVPixelBuffer?
+          let attrs: [CFString: Any] = [
+              kCVPixelBufferCGImageCompatibilityKey: true,
+              kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+              kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+          ]
+          let status = CVPixelBufferCreate(
+              kCFAllocatorDefault,
+              1920,
+              1080,
+              kCVPixelFormatType_32BGRA,
+              attrs as CFDictionary,
+              &sourceBuffer
+          )
+          guard status == kCVReturnSuccess, let pixelBuffer = sourceBuffer else {
+              fatalError("source CVPixelBufferCreate failed: \(status)")
+          }
+          CVPixelBufferLockBaseAddress(pixelBuffer, [])
+          if let base = CVPixelBufferGetBaseAddress(pixelBuffer) {
+              memset(base, 0, CVPixelBufferGetDataSize(pixelBuffer))
+          }
+          CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+
+          func loadVisionModel() throws -> VNCoreMLModel {
+              let configuration = MLModelConfiguration()
+              configuration.computeUnits = .cpuAndNeuralEngine
+              let model = try MLModel(contentsOf: modelURL, configuration: configuration)
+              return try VNCoreMLModel(for: model)
+          }
+
+          func perform(_ visionModel: VNCoreMLModel) throws -> (Double, [Int]) {
+              let request = VNCoreMLRequest(model: visionModel)
+              request.imageCropAndScaleOption = .scaleFit
+              let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+              let started = CFAbsoluteTimeGetCurrent()
+              try handler.perform([request])
+              let elapsed = (CFAbsoluteTimeGetCurrent() - started) * 1000.0
+              let shape = (request.results ?? [])
+                  .compactMap { $0 as? VNCoreMLFeatureValueObservation }
+                  .compactMap { $0.featureValue.multiArrayValue }
+                  .first?
+                  .shape
+                  .map(\.intValue) ?? []
+              return (elapsed, shape)
+          }
+
+          var times: [Double] = []
+          var observedShape: [Int] = []
+
+          if mode == "resident" {
+              let visionModel = try loadVisionModel()
+              for _ in 0..<2 { _ = try perform(visionModel) }
+              for _ in 0..<10 {
+                  let (elapsed, shape) = try perform(visionModel)
+                  times.append(elapsed)
+                  observedShape = shape
+              }
+          } else {
+              for _ in 0..<2 {
+                  autoreleasepool {
+                      if let visionModel = try? loadVisionModel() { _ = try? perform(visionModel) }
+                  }
+              }
+              for _ in 0..<8 {
+                  let elapsed: Double = try autoreleasepool {
+                      let started = CFAbsoluteTimeGetCurrent()
+                      let visionModel = try loadVisionModel()
+                      let (_, shape) = try perform(visionModel)
+                      observedShape = shape
+                      return (CFAbsoluteTimeGetCurrent() - started) * 1000.0
+                  }
+                  times.append(elapsed)
+              }
+          }
+
+          guard observedShape.count == 3, observedShape.contains(84) else {
+              fatalError("unexpected Vision Core ML raw output shape: \(observedShape)")
+          }
+          let sorted = times.sorted()
+          let median = sorted[sorted.count / 2]
+          let p90Index = min(sorted.count - 1, Int(Double(sorted.count - 1) * 0.90))
+          let p90 = sorted[p90Index]
+          print(String(
+              format: "VISION_RUNTIME mode=%@ source=1920x1080 median_ms=%.3f p90_ms=%.3f shape=%@",
+              mode,
+              median,
+              p90,
+              observedShape.map(String.init).joined(separator: "x")
+          ))
+          SWIFT
+          xcrun swiftc "$RUNNER_TEMP/vision_runtime_probe.swift" -o "$RUNNER_TEMP/vision_runtime_probe"
+
+      - name: Measure Vision scaleFit resident and reload paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          SUMMARY='build/report/summary.md'
+          cat > "$SUMMARY" <<'EOF'
+          ## LiteView Vision-path memory validation
+
+          This probe matches the production inference path more closely: 1920x1080 BGRA source buffer, `VNCoreMLRequest`, `.scaleFit`, and `cpuAndNeuralEngine`.
+
+          | input | lifecycle | median ms | p90 ms | max RSS MiB | peak footprint MiB | raw output |
+          |---:|---|---:|---:|---:|---:|---|
+          EOF
+
+          for SIZE in 384 448 512; do
+            MODEL="build/compiled/$SIZE/yolo11n.mlmodelc"
+            for MODE in resident reload; do
+              OUT="build/report/${SIZE}_${MODE}.stdout"
+              ERR="build/report/${SIZE}_${MODE}.time"
+              /usr/bin/time -l "$RUNNER_TEMP/vision_runtime_probe" "$MODEL" "$MODE" >"$OUT" 2>"$ERR"
+              cat "$OUT"
+              cat "$ERR"
+              grep -q "VISION_RUNTIME mode=${MODE}" "$OUT"
+              MEDIAN="$(sed -n 's/.*median_ms=\([0-9.]*\).*/\1/p' "$OUT" | head -1)"
+              P90="$(sed -n 's/.*p90_ms=\([0-9.]*\).*/\1/p' "$OUT" | head -1)"
+              SHAPE="$(sed -n 's/.*shape=\([^ ]*\).*/\1/p' "$OUT" | head -1)"
+              RSS="$(awk '/maximum resident set size/{print $1; exit}' "$ERR")"
+              PEAK="$(awk '/peak memory footprint/{print $1; exit}' "$ERR")"
+              RSS_MIB="$(awk -v b="$RSS" 'BEGIN {printf "%.1f", b/1048576.0}')"
+              PEAK_MIB="$(awk -v b="$PEAK" 'BEGIN {printf "%.1f", b/1048576.0}')"
+              echo "| $SIZE | $MODE | $MEDIAN | $P90 | $RSS_MIB | $PEAK_MIB | $SHAPE |" >> "$SUMMARY"
+            done
+          done
+
+          cat >> "$SUMMARY" <<'EOF'
+
+          macOS runner results are comparative evidence only. They do not establish the exact iPhone ReplayKit memory limit. This workflow does not publish a model or IPA.
+          EOF
+          cat "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+          cat "$SUMMARY"
+
+      - name: Upload Vision-path evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-vision-path-memory-validation
+          path: build/report/
+          retention-days: 7
+          if-no-files-found: error
