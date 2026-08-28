@@ -38,8 +38,8 @@ jobs:
           mkdir -p "$WORK/train" "$WORK/validation"
 
           TRAIN_URL='https://www.dailymotion.com/video/x9j3ct8'
-          VALIDATION_PRIMARY='https://www.youtube.com/watch?v=bBUEkd70Ax8'
-          VALIDATION_FALLBACK='https://www.dailymotion.com/video/x9lml5g'
+          VALIDATION_PRIMARY='https://www.dailymotion.com/video/x9mta3w'
+          VALIDATION_FALLBACK='https://www.dailymotion.com/video/x9j6rr8'
 
           download_excerpt() {
             local url="$1"
@@ -61,10 +61,10 @@ jobs:
           test -n "$TRAIN_VIDEO"
 
           VALIDATION_URL="$VALIDATION_PRIMARY"
-          if ! download_excerpt "$VALIDATION_PRIMARY" "$WORK/validation" '*00:00:45-00:01:15'; then
+          if ! download_excerpt "$VALIDATION_PRIMARY" "$WORK/validation" '*00:00:30-00:01:00'; then
             echo 'VALIDATION_PRIMARY_FAILED=1'
             VALIDATION_URL="$VALIDATION_FALLBACK"
-            download_excerpt "$VALIDATION_FALLBACK" "$WORK/validation" '*00:01:00-00:01:30'
+            download_excerpt "$VALIDATION_FALLBACK" "$WORK/validation" '*00:00:50-00:01:20'
           fi
           VALIDATION_VIDEO="$(find "$WORK/validation" -maxdepth 1 -type f \( -name 'source.mp4' -o -name 'source.mkv' -o -name 'source.webm' -o -name 'source.mov' \) -print -quit)"
           test -n "$VALIDATION_VIDEO"
