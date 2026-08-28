@@ -48,10 +48,17 @@ targets:
       - path: Sources/Broadcast
       - path: Sources/ExtensionSupport/BroadcastNanoPersonDetector.swift
       - path: Sources/Core/SharedRealtimeStateStore.swift
-    resources:
-      - path: Resources/BroadcastModels
-        optional: true
-        type: folder
+    postBuildScripts:
+      - name: Copy LiteView Broadcast Core ML model
+        script: |
+          set -e
+          MODEL_ROOT="${SRCROOT}/Resources/BroadcastModels"
+          DEST_ROOT="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
+          mkdir -p "$DEST_ROOT"
+          rm -rf "$DEST_ROOT/yolo11n.mlmodelc"
+          if [ -d "$MODEL_ROOT/yolo11n.mlmodelc" ]; then
+            cp -R "$MODEL_ROOT/yolo11n.mlmodelc" "$DEST_ROOT/yolo11n.mlmodelc"
+          fi
     info:
       path: Sources/Broadcast/Info.plist
       properties:
