@@ -1,0 +1,172 @@
+name: LiteView YOLO26n Confidence Sweep
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/ios-realtime-vision-assist
+    paths:
+      - '.github/workflows/liteview-yolo26n-confidence-sweep.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  confidence-sweep:
+    runs-on: macos-15
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install benchmark dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install ultralytics opencv-python-headless numpy
+
+      - name: Download COCO128
+        id: data
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/yolo26-confidence"
+          mkdir -p "$WORK/data" "$WORK/results"
+          curl -fL --retry 5 --retry-delay 2 \
+            https://github.com/ultralytics/assets/releases/download/v0.0.0/coco128.zip \
+            -o "$WORK/coco128.zip"
+          unzip -q "$WORK/coco128.zip" -d "$WORK/data"
+          test -d "$WORK/data/coco128/images"
+          test -d "$WORK/data/coco128/labels"
+          echo "work=$WORK" >> "$GITHUB_OUTPUT"
+          echo "dataset=$WORK/data/coco128" >> "$GITHUB_OUTPUT"
+
+      - name: Run YOLO11n fixed baseline
+        shell: bash
+        env:
+          WORK: ${{ steps.data.outputs.work }}
+          DATASET: ${{ steps.data.outputs.dataset }}
+        run: |
+          set -euo pipefail
+          python ios/PhoenixRealtimeVisionAssist/Tests/NaturalPersonPixelFloor/run_natural_person_pixel_floor.py \
+            --dataset "$DATASET" \
+            --output "$WORK/results/baseline" \
+            --models yolo11n.pt \
+            --imgsz 384 \
+            --reference-imgsz 640 \
+            --confidence 0.05 \
+            --iou-threshold 0.30
+
+      - name: Sweep YOLO26n confidence thresholds
+        shell: bash
+        env:
+          WORK: ${{ steps.data.outputs.work }}
+          DATASET: ${{ steps.data.outputs.dataset }}
+        run: |
+          set -euo pipefail
+          for CONF in 0.05 0.07 0.09 0.12 0.15 0.20 0.25; do
+            OUT="$WORK/results/conf_${CONF}"
+            python ios/PhoenixRealtimeVisionAssist/Tests/NaturalPersonPixelFloor/run_natural_person_pixel_floor.py \
+              --dataset "$DATASET" \
+              --output "$OUT" \
+              --models yolo26n.pt \
+              --imgsz 384 \
+              --reference-imgsz 640 \
+              --confidence "$CONF" \
+              --iou-threshold 0.30
+          done
+
+      - name: Build decision table
+        shell: bash
+        env:
+          WORK: ${{ steps.data.outputs.work }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          work = Path(os.environ['WORK']) / 'results'
+
+          def load(path: Path):
+              data = json.loads(path.read_text(encoding='utf-8'))
+              cfg = data['configs'][0]
+              timing = cfg['timing']
+              return {
+                  'confidence': float(data['confidence']),
+                  'under32': float(cfg['under32_recall_iou30']),
+                  'overall': float(cfg['overall_recall_iou30']),
+                  'precision': float(cfg['precision_iou30']),
+                  'predictions': int(cfg['predictions']),
+                  'tp': int(cfg['true_positive_predictions']),
+                  'fp': int(cfg['false_positive_predictions']),
+                  'median_ms': float(timing['median_predict_ms_per_image']),
+                  'p90_ms': float(timing['p90_predict_ms_per_image']),
+              }
+
+          baseline = load(work / 'baseline' / 'natural_person_pixel_floor.json')
+          rows = []
+          for path in sorted(work.glob('conf_*/natural_person_pixel_floor.json')):
+              rows.append(load(path))
+          rows.sort(key=lambda x: x['confidence'])
+
+          eligible = [r for r in rows if r['precision'] >= 0.60]
+          best = max(eligible, key=lambda r: (r['under32'], r['overall'], -r['confidence'])) if eligible else None
+
+          lines = [
+              '## YOLO26n 384 confidence sweep',
+              '',
+              '| model | confidence | <32 recall | overall recall | precision | predictions | TP | FP | median ms | p90 ms |',
+              '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
+              f"| yolo11n baseline | {baseline['confidence']:.2f} | {baseline['under32']*100:.1f}% | {baseline['overall']*100:.1f}% | {baseline['precision']*100:.1f}% | {baseline['predictions']} | {baseline['tp']} | {baseline['fp']} | {baseline['median_ms']:.1f} | {baseline['p90_ms']:.1f} |",
+          ]
+          for r in rows:
+              lines.append(
+                  f"| yolo26n | {r['confidence']:.2f} | {r['under32']*100:.1f}% | {r['overall']*100:.1f}% | {r['precision']*100:.1f}% | {r['predictions']} | {r['tp']} | {r['fp']} | {r['median_ms']:.1f} | {r['p90_ms']:.1f} |"
+              )
+
+          lines += ['', '### Decision']
+          if best is None:
+              lines.append('- No YOLO26n threshold reached the 60% precision gate. Keep YOLO11n production model unchanged and move to another candidate/ROI strategy.')
+          else:
+              recall_gain = (best['under32'] - baseline['under32']) * 100
+              precision_delta = (best['precision'] - baseline['precision']) * 100
+              overall_delta = (best['overall'] - baseline['overall']) * 100
+              lines.append(
+                  f"- Best precision-gated YOLO26n threshold: **{best['confidence']:.2f}**."
+              )
+              lines.append(
+                  f"- Versus YOLO11n/0.05: <32 recall **{recall_gain:+.1f} pp**, overall recall **{overall_delta:+.1f} pp**, precision **{precision_delta:+.1f} pp**."
+              )
+              if recall_gain <= 0:
+                  lines.append('- The threshold gate removes the small-person advantage; do not promote YOLO26n on this evidence.')
+              else:
+                  lines.append('- Candidate remains viable for decoder-contract and on-device memory validation; this benchmark alone does not promote it to production.')
+
+          lines += [
+              '',
+              'This is a generic visible-person benchmark on COCO128. It does not evaluate gameplay, hidden-person inference, opponent identity, or anti-cheat behavior.'
+          ]
+          text = '\n'.join(lines) + '\n'
+          report = work / 'confidence_sweep_summary.md'
+          report.write_text(text, encoding='utf-8')
+          print(text)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as f:
+              f.write(text)
+          PY
+
+      - name: Upload sweep evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-yolo26n-confidence-sweep
+          path: ${{ steps.data.outputs.work }}/results/
+          retention-days: 7
+          if-no-files-found: error
