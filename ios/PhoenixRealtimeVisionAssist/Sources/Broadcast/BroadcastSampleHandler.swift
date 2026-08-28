@@ -5,10 +5,23 @@ import ReplayKit
 
 /// Long-session ReplayKit handler.
 ///
-/// The extension never retains more than one frame for analysis, never writes screen content to
-/// disk, and no longer loads a custom Core ML model. The system Vision scanner performs sparse
-/// global reacquisition while VNTrackObjectRequest handles short visible tracking.
+/// The extension retains at most one frame for serial analysis, never writes screen content to
+/// disk, and uses one small resident Core ML model for sparse reacquisition with Vision tracking
+/// between scans. Thermal, latency, and frame-pressure backoff keep foreground capture priority.
 final class BroadcastSampleHandler: RPBroadcastSampleHandler {
+    /// `CVPixelBuffer` is reference-counted but does not declare `Sendable`. This wrapper is the
+    /// narrow ownership bridge into our single serial analysis queue. The one-frame-in-flight gate
+    /// guarantees that two analysis tasks never access different retained ReplayKit frames at once.
+    private final class AnalysisFrame: @unchecked Sendable {
+        let pixelBuffer: CVPixelBuffer
+        let orientation: CGImagePropertyOrientation
+
+        init(pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation) {
+            self.pixelBuffer = pixelBuffer
+            self.orientation = orientation
+        }
+    }
+
     private struct Metrics {
         let generation: UInt64
         let sessionID: String
@@ -157,14 +170,17 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
 
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
               let workGeneration = reserveVisionWork(now: now) else { return }
-        let orientation = videoOrientation(of: sampleBuffer)
+        let analysisFrame = AnalysisFrame(
+            pixelBuffer: pixelBuffer,
+            orientation: videoOrientation(of: sampleBuffer)
+        )
 
-        analysisQueue.async { [weak self, pixelBuffer] in
+        analysisQueue.async { [weak self, analysisFrame] in
             autoreleasepool {
                 guard let self else { return }
                 let result = self.analyzer.detectVisibleHumans(
-                    in: pixelBuffer,
-                    orientation: orientation
+                    in: analysisFrame.pixelBuffer,
+                    orientation: analysisFrame.orientation
                 )
                 self.completeVisionAnalysis(result, generation: workGeneration)
             }

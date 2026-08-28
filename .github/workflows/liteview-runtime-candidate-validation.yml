@@ -58,6 +58,7 @@ jobs:
           set -euo pipefail
           DET='ios/PhoenixRealtimeVisionAssist/Sources/ExtensionSupport/BroadcastNanoPersonDetector.swift'
           ANA='ios/PhoenixRealtimeVisionAssist/Sources/Broadcast/LightweightBroadcastAnalyzer.swift'
+          HANDLER='ios/PhoenixRealtimeVisionAssist/Sources/Broadcast/BroadcastSampleHandler.swift'
 
           grep -q 'request.regionOfInterest = roi' "$DET"
           grep -q 'request.preferBackgroundProcessing = preferBackgroundProcessing' "$DET"
@@ -72,6 +73,12 @@ jobs:
           # Resource release belongs to session teardown only, not every scan.
           RELEASE_COUNT="$(grep -c 'nanoDetector.releaseResources()' "$ANA")"
           test "$RELEASE_COUNT" = '1'
+
+          # The ReplayKit frame ownership bridge must stay narrow: no raw CVPixelBuffer capture in
+          # the Dispatch closure and no full-frame copy added just to satisfy Sendable checking.
+          grep -q 'private final class AnalysisFrame: @unchecked Sendable' "$HANDLER"
+          grep -q 'let analysisFrame = AnalysisFrame(' "$HANDLER"
+          ! grep -Fq '[weak self, pixelBuffer]' "$HANDLER"
 
           # No second model and no multi-ROI loop in one detector invocation path.
           test "$(find ios/PhoenixRealtimeVisionAssist/Resources/BroadcastModels -type d -name '*.mlmodelc' -prune -print | wc -l | tr -d ' ')" = '1'
@@ -111,6 +118,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf "$RUNNER_TEMP/LiteViewRuntimeCandidateDerivedData"
+          BUILD_LOG="$RUNNER_TEMP/runtime-candidate-xcodebuild.log"
           xcodebuild \
             -project PhoenixRealtimeVisionAssist.xcodeproj \
             -scheme PhoenixRealtimeVisionAssist \
@@ -119,7 +127,23 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/LiteViewRuntimeCandidateDerivedData" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            build
+            build 2>&1 | tee "$BUILD_LOG"
+
+      - name: Guard ReplayKit concurrency diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_LOG="$RUNNER_TEMP/runtime-candidate-xcodebuild.log"
+          test -s "$BUILD_LOG"
+          if grep -Fq "capture of 'pixelBuffer' with non-sendable type 'CVImageBuffer'" "$BUILD_LOG"; then
+            echo 'Raw CVPixelBuffer Sendable warning returned.' >&2
+            exit 1
+          fi
+          if grep -Fq "capture of 'pixelBuffer' with non-sendable type 'CVBuffer'" "$BUILD_LOG"; then
+            echo 'Raw CVPixelBuffer Sendable warning returned.' >&2
+            exit 1
+          fi
+          echo 'REPLAYKIT_CONCURRENCY_DIAGNOSTIC_PASS'
 
       - name: Verify built extension model count
         shell: bash
@@ -149,6 +173,7 @@ jobs:
             echo '- Sparse global refresh uses Vision background-processing hint.'
             echo '- Tracker-loss reacquisition runs one 68% ROI per eligible frame and alternates phases.'
             echo '- ROI threshold is 0.09; global threshold is 0.12.'
+            echo '- ReplayKit analysis transfers one retained frame through a narrow serial Sendable ownership bridge; no frame copy is introduced.'
             echo '- No IPA or GitHub release is created by this workflow.'
             echo '- This build/CI validation does not establish on-device recognition quality or ReplayKit jetsam safety.'
           } >> "$GITHUB_STEP_SUMMARY"
