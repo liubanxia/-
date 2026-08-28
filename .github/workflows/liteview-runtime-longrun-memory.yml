@@ -89,8 +89,7 @@ jobs:
           }
           CVPixelBufferLockBaseAddress(pixelBuffer, [])
           if let base = CVPixelBufferGetBaseAddress(pixelBuffer) {
-              let bytes = CVPixelBufferGetDataSize(pixelBuffer)
-              memset(base, 31, bytes)
+              memset(base, 31, CVPixelBufferGetDataSize(pixelBuffer))
           }
           CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
 
@@ -120,8 +119,8 @@ jobs:
                   .first?.shape.map(\.intValue) ?? []
           }
 
-          // Warm the resident model and Vision preprocessing before the measured stress phase.
-          for i in 0..<18 {
+          // Warm all three preprocessing shapes before the measured stress phase.
+          for i in 0..<36 {
               try autoreleasepool {
                   let roi = i % 6 == 0 ? full : (i % 2 == 0 ? left : right)
                   let shape = try perform(roi, background: roi == full)
@@ -146,7 +145,7 @@ jobs:
                   }
                   if isFull { fullCount += 1 } else { roiCount += 1 }
               }
-              if i % 25 == 0 {
+              if i % 100 == 0 {
                   print("LONGRUN_PROGRESS iteration=\(i)")
                   fflush(stdout)
               }
@@ -159,7 +158,7 @@ jobs:
           SWIFT
           xcrun swiftc "$RUNNER_TEMP/liteview_longrun_probe.swift" -o "$RUNNER_TEMP/liteview_longrun_probe"
 
-      - name: Run 300-request memory stress and sample RSS
+      - name: Run 1200-request memory plateau stress
         shell: bash
         run: |
           set -euo pipefail
@@ -169,7 +168,7 @@ jobs:
           RSS='build/longrun/rss_kib.txt'
           : > "$RSS"
 
-          "$RUNNER_TEMP/liteview_longrun_probe" "$MODEL" 300 >"$OUT" 2>"$ERR" &
+          "$RUNNER_TEMP/liteview_longrun_probe" "$MODEL" 1200 >"$OUT" 2>"$ERR" &
           PID=$!
           SAMPLE=0
           while kill -0 "$PID" 2>/dev/null; do
@@ -185,7 +184,7 @@ jobs:
           cat "$ERR"
           echo "RSS_SAMPLES=$(wc -l < "$RSS" | tr -d ' ')"
 
-      - name: Guard against sustained resident-memory growth
+      - name: Guard late-run memory plateau
         shell: bash
         run: |
           set -euo pipefail
@@ -199,35 +198,45 @@ jobs:
               parts = line.split()
               if len(parts) == 2:
                   samples.append(int(parts[1]) / 1024.0)
-          assert len(samples) >= 40, len(samples)
+          assert len(samples) >= 150, len(samples)
 
           n = len(samples)
-          q2 = samples[n // 4:n // 2]
-          tail = samples[(3 * n) // 4:]
-          assert q2 and tail
-          q2_med = statistics.median(q2)
-          tail_med = statistics.median(tail)
-          tail_sorted = sorted(tail)
-          tail_p95 = tail_sorted[min(len(tail_sorted)-1, int((len(tail_sorted)-1)*0.95))]
+          q3 = samples[n // 2:(3 * n) // 4]
+          q4 = samples[(3 * n) // 4:]
+          late = samples[n // 2:]
+          assert q3 and q4 and len(late) >= 40
+
+          q3_med = statistics.median(q3)
+          q4_med = statistics.median(q4)
+          q4_sorted = sorted(q4)
+          q4_p95 = q4_sorted[min(len(q4_sorted)-1, int((len(q4_sorted)-1)*0.95))]
+          plateau_growth = q4_med - q3_med
           peak = max(samples)
-          growth = tail_med - q2_med
+
+          xs = list(range(len(late)))
+          xbar = statistics.mean(xs)
+          ybar = statistics.mean(late)
+          denom = sum((x - xbar) ** 2 for x in xs)
+          slope = sum((x - xbar) * (y - ybar) for x, y in zip(xs, late)) / denom if denom else 0.0
 
           report = {
               'samples': n,
-              'second_quarter_median_mib': round(q2_med, 2),
-              'last_quarter_median_mib': round(tail_med, 2),
-              'last_quarter_p95_mib': round(tail_p95, 2),
+              'third_quarter_median_mib': round(q3_med, 2),
+              'last_quarter_median_mib': round(q4_med, 2),
+              'last_quarter_p95_mib': round(q4_p95, 2),
               'peak_mib': round(peak, 2),
-              'tail_median_growth_mib': round(growth, 2),
+              'late_plateau_growth_mib': round(plateau_growth, 2),
+              'late_half_slope_mib_per_sample': round(slope, 5),
           }
           Path('build/longrun/memory_report.json').write_text(json.dumps(report, indent=2))
           print(json.dumps(report, indent=2))
 
-          # Comparative host-side guard: after model warmup, memory must settle instead of
-          # accumulating model/request-sized allocations as serial ROI/full scans continue.
-          assert growth <= 8.0, report
-          assert tail_p95 <= q2_med + 16.0, report
-          print('LONGRUN_RESIDENT_MEMORY_GUARD_PASS')
+          # By the second half, Core ML/Vision caches should have settled. A true allocation leak
+          # would keep raising both the late-quarter median and the late-half regression slope.
+          assert plateau_growth <= 4.0, report
+          assert q4_p95 <= q3_med + 8.0, report
+          assert slope <= 0.02, report
+          print('LONGRUN_MEMORY_PLATEAU_PASS')
           PY
 
       - name: Publish evidence summary
@@ -235,9 +244,9 @@ jobs:
         shell: bash
         run: |
           {
-            echo '## LiteView long-run resident-model stress'
+            echo '## LiteView long-run resident-model plateau stress'
             echo
-            echo 'One resident YOLO11n-384 Vision model receives 300 serial requests after warmup. Every 12th request is full-frame/background-preferred; all other requests alternate the two 68% ROIs.'
+            echo 'One resident YOLO11n-384 Vision model receives 1200 serial requests after a 36-request warmup. Every 12th request is full-frame/background-preferred; all other requests alternate the two 68% ROIs.'
             echo
             if [ -f build/longrun/memory_report.json ]; then
               echo '```json'
