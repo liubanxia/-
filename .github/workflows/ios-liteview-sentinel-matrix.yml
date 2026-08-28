@@ -1,4 +1,4 @@
-name: LiteView 0.8.1 Sentinel Matrix Package
+name: LiteView 0.8.2 Sentinel Matrix Package
 
 on:
   push:
@@ -143,8 +143,6 @@ jobs:
           test -d "$APP"
           test -d "$EXT"
 
-          # Only transplant immutable model resources from the previous large package. The main
-          # executable, ReplayKit extension and metadata all stay from this commit's fresh build.
           MODEL_COUNT=0
           for SRC in "$BASE_APP"/*.mlmodelc; do
             [ -d "$SRC" ] || continue
@@ -171,12 +169,12 @@ jobs:
 
           set_plist_string "$APP/Info.plist" CFBundleDisplayName LiteView
           set_plist_string "$APP/Info.plist" CFBundleIdentifier com.phoenix.realtimevisionassist
-          set_plist_string "$APP/Info.plist" CFBundleShortVersionString 0.8.1
-          set_plist_string "$APP/Info.plist" CFBundleVersion 12
+          set_plist_string "$APP/Info.plist" CFBundleShortVersionString 0.8.2
+          set_plist_string "$APP/Info.plist" CFBundleVersion 13
           set_plist_string "$EXT/Info.plist" CFBundleDisplayName 'LiteView Broadcast'
           set_plist_string "$EXT/Info.plist" CFBundleIdentifier com.phoenix.realtimevisionassist.broadcast
-          set_plist_string "$EXT/Info.plist" CFBundleShortVersionString 0.8.1
-          set_plist_string "$EXT/Info.plist" CFBundleVersion 12
+          set_plist_string "$EXT/Info.plist" CFBundleShortVersionString 0.8.2
+          set_plist_string "$EXT/Info.plist" CFBundleVersion 13
 
           /usr/libexec/PlistBuddy -c 'Delete :NSExtension' "$EXT/Info.plist" >/dev/null 2>&1 || true
           /usr/libexec/PlistBuddy -c 'Add :NSExtension dict' "$EXT/Info.plist"
@@ -194,17 +192,17 @@ jobs:
           test "$EXT_MODEL_COUNT" = '2'
           test "$EXT_SIZE_BYTES" -lt 41943040
 
-      - name: Package and verify LiteView 0.8.1 full-bank IPA
+      - name: Package and verify LiteView 0.8.2 full-bank IPA
         shell: bash
         run: |
           set -euo pipefail
           PRODUCTS="$RUNNER_TEMP/LiteViewSentinelDerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
-          ROOT="$RUNNER_TEMP/liteview-081-package"
+          ROOT="$RUNNER_TEMP/liteview-082-package"
           PAYLOAD="$ROOT/Payload"
           IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
           MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
-          VERIFY="$RUNNER_TEMP/liteview-081-verify"
+          VERIFY="$RUNNER_TEMP/liteview-082-verify"
 
           rm -rf "$ROOT" "$VERIFY" "$IPA" "$MANIFEST"
           mkdir -p "$PAYLOAD" "$VERIFY"
@@ -219,22 +217,24 @@ jobs:
 
           VAPP="$VERIFY/Payload/PhoenixRealtimeVisionAssist.app"
           VEXT="$VAPP/PlugIns/PhoenixBroadcastExtension.appex"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VAPP/Info.plist")" = '0.8.1'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$VAPP/Info.plist")" = '12'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VEXT/Info.plist")" = '0.8.1'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VAPP/Info.plist")" = '0.8.2'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$VAPP/Info.plist")" = '13'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VEXT/Info.plist")" = '0.8.2'
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$VEXT/Info.plist")" = 'com.phoenix.realtimevisionassist.broadcast'
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$VEXT/Info.plist")" = 'com.apple.broadcast-services-upload'
           test "$(find "$VEXT/BroadcastModels" -type d -name '*.mlmodelc' -prune | wc -l | tr -d ' ')" = '2'
           test "$(find "$VAPP" -maxdepth 1 -type d -name '*.mlmodelc' -prune | wc -l | tr -d ' ')" -ge 12
 
           cat > "$MANIFEST" <<EOF
-          LiteView 0.8.1 fresh-code full-bank sideload package
+          LiteView 0.8.2 fresh-code full-bank sideload package
           commit=${GITHUB_SHA}
-          build=12
+          build=13
           source_bank_tag=${SOURCE_TAG}
           package_base=fresh main executable + fresh ReplayKit extension + transplanted cold model resources only
-          replaykit_runtime=aspect-fit tiny detector + fast Vision tracker + independent empty-result cross-check
+          replaykit_runtime=single hot Core ML detector + fast Vision tracker + independently confirmed failover
           replaykit_hot_models=yolo11n + YOLOv3TinyInt8LUT
+          fallback_decoder=coordinates/confidence pair + raw Ultralytics tensor + recognized-object output
+          frame_pressure_governor=session-relative ReplayKit FPS + inference latency + thermal + low-power
           cross_process_state=App Group exact snapshot + compact libnotify v3 with quantized x/y, confidence and exact pipeline stage
           hidden_position_extrapolation=disabled
           persistence=none for frames, screenshots, audio, or analysis history
@@ -247,7 +247,7 @@ jobs:
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-081-fullbank
+          name: liteview-082-fullbank
           path: |
             ${{ runner.temp }}/LiteView-unsigned-sideload.ipa
             ${{ runner.temp }}/LiteView-sideload-manifest.txt
@@ -262,7 +262,7 @@ jobs:
           TAG='liteview-sentinel-latest'
           IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
           MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
-          NOTES='LiteView 0.8.1 rebuilds the main executable and ReplayKit extension from the same commit, preserves the large capability bank only as cold resources, carries visible coordinates through the entitlement-free fallback channel, preserves inference-failure vs no-target state, and aspect-fits landscape frames before detector decoding.'
+          NOTES='LiteView 0.8.2 fixes the quantized fallback decoder, rotates custom models only after independently confirmed visible misses, and adds session-relative ReplayKit frame-pressure backoff so the foreground app keeps priority. The large Phoenix capability bank remains cold on disk.'
 
           git tag -f "$TAG" "$GITHUB_SHA"
           git push origin "refs/tags/$TAG" --force
@@ -270,8 +270,8 @@ jobs:
           if gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber --repo "${GITHUB_REPOSITORY}"
             gh release edit "$TAG" --repo "${GITHUB_REPOSITORY}" \
-              --title 'LiteView 0.8.1 Fresh Runtime Full Bank' --notes "$NOTES"
+              --title 'LiteView 0.8.2 Adaptive Sentinel Full Bank' --notes "$NOTES"
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" --repo "${GITHUB_REPOSITORY}" \
-              --title 'LiteView 0.8.1 Fresh Runtime Full Bank' --notes "$NOTES"
+              --title 'LiteView 0.8.2 Adaptive Sentinel Full Bank' --notes "$NOTES"
           fi
