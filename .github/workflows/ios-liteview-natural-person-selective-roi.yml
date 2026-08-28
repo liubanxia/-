@@ -1,0 +1,83 @@
+name: Natural Person Selective ROI Benchmark
+
+on:
+  push:
+    branches:
+      - feature/ios-realtime-vision-assist
+    paths:
+      - 'ios/PhoenixRealtimeVisionAssist/Tests/NaturalPersonSelectiveROI/**'
+      - '.github/workflows/ios-liteview-natural-person-selective-roi.yml'
+  workflow_dispatch:
+
+jobs:
+  selective-roi-benchmark:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install benchmark dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install ultralytics opencv-python-headless
+
+      - name: Download COCO128
+        id: data
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/selective-roi-benchmark"
+          mkdir -p "$WORK/data" "$WORK/results"
+          curl -fL --retry 4 --retry-delay 2 \
+            https://github.com/ultralytics/assets/releases/download/v0.0.0/coco128.zip \
+            -o "$WORK/coco128.zip"
+          unzip -q "$WORK/coco128.zip" -d "$WORK/data"
+          test -d "$WORK/data/coco128/images"
+          test -d "$WORK/data/coco128/labels"
+          echo "work=$WORK" >> "$GITHUB_OUTPUT"
+          echo "dataset=$WORK/data/coco128" >> "$GITHUB_OUTPUT"
+
+      - name: Compare full-frame and selective ROI second-look
+        shell: bash
+        env:
+          WORK: ${{ steps.data.outputs.work }}
+          DATASET: ${{ steps.data.outputs.dataset }}
+        run: |
+          set -euo pipefail
+          python ios/PhoenixRealtimeVisionAssist/Tests/NaturalPersonSelectiveROI/run_selective_roi_benchmark.py \
+            --dataset "$DATASET" \
+            --output "$WORK/results" \
+            --proposal-model yolo11n.pt \
+            --second-model yolo11s.pt \
+            --proposal-conf 0.01 \
+            --final-conf 0.05 \
+            --second-conf 0.08 \
+            --seed-conf-max 0.14 \
+            --seed-height-max 64 \
+            --reference-imgsz 640 \
+            --max-rois 2 \
+            --roi-fraction 0.34 \
+            --roi-expand 5.0 \
+            --iou-threshold 0.30
+          cat "$WORK/results/summary_selective_roi_benchmark.md" >> "$GITHUB_STEP_SUMMARY"
+          echo '--- selective_roi_benchmark.json ---'
+          cat "$WORK/results/selective_roi_benchmark.json"
+
+      - name: Upload selective ROI evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: natural-person-selective-roi-v1
+          path: |
+            ${{ steps.data.outputs.work }}/results/selective_roi_benchmark.json
+            ${{ steps.data.outputs.work }}/results/selective_roi_benchmark.csv
+            ${{ steps.data.outputs.work }}/results/summary_selective_roi_benchmark.md
+            ${{ steps.data.outputs.work }}/results/selective_roi_gallery.jpg
+          retention-days: 7
+          if-no-files-found: error
