@@ -44,7 +44,7 @@ jobs:
           echo "work=$WORK" >> "$GITHUB_OUTPUT"
           echo "dataset=$WORK/data/coco128" >> "$GITHUB_OUTPUT"
 
-      - name: Measure natural-scene person pixel floor
+      - name: Sweep nano input sizes on natural small persons
         shell: bash
         env:
           WORK: ${{ steps.data.outputs.work }}
@@ -54,18 +54,19 @@ jobs:
           python ios/PhoenixRealtimeVisionAssist/Tests/NaturalPersonPixelFloor/run_natural_person_pixel_floor.py \
             --dataset "$DATASET" \
             --output "$WORK/results" \
-            --models yolo11n.pt yolo11s.pt \
-            --imgsz 640 960 \
+            --models yolo11n.pt \
+            --imgsz 640 768 832 896 960 \
+            --reference-imgsz 640 \
             --confidence 0.05 \
             --iou-threshold 0.30
           cat "$WORK/results/summary_natural_person_pixel_floor.md" >> "$GITHUB_STEP_SUMMARY"
           echo '--- natural_person_pixel_floor.json ---'
           cat "$WORK/results/natural_person_pixel_floor.json"
 
-      - name: Upload natural-scene benchmark evidence
+      - name: Upload nano input-size sweep evidence
         uses: actions/upload-artifact@v4
         with:
-          name: natural-person-pixel-floor-v1
+          name: natural-person-pixel-floor-nano-sweep-v3
           path: |
             ${{ steps.data.outputs.work }}/results/natural_person_pixel_floor.json
             ${{ steps.data.outputs.work }}/results/natural_person_pixel_floor.csv
