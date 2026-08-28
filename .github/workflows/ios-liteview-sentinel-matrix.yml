@@ -1,4 +1,4 @@
-name: LiteView 0.8.4 384 Hot Detector Package
+name: LiteView 0.9.0 Stable PiP Radar Test
 
 on:
   push:
@@ -15,7 +15,7 @@ permissions:
 jobs:
   package:
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -29,51 +29,11 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Stage 384px hot ReplayKit detector matrix
-        shell: bash
-        run: |
-          set -euo pipefail
-          ROOT='ios/PhoenixRealtimeVisionAssist'
-          BROADCAST_MODELS="$ROOT/Resources/BroadcastModels"
-          WORK="$RUNNER_TEMP/liteview-sentinel-models"
-          rm -rf "$BROADCAST_MODELS" "$WORK"
-          mkdir -p "$BROADCAST_MODELS" "$WORK"
-
-          YOLO_ZIP="$WORK/liteview-yolo11n-coreml.zip"
-          YOLO_UNPACK="$WORK/yolo11n-unpack"
-          YOLO_COMPILE="$WORK/yolo11n-compiled"
-          curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 \
-            -o "$YOLO_ZIP" \
-            'https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
-          mkdir -p "$YOLO_UNPACK" "$YOLO_COMPILE"
-          unzip -q "$YOLO_ZIP" -d "$YOLO_UNPACK"
-          YOLO_PACKAGE="$(find "$YOLO_UNPACK" -type d -name 'yolo11n.mlpackage' -not -path '*/__MACOSX/*' -print -quit)"
-          test -n "$YOLO_PACKAGE"
-          xcrun coremlc compile "$YOLO_PACKAGE" "$YOLO_COMPILE"
-          YOLO_COMPILED="$(find "$YOLO_COMPILE" -type d -name '*.mlmodelc' -print -quit)"
-          test -n "$YOLO_COMPILED"
-          cp -R "$YOLO_COMPILED" "$BROADCAST_MODELS/yolo11n.mlmodelc"
-
-          TINY_MODEL="$WORK/YOLOv3TinyInt8LUT.mlmodel"
-          TINY_COMPILE="$WORK/tiny-compiled"
-          mkdir -p "$TINY_COMPILE"
-          curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 \
-            -o "$TINY_MODEL" \
-            'https://ml-assets.apple.com/coreml/models/Image/ObjectDetection/YOLOv3Tiny/YOLOv3TinyInt8LUT.mlmodel'
-          xcrun coremlc compile "$TINY_MODEL" "$TINY_COMPILE"
-          TINY_COMPILED="$(find "$TINY_COMPILE" -type d -name '*.mlmodelc' -print -quit)"
-          test -n "$TINY_COMPILED"
-          cp -R "$TINY_COMPILED" "$BROADCAST_MODELS/YOLOv3TinyInt8LUT.mlmodelc"
-
-          MODEL_COUNT="$(find "$BROADCAST_MODELS" -type d -name '*.mlmodelc' -prune | wc -l | tr -d ' ')"
-          test "$MODEL_COUNT" = '2'
-          du -sh "$BROADCAST_MODELS"/*.mlmodelc
-
       - name: Generate project
         working-directory: ios/PhoenixRealtimeVisionAssist
         run: xcodegen generate
 
-      - name: Run lifecycle and compact-fallback smoke test
+      - name: Run lifecycle smoke test
         shell: bash
         run: |
           set -euo pipefail
@@ -91,75 +51,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf "$RUNNER_TEMP/LiteViewSentinelDerivedData"
+          rm -rf "$RUNNER_TEMP/LiteViewRadarDerivedData"
           xcodebuild \
             -project PhoenixRealtimeVisionAssist.xcodeproj \
             -scheme PhoenixRealtimeVisionAssist \
             -sdk iphoneos \
             -configuration Release \
-            -derivedDataPath "$RUNNER_TEMP/LiteViewSentinelDerivedData" \
+            -derivedDataPath "$RUNNER_TEMP/LiteViewRadarDerivedData" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             build
 
-      - name: Download previous full-bank package as model source only
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Stage small stable radar package
         shell: bash
         run: |
           set -euo pipefail
-          BASE_DIR="$RUNNER_TEMP/liteview-bank-source"
-          rm -rf "$BASE_DIR"
-          mkdir -p "$BASE_DIR"
-          if gh release view liteview-sentinel-latest --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            SOURCE_TAG='liteview-sentinel-latest'
-          else
-            SOURCE_TAG='liteview-sideload-latest'
-          fi
-          echo "SOURCE_TAG=$SOURCE_TAG" >> "$GITHUB_ENV"
-          gh release download "$SOURCE_TAG" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --pattern 'LiteView-unsigned-sideload.ipa' \
-            --dir "$BASE_DIR"
-          test -s "$BASE_DIR/LiteView-unsigned-sideload.ipa"
-          ls -lh "$BASE_DIR/LiteView-unsigned-sideload.ipa"
-
-      - name: Hydrate fresh app with cold capability bank and hot extension models
-        shell: bash
-        run: |
-          set -euo pipefail
-          BASE_IPA="$RUNNER_TEMP/liteview-bank-source/LiteView-unsigned-sideload.ipa"
-          BASE_UNPACK="$RUNNER_TEMP/liteview-bank-unpack"
-          PRODUCTS="$RUNNER_TEMP/LiteViewSentinelDerivedData/Build/Products/Release-iphoneos"
+          PRODUCTS="$RUNNER_TEMP/LiteViewRadarDerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
           EXT="$APP/PlugIns/PhoenixBroadcastExtension.appex"
-          STAGED_MODELS='ios/PhoenixRealtimeVisionAssist/Resources/BroadcastModels'
-
-          rm -rf "$BASE_UNPACK"
-          mkdir -p "$BASE_UNPACK"
-          unzip -q "$BASE_IPA" -d "$BASE_UNPACK"
-          BASE_APP="$BASE_UNPACK/Payload/PhoenixRealtimeVisionAssist.app"
-          test -d "$BASE_APP"
           test -d "$APP"
           test -d "$EXT"
 
-          MODEL_COUNT=0
-          for SRC in "$BASE_APP"/*.mlmodelc; do
-            [ -d "$SRC" ] || continue
-            NAME="$(basename "$SRC")"
-            rm -rf "$APP/$NAME"
-            cp -R "$SRC" "$APP/$NAME"
-            MODEL_COUNT=$((MODEL_COUNT + 1))
-          done
-          if [ -f "$BASE_APP/PhoenixCapabilityBank.json" ]; then
-            cp "$BASE_APP/PhoenixCapabilityBank.json" "$APP/PhoenixCapabilityBank.json"
-          fi
-          test "$MODEL_COUNT" -ge 12
-
           rm -rf "$EXT/BroadcastModels"
-          mkdir -p "$EXT/BroadcastModels"
-          cp -R "$STAGED_MODELS/yolo11n.mlmodelc" "$EXT/BroadcastModels/"
-          cp -R "$STAGED_MODELS/YOLOv3TinyInt8LUT.mlmodelc" "$EXT/BroadcastModels/"
+          rm -rf "$APP"/*.mlmodelc
+          rm -f "$APP/PhoenixCapabilityBank.json"
 
           set_plist_string() {
             local plist="$1" key="$2" value="$3"
@@ -169,79 +84,65 @@ jobs:
 
           set_plist_string "$APP/Info.plist" CFBundleDisplayName LiteView
           set_plist_string "$APP/Info.plist" CFBundleIdentifier com.phoenix.realtimevisionassist
-          set_plist_string "$APP/Info.plist" CFBundleShortVersionString 0.8.4
-          set_plist_string "$APP/Info.plist" CFBundleVersion 15
+          set_plist_string "$APP/Info.plist" CFBundleShortVersionString 0.9.0
+          set_plist_string "$APP/Info.plist" CFBundleVersion 16
           set_plist_string "$EXT/Info.plist" CFBundleDisplayName 'LiteView Broadcast'
           set_plist_string "$EXT/Info.plist" CFBundleIdentifier com.phoenix.realtimevisionassist.broadcast
-          set_plist_string "$EXT/Info.plist" CFBundleShortVersionString 0.8.4
-          set_plist_string "$EXT/Info.plist" CFBundleVersion 15
+          set_plist_string "$EXT/Info.plist" CFBundleShortVersionString 0.9.0
+          set_plist_string "$EXT/Info.plist" CFBundleVersion 16
 
           /usr/libexec/PlistBuddy -c 'Delete :NSExtension' "$EXT/Info.plist" >/dev/null 2>&1 || true
           /usr/libexec/PlistBuddy -c 'Add :NSExtension dict' "$EXT/Info.plist"
           /usr/libexec/PlistBuddy -c 'Add :NSExtension:NSExtensionPointIdentifier string com.apple.broadcast-services-upload' "$EXT/Info.plist"
           /usr/libexec/PlistBuddy -c 'Add :NSExtension:NSExtensionPrincipalClass string PhoenixBroadcastExtension.BroadcastSampleHandler' "$EXT/Info.plist"
 
-          EXT_MODEL_COUNT="$(find "$EXT/BroadcastModels" -type d -name '*.mlmodelc' -prune | wc -l | tr -d ' ')"
           EXT_SIZE_BYTES="$(du -sk "$EXT" | awk '{print $1 * 1024}')"
-          APP_MODEL_BYTES="$(find "$APP" -maxdepth 1 -type d -name '*.mlmodelc' -prune -exec du -sk {} + | awk '{s += $1} END {print s * 1024}')"
-          echo "APP_MODEL_COUNT=$MODEL_COUNT"
-          echo "APP_MODEL_BYTES=$APP_MODEL_BYTES"
-          echo "EXT_MODEL_COUNT=$EXT_MODEL_COUNT"
+          APP_SIZE_BYTES="$(du -sk "$APP" | awk '{print $1 * 1024}')"
           echo "EXT_SIZE_BYTES=$EXT_SIZE_BYTES"
-          test "$APP_MODEL_BYTES" -ge 650000000
-          test "$EXT_MODEL_COUNT" = '2'
-          test "$EXT_SIZE_BYTES" -lt 41943040
+          echo "APP_SIZE_BYTES=$APP_SIZE_BYTES"
+          test "$EXT_SIZE_BYTES" -lt 12582912
+          test ! -d "$EXT/BroadcastModels"
 
-      - name: Package and verify LiteView 0.8.4 full-bank IPA
+      - name: Package and verify LiteView 0.9.0 radar IPA
         shell: bash
         run: |
           set -euo pipefail
-          PRODUCTS="$RUNNER_TEMP/LiteViewSentinelDerivedData/Build/Products/Release-iphoneos"
+          PRODUCTS="$RUNNER_TEMP/LiteViewRadarDerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
-          ROOT="$RUNNER_TEMP/liteview-084-package"
+          ROOT="$RUNNER_TEMP/liteview-090-package"
           PAYLOAD="$ROOT/Payload"
           IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
-          VERIFY="$RUNNER_TEMP/liteview-084-verify"
+          MANIFEST="$RUNNER_TEMP/LiteView-radar-manifest.txt"
+          VERIFY="$RUNNER_TEMP/liteview-090-verify"
 
           rm -rf "$ROOT" "$VERIFY" "$IPA" "$MANIFEST"
           mkdir -p "$PAYLOAD" "$VERIFY"
           cp -R "$APP" "$PAYLOAD/"
           (cd "$ROOT" && /usr/bin/zip -qry "$IPA" Payload)
           test -s "$IPA"
-
-          IPA_SIZE_BYTES="$(stat -f%z "$IPA")"
-          test "$IPA_SIZE_BYTES" -ge 900000000
-          test "$IPA_SIZE_BYTES" -le 1073741824
           unzip -q "$IPA" -d "$VERIFY"
 
           VAPP="$VERIFY/Payload/PhoenixRealtimeVisionAssist.app"
           VEXT="$VAPP/PlugIns/PhoenixBroadcastExtension.appex"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VAPP/Info.plist")" = '0.8.4'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$VAPP/Info.plist")" = '15'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VEXT/Info.plist")" = '0.8.4'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$VEXT/Info.plist")" = '15'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$VEXT/Info.plist")" = 'com.phoenix.realtimevisionassist.broadcast'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VAPP/Info.plist")" = '0.9.0'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$VAPP/Info.plist")" = '16'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VEXT/Info.plist")" = '0.9.0'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$VEXT/Info.plist")" = '16'
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$VEXT/Info.plist")" = 'com.apple.broadcast-services-upload'
-          test "$(find "$VEXT/BroadcastModels" -type d -name '*.mlmodelc' -prune | wc -l | tr -d ' ')" = '2'
-          test "$(find "$VAPP" -maxdepth 1 -type d -name '*.mlmodelc' -prune | wc -l | tr -d ' ')" -ge 12
+          test ! -d "$VEXT/BroadcastModels"
+          /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "$VAPP/Info.plist" | grep -q audio
 
           cat > "$MANIFEST" <<EOF
-          LiteView 0.8.4 384px hot-detector full-bank sideload package
+          LiteView 0.9.0 stable PiP radar test
           commit=${GITHUB_SHA}
-          build=15
-          source_bank_tag=${SOURCE_TAG}
-          package_base=fresh main executable + fresh ReplayKit extension + transplanted cold model resources only
-          replaykit_runtime=single 384px hot Core ML detector + fast Vision tracker + independently confirmed failover
-          replaykit_hot_models=yolo11n 384x384 + YOLOv3TinyInt8LUT fallback
-          raw_decoder_scale=read from active Core ML image input constraint; 384/640 compatible, no hard-coded 640 geometry
-          fallback_decoder=coordinates/confidence pair + raw Ultralytics tensor + recognized-object output
-          true_inference_telemetry=Core ML invocation + decode + non-empty target + active model + decoder path + result source + failover/failure counters
-          telemetry_transport=entitlement-free libnotify 64-bit counter state; final session counters remain readable until next broadcast reset
-          coreml_scheduling=request-level background preference removed; frame-pressure/latency/thermal governor remains the primary backoff
-          cross_process_state=App Group exact snapshot + compact libnotify v3 coordinate/pipeline state + independent true-inference telemetry channel
+          build=16
+          replaykit_runtime=Apple Vision human rectangles + fast Vision tracker; no custom Core ML model load in Broadcast Extension
+          extension_models=none
+          display=system Picture in Picture radar window; red observed target + blue short-horizon prediction
+          foreground_game_priority=adaptive scan interval + one frame in flight + thermal/latency/frame-pressure backoff
           hidden_position_extrapolation=disabled
           persistence=none for frames, screenshots, audio, or analysis history
+          note=PiP is a floating radar, not a transparent arbitrary overlay over another app
           signing=unsigned; re-sign app and embedded Broadcast Extension without removing PlugIns
           EOF
 
@@ -251,22 +152,22 @@ jobs:
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-084-fullbank
+          name: liteview-090-radar
           path: |
             ${{ runner.temp }}/LiteView-unsigned-sideload.ipa
-            ${{ runner.temp }}/LiteView-sideload-manifest.txt
+            ${{ runner.temp }}/LiteView-radar-manifest.txt
           if-no-files-found: error
 
-      - name: Publish release and move latest tag to exact build commit
+      - name: Publish radar test release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          TAG='liteview-sentinel-latest'
+          TAG='liteview-radar-latest'
           IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
-          NOTES='LiteView 0.8.4 uses the newly exported 384x384 yolo11n hot detector to reduce ReplayKit inference load. Raw Ultralytics coordinates are now normalized from the active Core ML image-input contract instead of a hard-coded 640, so both 384 and 640 exports decode correctly. True-inference telemetry, independent visible-miss failover, the frame-pressure governor, and the cold Phoenix capability bank are retained.'
+          MANIFEST="$RUNNER_TEMP/LiteView-radar-manifest.txt"
+          NOTES='LiteView 0.9.0 removes custom Core ML model loading from the ReplayKit extension to target long-session stability and adds a real system Picture in Picture radar visible over the foreground game. Red shows the currently observed visible target and blue shows a short-horizon motion prediction. This is a deliberately small functional test build; the cold model bank is excluded.'
 
           git tag -f "$TAG" "$GITHUB_SHA"
           git push origin "refs/tags/$TAG" --force
@@ -274,8 +175,8 @@ jobs:
           if gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber --repo "${GITHUB_REPOSITORY}"
             gh release edit "$TAG" --repo "${GITHUB_REPOSITORY}" \
-              --title 'LiteView 0.8.4 384px Adaptive Detector Full Bank' --notes "$NOTES"
+              --title 'LiteView 0.9.0 Stable PiP Radar Test' --notes "$NOTES"
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" --repo "${GITHUB_REPOSITORY}" \
-              --title 'LiteView 0.8.4 384px Adaptive Detector Full Bank' --notes "$NOTES"
+              --title 'LiteView 0.9.0 Stable PiP Radar Test' --notes "$NOTES"
           fi

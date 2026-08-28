@@ -9,8 +9,8 @@ settings:
     IPHONEOS_DEPLOYMENT_TARGET: 17.0
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: ""
-    CURRENT_PROJECT_VERSION: 15
-    MARKETING_VERSION: 0.8.4
+    CURRENT_PROJECT_VERSION: 16
+    MARKETING_VERSION: 0.9.0
 targets:
   PhoenixRealtimeVisionAssist:
     type: application
@@ -22,31 +22,13 @@ targets:
       - path: Sources/Audio
       - path: Sources/Map
       - path: Sources/Overlay
-    resources:
-      - path: Resources/Models/yolo11n.mlmodelc
-        optional: true
-        type: folder
-    postBuildScripts:
-      - name: Copy LiteView Core ML model pool
-        script: |
-          set -e
-          MODEL_ROOT="${SRCROOT}/Resources/Models"
-          DEST_ROOT="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
-          if [ -d "$MODEL_ROOT" ]; then
-            for SRC in "$MODEL_ROOT"/*.mlmodelc; do
-              [ -d "$SRC" ] || continue
-              NAME="$(basename "$SRC")"
-              DST="$DEST_ROOT/$NAME"
-              rm -rf "$DST"
-              mkdir -p "$DEST_ROOT"
-              cp -R "$SRC" "$DST"
-            done
-          fi
     info:
       path: Sources/App/Info.plist
       properties:
         CFBundleDisplayName: LiteView
         UILaunchScreen: {}
+        UIBackgroundModes:
+          - audio
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.phoenix.realtimevisionassist
@@ -66,10 +48,6 @@ targets:
       - path: Sources/Broadcast
       - path: Sources/ExtensionSupport/BroadcastNanoPersonDetector.swift
       - path: Sources/Core/SharedRealtimeStateStore.swift
-    resources:
-      - path: Resources/BroadcastModels
-        optional: true
-        type: folder
     info:
       path: Sources/Broadcast/Info.plist
       properties:
