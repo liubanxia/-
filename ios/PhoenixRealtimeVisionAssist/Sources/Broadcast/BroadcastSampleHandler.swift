@@ -4,9 +4,6 @@ import ImageIO
 import ReplayKit
 
 /// ReplayKit upload handler tuned for extension memory limits.
-///
-/// The extension keeps only counters and the current visible-content result. Heavy detection is
-/// infrequent; once a visible target is locked, the analyzer mainly uses a fast object tracker.
 /// Frames are never encoded, written to disk, or retained after the current work item finishes.
 final class BroadcastSampleHandler: RPBroadcastSampleHandler {
     private struct Metrics {
@@ -30,16 +27,8 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
 
     private let sharedState = SharedRealtimeStateStore()
     private let analyzer = LightweightBroadcastAnalyzer()
-    private let analysisQueue = DispatchQueue(
-        label: "com.phoenix.liteview.broadcast.analysis",
-        qos: .utility,
-        autoreleaseFrequency: .workItem
-    )
-    private let heartbeatQueue = DispatchQueue(
-        label: "com.phoenix.liteview.broadcast.heartbeat",
-        qos: .utility,
-        autoreleaseFrequency: .workItem
-    )
+    private let analysisQueue = DispatchQueue(label: "com.phoenix.liteview.broadcast.analysis", qos: .utility, autoreleaseFrequency: .workItem)
+    private let heartbeatQueue = DispatchQueue(label: "com.phoenix.liteview.broadcast.heartbeat", qos: .utility, autoreleaseFrequency: .workItem)
     private let stateLock = NSLock()
 
     private var heartbeatTimer: DispatchSourceTimer?
@@ -53,6 +42,7 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
     private var frameRateWindowFrameCount: UInt64 = 0
     private var videoFrameCount: UInt64 = 0
     private var videoFramesPerSecond: Double = 0
+    private var peakVideoFramesPerSecond: Double = 0
     private var droppedAnalysisFrameCount: UInt64 = 0
     private var targetCount = 0
     private var analysisLatencyMilliseconds: Double = 0
@@ -68,7 +58,6 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
     override func broadcastStarted(withSetupInfo setupInfo: [String: NSObject]?) {
         let now = ProcessInfo.processInfo.systemUptime
         let newSessionID = UUID().uuidString
-
         stopHeartbeatTimer()
 
         stateLock.lock()
@@ -82,6 +71,7 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
         frameRateWindowFrameCount = 0
         videoFrameCount = 0
         videoFramesPerSecond = 0
+        peakVideoFramesPerSecond = 0
         droppedAnalysisFrameCount = 0
         targetCount = 0
         analysisLatencyMilliseconds = 0
@@ -97,9 +87,7 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
         let activeGeneration = generation
         stateLock.unlock()
 
-        analysisQueue.async { [weak self] in
-            self?.analyzer.reset()
-        }
+        analysisQueue.async { [weak self] in self?.analyzer.reset() }
         sharedState.clear()
         publish(metrics)
         BroadcastSignalName.post(BroadcastSignalName.started)
@@ -122,68 +110,41 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
 
     override func broadcastFinished() {
         stopHeartbeatTimer()
-
         stateLock.lock()
-        guard isBroadcasting else {
-            stateLock.unlock()
-            return
-        }
-
+        guard isBroadcasting else { stateLock.unlock(); return }
         isBroadcasting = false
         phase = .finished
         analysisInFlight = false
         let metrics = currentMetricsLocked()
         generation &+= 1
         stateLock.unlock()
-
         publishFinished(metrics)
         BroadcastSignalName.post(BroadcastSignalName.finished)
-        analysisQueue.async { [weak self] in
-            self?.analyzer.releaseResources()
-        }
+        analysisQueue.async { [weak self] in self?.analyzer.releaseResources() }
     }
 
-    override func processSampleBuffer(
-        _ sampleBuffer: CMSampleBuffer,
-        with sampleBufferType: RPSampleBufferType
-    ) {
+    override func processSampleBuffer(_ sampleBuffer: CMSampleBuffer, with sampleBufferType: RPSampleBufferType) {
         guard sampleBufferType == .video else { return }
         let now = ProcessInfo.processInfo.systemUptime
-
         stateLock.lock()
-        guard isBroadcasting else {
-            stateLock.unlock()
-            return
-        }
+        guard isBroadcasting else { stateLock.unlock(); return }
         recordVideoFrameLocked(now: now)
         stateLock.unlock()
 
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
-              let workGeneration = reserveVisionWork(now: now) else {
-            return
-        }
-
+              let workGeneration = reserveVisionWork(now: now) else { return }
         let orientation = videoOrientation(of: sampleBuffer)
         analysisQueue.async { [weak self, pixelBuffer] in
             guard let self else { return }
-            let result = self.analyzer.detectVisibleHumans(
-                in: pixelBuffer,
-                orientation: orientation
-            )
+            let result = self.analyzer.detectVisibleHumans(in: pixelBuffer, orientation: orientation)
             self.completeVisionAnalysis(result, generation: workGeneration)
         }
     }
 
     private func startHeartbeatTimer(for expectedGeneration: UInt64) {
         let timer = DispatchSource.makeTimerSource(queue: heartbeatQueue)
-        timer.schedule(
-            deadline: .now() + .milliseconds(250),
-            repeating: .milliseconds(750),
-            leeway: .milliseconds(125)
-        )
-        timer.setEventHandler { [weak self] in
-            self?.emitHeartbeat(expectedGeneration: expectedGeneration)
-        }
+        timer.schedule(deadline: .now() + .milliseconds(250), repeating: .milliseconds(750), leeway: .milliseconds(125))
+        timer.setEventHandler { [weak self] in self?.emitHeartbeat(expectedGeneration: expectedGeneration) }
         heartbeatTimer = timer
         timer.resume()
     }
@@ -196,25 +157,16 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
 
     private func emitHeartbeat(expectedGeneration: UInt64) {
         stateLock.lock()
-        guard isBroadcasting, generation == expectedGeneration else {
-            stateLock.unlock()
-            return
-        }
+        guard isBroadcasting, generation == expectedGeneration else { stateLock.unlock(); return }
         let currentPhase = phase
         let metrics = currentMetricsLocked()
         stateLock.unlock()
-
         publish(metrics)
-        BroadcastSignalName.post(
-            currentPhase == .paused
-                ? BroadcastSignalName.paused
-                : BroadcastSignalName.heartbeat
-        )
+        BroadcastSignalName.post(currentPhase == .paused ? BroadcastSignalName.paused : BroadcastSignalName.heartbeat)
     }
 
     private func updatePhase(_ newPhase: SharedBroadcastPhase) -> Metrics? {
-        stateLock.lock()
-        defer { stateLock.unlock() }
+        stateLock.lock(); defer { stateLock.unlock() }
         guard isBroadcasting else { return nil }
         phase = newPhase
         return currentMetricsLocked()
@@ -223,62 +175,45 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
     private func recordVideoFrameLocked(now: TimeInterval) {
         videoFrameCount &+= 1
         frameRateWindowFrameCount &+= 1
-
         let elapsed = now - frameRateWindowStartedAt
         if elapsed >= 1 {
             videoFramesPerSecond = Double(frameRateWindowFrameCount) / elapsed
+            if videoFramesPerSecond > 0 {
+                peakVideoFramesPerSecond = max(peakVideoFramesPerSecond, min(videoFramesPerSecond, 120))
+            }
             frameRateWindowStartedAt = now
             frameRateWindowFrameCount = 0
         }
     }
 
     private func reserveVisionWork(now: TimeInterval) -> UInt64? {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-
+        stateLock.lock(); defer { stateLock.unlock() }
         guard isBroadcasting, phase == .running else { return nil }
         let interval = adaptiveVisionIntervalLocked()
-        guard interval.isFinite,
-              now - lastVisionAnalysisUptime >= interval else {
-            return nil
-        }
-
+        guard interval.isFinite, now - lastVisionAnalysisUptime >= interval else { return nil }
         if analysisInFlight {
             droppedAnalysisFrameCount &+= 1
             return nil
         }
-
         analysisInFlight = true
         lastVisionAnalysisUptime = now
         return generation
     }
 
-    private func completeVisionAnalysis(
-        _ result: LightweightVisionAnalysis,
-        generation workGeneration: UInt64
-    ) {
+    private func completeVisionAnalysis(_ result: LightweightVisionAnalysis, generation workGeneration: UInt64) {
         stateLock.lock()
-        guard isBroadcasting, generation == workGeneration else {
-            stateLock.unlock()
-            return
-        }
+        guard isBroadcasting, generation == workGeneration else { stateLock.unlock(); return }
         analysisInFlight = false
         analysisFrameCount &+= 1
         analysisLatencyMilliseconds = result.latencyMilliseconds
         lastAnalysisSucceeded = result.succeeded
         attemptedLaneCount = result.attemptedLaneCount
         successfulLaneCount = result.successfulLaneCount
-
         if result.succeeded {
             successfulAnalysisFrameCount &+= 1
             targetCount = result.targetCount
-
-            // The published point is the short visible-motion lead when available; otherwise it
-            // is the current stabilized point. Prediction is never held after visibility is lost.
             let displayPoint = result.predictedTarget ?? result.primaryTarget
-            primaryTarget = displayPoint.map {
-                SharedNormalizedPoint(x: $0.x, y: $0.y)
-            }
+            primaryTarget = displayPoint.map { SharedNormalizedPoint(x: $0.x, y: $0.y) }
             primaryTargetConfidence = result.primaryTargetConfidence
             stableTargetFrameCount = result.stableTargetFrameCount
         } else {
@@ -289,20 +224,13 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
         }
         let metrics = currentMetricsLocked()
         stateLock.unlock()
-
         publish(metrics)
     }
 
     private func publish(_ metrics: Metrics) {
         stateLock.lock()
-        let isCurrentGeneration = metrics.generation == generation
-        let phaseMatchesRuntime = metrics.phase == phase && isBroadcasting
-        guard isCurrentGeneration, phaseMatchesRuntime else {
-            stateLock.unlock()
-            return
-        }
+        guard metrics.generation == generation, metrics.phase == phase, isBroadcasting else { stateLock.unlock(); return }
         stateLock.unlock()
-
         let snapshot = sharedState.publish(
             sessionID: metrics.sessionID,
             phase: metrics.phase,
@@ -322,9 +250,7 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
             primaryTargetConfidence: metrics.primaryTargetConfidence,
             stableTargetFrameCount: metrics.stableTargetFrameCount
         )
-        if snapshot != nil {
-            BroadcastSignalName.post(BroadcastSignalName.snapshot)
-        }
+        if snapshot != nil { BroadcastSignalName.post(BroadcastSignalName.snapshot) }
     }
 
     private func publishFinished(_ metrics: Metrics) {
@@ -347,13 +273,11 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
             primaryTargetConfidence: metrics.primaryTargetConfidence,
             stableTargetFrameCount: metrics.stableTargetFrameCount
         )
-        if snapshot != nil {
-            BroadcastSignalName.post(BroadcastSignalName.snapshot)
-        }
+        if snapshot != nil { BroadcastSignalName.post(BroadcastSignalName.snapshot) }
     }
 
     private func currentMetricsLocked() -> Metrics {
-        Metrics(
+        .init(
             generation: generation,
             sessionID: sessionID,
             phase: phase,
@@ -376,41 +300,36 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
     private func adaptiveVisionIntervalLocked() -> TimeInterval {
         let hasVisibleLock = primaryTarget != nil && stableTargetFrameCount > 0
         let baseInterval: TimeInterval
-
         switch ProcessInfo.processInfo.thermalState {
-        case .nominal:
-            baseInterval = hasVisibleLock ? 0.22 : 0.65
-        case .fair:
-            baseInterval = hasVisibleLock ? 0.36 : 0.90
-        case .serious:
-            baseInterval = hasVisibleLock ? 0.75 : 1.50
-        case .critical:
-            return .infinity
-        @unknown default:
-            baseInterval = 1.50
+        case .nominal: baseInterval = hasVisibleLock ? 0.28 : 0.70
+        case .fair: baseInterval = hasVisibleLock ? 0.42 : 0.95
+        case .serious: baseInterval = hasVisibleLock ? 0.80 : 1.60
+        case .critical: return .infinity
+        @unknown default: baseInterval = 1.60
         }
 
-        let powerInterval: TimeInterval
-        if ProcessInfo.processInfo.isLowPowerModeEnabled {
-            powerInterval = hasVisibleLock ? 0.75 : 1.50
+        let powerInterval = ProcessInfo.processInfo.isLowPowerModeEnabled ? (hasVisibleLock ? 0.80 : 1.60) : 0
+        let latencyInterval = min(2.0, analysisLatencyMilliseconds / 1_000 * 2.9)
+
+        let framePressureInterval: TimeInterval
+        if peakVideoFramesPerSecond >= 20, videoFramesPerSecond > 0 {
+            let ratio = videoFramesPerSecond / peakVideoFramesPerSecond
+            if ratio < 0.60 {
+                framePressureInterval = hasVisibleLock ? 0.80 : 1.35
+            } else if ratio < 0.78 {
+                framePressureInterval = hasVisibleLock ? 0.50 : 0.95
+            } else {
+                framePressureInterval = 0
+            }
         } else {
-            powerInterval = 0
+            framePressureInterval = 0
         }
-
-        // If one analysis takes a long time, automatically yield more foreground CPU/GPU time.
-        let latencyInterval = min(2.0, analysisLatencyMilliseconds / 1_000 * 2.75)
-        return max(baseInterval, powerInterval, latencyInterval)
+        return max(baseInterval, powerInterval, latencyInterval, framePressureInterval)
     }
 
     private func videoOrientation(of sampleBuffer: CMSampleBuffer) -> CGImagePropertyOrientation {
         var attachmentMode: CMAttachmentMode = 0
-        guard let value = CMGetAttachment(
-            sampleBuffer,
-            key: RPVideoSampleOrientationKey as CFString,
-            attachmentModeOut: &attachmentMode
-        ) as? NSNumber else {
-            return .up
-        }
+        guard let value = CMGetAttachment(sampleBuffer, key: RPVideoSampleOrientationKey as CFString, attachmentModeOut: &attachmentMode) as? NSNumber else { return .up }
         return CGImagePropertyOrientation(rawValue: value.uint32Value) ?? .up
     }
 }
