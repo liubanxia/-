@@ -1,0 +1,805 @@
+name: LiteView NV12 Orientation Preprocessor Contract
+
+on:
+  push:
+    branches:
+      - feature/ios-realtime-vision-runtime-candidate
+    paths:
+      - '.github/workflows/liteview-nv12-orientation-preprocessor-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-nv12-preprocessor:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Stage one YOLO11n 384 Core ML model
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
+          UNZIP_DIR="$RUNNER_TEMP/liteview-yolo11n-coreml"
+          COMPILE_DIR="$RUNNER_TEMP/liteview-yolo11n-compiled"
+          URL='https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
+
+          rm -rf "$UNZIP_DIR" "$COMPILE_DIR"
+          mkdir -p "$UNZIP_DIR" "$COMPILE_DIR" build/nv12-contract
+          curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 -o "$ZIP" "$URL"
+          unzip -q "$ZIP" -d "$UNZIP_DIR"
+          SRC="$(find "$UNZIP_DIR" -type d -name 'yolo11n.mlpackage' -print -quit)"
+          test -n "$SRC"
+          xcrun coremlc compile "$SRC" "$COMPILE_DIR"
+          MODEL="$(find "$COMPILE_DIR" -type d -name 'yolo11n.mlmodelc' -print -quit)"
+          test -n "$MODEL"
+          echo "$MODEL" > build/nv12-contract/model_path.txt
+
+      - name: Build NV12 and orientation probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/nv12_orientation_probe.swift" <<'SWIFT'
+          import Accelerate
+          import CoreFoundation
+          import CoreGraphics
+          import CoreML
+          import CoreVideo
+          import Foundation
+          import ImageIO
+
+          struct Point2 {
+              let x: Double
+              let y: Double
+          }
+
+          struct NormalizedRect {
+              let x: Double
+              let y: Double
+              let width: Double
+              let height: Double
+
+              var maxX: Double { x + width }
+              var maxY: Double { y + height }
+          }
+
+          struct PixelRect {
+              let x: Int
+              let y: Int
+              let width: Int
+              let height: Int
+          }
+
+          struct ModelGeometry {
+              let orientedROI: CGRect
+              let rawPixelROI: PixelRect
+              let sourceWidth: Int
+              let sourceHeight: Int
+          }
+
+          final class PixelBufferProvider: NSObject, MLFeatureProvider {
+              let featureNames: Set<String>
+              private let inputName: String
+              private let value: MLFeatureValue
+
+              init(inputName: String, pixelBuffer: CVPixelBuffer) {
+                  self.inputName = inputName
+                  featureNames = [inputName]
+                  value = MLFeatureValue(pixelBuffer: pixelBuffer)
+              }
+
+              func featureValue(for featureName: String) -> MLFeatureValue? {
+                  featureName == inputName ? value : nil
+              }
+          }
+
+          func approx(_ a: Double, _ b: Double, tolerance: Double = 1e-9) -> Bool {
+              abs(a - b) <= tolerance
+          }
+
+          // Coordinates here use top-left origin. This is the EXIF raw-buffer -> oriented-image map.
+          func rawToOriented(_ p: Point2, _ orientation: CGImagePropertyOrientation) -> Point2 {
+              switch orientation {
+              case .up: return p
+              case .upMirrored: return .init(x: 1 - p.x, y: p.y)
+              case .down: return .init(x: 1 - p.x, y: 1 - p.y)
+              case .downMirrored: return .init(x: p.x, y: 1 - p.y)
+              case .leftMirrored: return .init(x: p.y, y: p.x)
+              case .right: return .init(x: 1 - p.y, y: p.x)
+              case .rightMirrored: return .init(x: 1 - p.y, y: 1 - p.x)
+              case .left: return .init(x: p.y, y: 1 - p.x)
+              @unknown default: return p
+              }
+          }
+
+          func orientedToRaw(_ p: Point2, _ orientation: CGImagePropertyOrientation) -> Point2 {
+              switch orientation {
+              case .up: return p
+              case .upMirrored: return .init(x: 1 - p.x, y: p.y)
+              case .down: return .init(x: 1 - p.x, y: 1 - p.y)
+              case .downMirrored: return .init(x: p.x, y: 1 - p.y)
+              case .leftMirrored: return .init(x: p.y, y: p.x)
+              case .right: return .init(x: p.y, y: 1 - p.x)
+              case .rightMirrored: return .init(x: 1 - p.y, y: 1 - p.x)
+              case .left: return .init(x: 1 - p.y, y: p.x)
+              @unknown default: return p
+              }
+          }
+
+          func orientedTopLeftRect(fromVisionROI roi: CGRect) -> NormalizedRect {
+              .init(
+                  x: Double(roi.minX),
+                  y: Double(1 - roi.maxY),
+                  width: Double(roi.width),
+                  height: Double(roi.height)
+              )
+          }
+
+          func rawNormalizedRect(forVisionROI roi: CGRect, orientation: CGImagePropertyOrientation) -> NormalizedRect {
+              let o = orientedTopLeftRect(fromVisionROI: roi)
+              let corners = [
+                  Point2(x: o.x, y: o.y),
+                  Point2(x: o.maxX, y: o.y),
+                  Point2(x: o.x, y: o.maxY),
+                  Point2(x: o.maxX, y: o.maxY),
+              ].map { orientedToRaw($0, orientation) }
+              let minX = corners.map(\.x).min()!
+              let maxX = corners.map(\.x).max()!
+              let minY = corners.map(\.y).min()!
+              let maxY = corners.map(\.y).max()!
+              return .init(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+          }
+
+          func evenPixelRect(_ normalized: NormalizedRect, width: Int, height: Int) -> PixelRect {
+              var x0 = Int(floor(normalized.x * Double(width)))
+              var y0 = Int(floor(normalized.y * Double(height)))
+              var x1 = Int(ceil(normalized.maxX * Double(width)))
+              var y1 = Int(ceil(normalized.maxY * Double(height)))
+
+              x0 = max(0, min(width - 2, x0 & ~1))
+              y0 = max(0, min(height - 2, y0 & ~1))
+              x1 = max(x0 + 2, min(width, (x1 + 1) & ~1))
+              y1 = max(y0 + 2, min(height, (y1 + 1) & ~1))
+              if x1 > width { x1 = width & ~1 }
+              if y1 > height { y1 = height & ~1 }
+              return .init(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
+          }
+
+          func makeBGRA(width: Int, height: Int) -> CVPixelBuffer {
+              var buffer: CVPixelBuffer?
+              let attrs: [CFString: Any] = [
+                  kCVPixelBufferCGImageCompatibilityKey: true,
+                  kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+                  kCVPixelBufferMetalCompatibilityKey: true,
+                  kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+              ]
+              let status = CVPixelBufferCreate(
+                  kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
+                  attrs as CFDictionary, &buffer
+              )
+              guard status == kCVReturnSuccess, let buffer else {
+                  fatalError("BGRA create failed: \(status)")
+              }
+              return buffer
+          }
+
+          func makeNV12(width: Int, height: Int, format: OSType) -> CVPixelBuffer {
+              var buffer: CVPixelBuffer?
+              let attrs: [CFString: Any] = [
+                  kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+                  kCVPixelBufferMetalCompatibilityKey: true,
+              ]
+              let status = CVPixelBufferCreate(
+                  kCFAllocatorDefault, width, height, format,
+                  attrs as CFDictionary, &buffer
+              )
+              guard status == kCVReturnSuccess, let buffer,
+                    CVPixelBufferIsPlanar(buffer), CVPixelBufferGetPlaneCount(buffer) == 2 else {
+                  fatalError("NV12 create failed format=\(format) status=\(status)")
+              }
+              return buffer
+          }
+
+          func fillNV12(_ buffer: CVPixelBuffer, yValue: UInt8, cb: UInt8, cr: UInt8) {
+              CVPixelBufferLockBaseAddress(buffer, [])
+              defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+              guard let yBase = CVPixelBufferGetBaseAddressOfPlane(buffer, 0),
+                    let uvBase = CVPixelBufferGetBaseAddressOfPlane(buffer, 1) else {
+                  fatalError("missing NV12 planes")
+              }
+              let yWidth = CVPixelBufferGetWidthOfPlane(buffer, 0)
+              let yHeight = CVPixelBufferGetHeightOfPlane(buffer, 0)
+              let yRow = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+              for row in 0..<yHeight {
+                  memset(yBase.advanced(by: row * yRow), Int32(yValue), yWidth)
+              }
+              let uvWidth = CVPixelBufferGetWidthOfPlane(buffer, 1)
+              let uvHeight = CVPixelBufferGetHeightOfPlane(buffer, 1)
+              let uvRow = CVPixelBufferGetBytesPerRowOfPlane(buffer, 1)
+              for row in 0..<uvHeight {
+                  let p = uvBase.advanced(by: row * uvRow).assumingMemoryBound(to: UInt8.self)
+                  for x in 0..<uvWidth {
+                      p[x * 2] = cb
+                      p[x * 2 + 1] = cr
+                  }
+              }
+          }
+
+          final class NV12ReusablePreprocessor {
+              private let work = makeBGRA(width: 384, height: 384)
+              let modelInput = makeBGRA(width: 384, height: 384)
+              private let scratch = makeBGRA(width: 384, height: 384)
+
+              private let yScaled: UnsafeMutableRawPointer
+              private let cbcrScaled: UnsafeMutableRawPointer
+              private let yTemp: UnsafeMutableRawPointer
+              private let cbcrTemp: UnsafeMutableRawPointer
+              private let yTempBytes: Int
+              private let cbcrTempBytes: Int
+              private var fullConversion = vImage_YpCbCrToARGB()
+              private var videoConversion = vImage_YpCbCrToARGB()
+
+              init() {
+                  yScaled = UnsafeMutableRawPointer.allocate(byteCount: 384 * 384, alignment: 64)
+                  cbcrScaled = UnsafeMutableRawPointer.allocate(byteCount: 192 * 192 * 2, alignment: 64)
+
+                  var fakeYSource = vImage_Buffer(
+                      data: UnsafeMutableRawPointer(bitPattern: 0x1000),
+                      height: 1080,
+                      width: 1920,
+                      rowBytes: 1920
+                  )
+                  var fakeYDest = vImage_Buffer(
+                      data: UnsafeMutableRawPointer(bitPattern: 0x2000),
+                      height: 384,
+                      width: 384,
+                      rowBytes: 384
+                  )
+                  let yQuery = vImageScale_Planar8(
+                      &fakeYSource, &fakeYDest, nil,
+                      vImage_Flags(kvImageHighQualityResampling | kvImageGetTempBufferSize)
+                  )
+                  yTempBytes = max(1, Int(yQuery))
+                  yTemp = UnsafeMutableRawPointer.allocate(byteCount: yTempBytes, alignment: 64)
+
+                  var fakeCSource = vImage_Buffer(
+                      data: UnsafeMutableRawPointer(bitPattern: 0x3000),
+                      height: 540,
+                      width: 960,
+                      rowBytes: 1920
+                  )
+                  var fakeCDest = vImage_Buffer(
+                      data: UnsafeMutableRawPointer(bitPattern: 0x4000),
+                      height: 192,
+                      width: 192,
+                      rowBytes: 384
+                  )
+                  let cQuery = vImageScale_CbCr8(
+                      &fakeCSource, &fakeCDest, nil,
+                      vImage_Flags(kvImageHighQualityResampling | kvImageGetTempBufferSize)
+                  )
+                  cbcrTempBytes = max(1, Int(cQuery))
+                  cbcrTemp = UnsafeMutableRawPointer.allocate(byteCount: cbcrTempBytes, alignment: 64)
+
+                  var fullRange = vImage_YpCbCrPixelRange(
+                      Yp_bias: 0, CbCr_bias: 128,
+                      YpRangeMax: 255, CbCrRangeMax: 255,
+                      YpMax: 255, YpMin: 0, CbCrMax: 255, CbCrMin: 0
+                  )
+                  var videoRange = vImage_YpCbCrPixelRange(
+                      Yp_bias: 16, CbCr_bias: 128,
+                      YpRangeMax: 235, CbCrRangeMax: 240,
+                      YpMax: 235, YpMin: 16, CbCrMax: 240, CbCrMin: 16
+                  )
+                  let fullError = vImageConvert_YpCbCrToARGB_GenerateConversion(
+                      kvImage_YpCbCrToARGBMatrix_ITU_R_709_2,
+                      &fullRange, &fullConversion,
+                      kvImage420Yp8_CbCr8, kvImageARGB8888,
+                      vImage_Flags(kvImageNoFlags)
+                  )
+                  let videoError = vImageConvert_YpCbCrToARGB_GenerateConversion(
+                      kvImage_YpCbCrToARGBMatrix_ITU_R_709_2,
+                      &videoRange, &videoConversion,
+                      kvImage420Yp8_CbCr8, kvImageARGB8888,
+                      vImage_Flags(kvImageNoFlags)
+                  )
+                  guard fullError == kvImageNoError, videoError == kvImageNoError else {
+                      fatalError("YUV conversion info failed full=\(fullError) video=\(videoError)")
+                  }
+              }
+
+              deinit {
+                  yScaled.deallocate()
+                  cbcrScaled.deallocate()
+                  yTemp.deallocate()
+                  cbcrTemp.deallocate()
+              }
+
+              func preprocess(
+                  source: CVPixelBuffer,
+                  orientation: CGImagePropertyOrientation,
+                  visionROI: CGRect
+              ) throws -> ModelGeometry {
+                  let format = CVPixelBufferGetPixelFormatType(source)
+                  guard format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange ||
+                        format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange else {
+                      throw NSError(domain: "LiteViewNV12", code: 10)
+                  }
+                  let width = CVPixelBufferGetWidth(source)
+                  let height = CVPixelBufferGetHeight(source)
+                  let rawNormalized = rawNormalizedRect(forVisionROI: visionROI, orientation: orientation)
+                  let rawROI = evenPixelRect(rawNormalized, width: width, height: height)
+
+                  CVPixelBufferLockBaseAddress(source, .readOnly)
+                  CVPixelBufferLockBaseAddress(work, [])
+                  defer {
+                      CVPixelBufferUnlockBaseAddress(work, [])
+                      CVPixelBufferUnlockBaseAddress(source, .readOnly)
+                  }
+
+                  guard let yBase = CVPixelBufferGetBaseAddressOfPlane(source, 0),
+                        let uvBase = CVPixelBufferGetBaseAddressOfPlane(source, 1),
+                        let workBase = CVPixelBufferGetBaseAddress(work) else {
+                      throw NSError(domain: "LiteViewNV12", code: 11)
+                  }
+
+                  let yRow = CVPixelBufferGetBytesPerRowOfPlane(source, 0)
+                  let uvRow = CVPixelBufferGetBytesPerRowOfPlane(source, 1)
+                  let workRow = CVPixelBufferGetBytesPerRow(work)
+                  memset(workBase, 114, CVPixelBufferGetDataSize(work))
+
+                  let rawW = rawROI.width
+                  let rawH = rawROI.height
+                  let scale = min(384.0 / Double(rawW), 384.0 / Double(rawH))
+                  var dstW = max(2, min(384, Int((Double(rawW) * scale).rounded())))
+                  var dstH = max(2, min(384, Int((Double(rawH) * scale).rounded())))
+                  dstW &= ~1
+                  dstH &= ~1
+                  dstW = max(2, dstW)
+                  dstH = max(2, dstH)
+                  let dstX = (384 - dstW) / 2
+                  let dstY = (384 - dstH) / 2
+
+                  var ySource = vImage_Buffer(
+                      data: yBase.advanced(by: rawROI.y * yRow + rawROI.x),
+                      height: vImagePixelCount(rawH),
+                      width: vImagePixelCount(rawW),
+                      rowBytes: yRow
+                  )
+                  var yDestination = vImage_Buffer(
+                      data: yScaled,
+                      height: vImagePixelCount(dstH),
+                      width: vImagePixelCount(dstW),
+                      rowBytes: dstW
+                  )
+                  let yScaleError = vImageScale_Planar8(
+                      &ySource, &yDestination, yTemp,
+                      vImage_Flags(kvImageHighQualityResampling)
+                  )
+                  guard yScaleError == kvImageNoError else {
+                      throw NSError(domain: "LiteViewNV12", code: Int(yScaleError))
+                  }
+
+                  var uvSource = vImage_Buffer(
+                      data: uvBase.advanced(by: (rawROI.y / 2) * uvRow + rawROI.x),
+                      height: vImagePixelCount(rawH / 2),
+                      width: vImagePixelCount(rawW / 2),
+                      rowBytes: uvRow
+                  )
+                  var uvDestination = vImage_Buffer(
+                      data: cbcrScaled,
+                      height: vImagePixelCount(dstH / 2),
+                      width: vImagePixelCount(dstW / 2),
+                      rowBytes: dstW
+                  )
+                  let uvScaleError = vImageScale_CbCr8(
+                      &uvSource, &uvDestination, cbcrTemp,
+                      vImage_Flags(kvImageHighQualityResampling)
+                  )
+                  guard uvScaleError == kvImageNoError else {
+                      throw NSError(domain: "LiteViewNV12", code: Int(uvScaleError))
+                  }
+
+                  var destination = vImage_Buffer(
+                      data: workBase.advanced(by: dstY * workRow + dstX * 4),
+                      height: vImagePixelCount(dstH),
+                      width: vImagePixelCount(dstW),
+                      rowBytes: workRow
+                  )
+                  let conversionError: vImage_Error
+                  if format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange {
+                      conversionError = vImageConvert_420Yp8_CbCr8ToARGB8888(
+                          &yDestination, &uvDestination, &destination,
+                          &fullConversion, [3, 2, 1, 0], 255,
+                          vImage_Flags(kvImageNoFlags)
+                      )
+                  } else {
+                      conversionError = vImageConvert_420Yp8_CbCr8ToARGB8888(
+                          &yDestination, &uvDestination, &destination,
+                          &videoConversion, [3, 2, 1, 0], 255,
+                          vImage_Flags(kvImageNoFlags)
+                      )
+                  }
+                  guard conversionError == kvImageNoError else {
+                      throw NSError(domain: "LiteViewNV12", code: Int(conversionError))
+                  }
+
+                  try orientWorkToModelInput(orientation)
+                  return .init(
+                      orientedROI: visionROI,
+                      rawPixelROI: rawROI,
+                      sourceWidth: width,
+                      sourceHeight: height
+                  )
+              }
+
+              private func orientWorkToModelInput(_ orientation: CGImagePropertyOrientation) throws {
+                  CVPixelBufferLockBaseAddress(work, .readOnly)
+                  CVPixelBufferLockBaseAddress(modelInput, [])
+                  CVPixelBufferLockBaseAddress(scratch, [])
+                  defer {
+                      CVPixelBufferUnlockBaseAddress(scratch, [])
+                      CVPixelBufferUnlockBaseAddress(modelInput, [])
+                      CVPixelBufferUnlockBaseAddress(work, .readOnly)
+                  }
+                  guard let workBase = CVPixelBufferGetBaseAddress(work),
+                        let modelBase = CVPixelBufferGetBaseAddress(modelInput),
+                        let scratchBase = CVPixelBufferGetBaseAddress(scratch) else {
+                      throw NSError(domain: "LiteViewNV12", code: 20)
+                  }
+                  var src = vImage_Buffer(data: workBase, height: 384, width: 384, rowBytes: CVPixelBufferGetBytesPerRow(work))
+                  var dst = vImage_Buffer(data: modelBase, height: 384, width: 384, rowBytes: CVPixelBufferGetBytesPerRow(modelInput))
+                  var tmp = vImage_Buffer(data: scratchBase, height: 384, width: 384, rowBytes: CVPixelBufferGetBytesPerRow(scratch))
+                  let flags = vImage_Flags(kvImageNoFlags)
+                  var error: vImage_Error = kvImageNoError
+
+                  switch orientation {
+                  case .up:
+                      error = vImageRotate90_ARGB8888(&src, &dst, UInt8(kRotate0DegreesClockwise), [0,0,0,0], flags)
+                  case .upMirrored:
+                      error = vImageHorizontalReflect_ARGB8888(&src, &dst, flags)
+                  case .down:
+                      error = vImageRotate90_ARGB8888(&src, &dst, UInt8(kRotate180DegreesClockwise), [0,0,0,0], flags)
+                  case .downMirrored:
+                      error = vImageVerticalReflect_ARGB8888(&src, &dst, flags)
+                  case .right:
+                      error = vImageRotate90_ARGB8888(&src, &dst, UInt8(kRotate90DegreesClockwise), [0,0,0,0], flags)
+                  case .left:
+                      error = vImageRotate90_ARGB8888(&src, &dst, UInt8(kRotate270DegreesClockwise), [0,0,0,0], flags)
+                  case .leftMirrored:
+                      error = vImageRotate90_ARGB8888(&src, &tmp, UInt8(kRotate90DegreesClockwise), [0,0,0,0], flags)
+                      if error == kvImageNoError {
+                          error = vImageHorizontalReflect_ARGB8888(&tmp, &dst, flags)
+                      }
+                  case .rightMirrored:
+                      error = vImageRotate90_ARGB8888(&src, &tmp, UInt8(kRotate90DegreesClockwise), [0,0,0,0], flags)
+                      if error == kvImageNoError {
+                          error = vImageVerticalReflect_ARGB8888(&tmp, &dst, flags)
+                      }
+                  @unknown default:
+                      error = vImageRotate90_ARGB8888(&src, &dst, UInt8(kRotate0DegreesClockwise), [0,0,0,0], flags)
+                  }
+                  guard error == kvImageNoError else {
+                      throw NSError(domain: "LiteViewNV12", code: Int(error))
+                  }
+              }
+          }
+
+          let orientations: [CGImagePropertyOrientation] = [
+              .up, .upMirrored, .down, .downMirrored,
+              .leftMirrored, .right, .rightMirrored, .left
+          ]
+
+          func validateOrientationMath() {
+              let points = [
+                  Point2(x: 0.07, y: 0.13),
+                  Point2(x: 0.21, y: 0.82),
+                  Point2(x: 0.66, y: 0.44),
+                  Point2(x: 0.93, y: 0.91),
+              ]
+              let rois = [
+                  CGRect(x: 0.0, y: 0.0, width: 1.0, height: 1.0),
+                  CGRect(x: 0.0, y: 0.0, width: 0.68, height: 1.0),
+                  CGRect(x: 0.32, y: 0.0, width: 0.68, height: 1.0),
+                  CGRect(x: 0.12, y: 0.19, width: 0.51, height: 0.43),
+              ]
+              for orientation in orientations {
+                  for p in points {
+                      let roundTrip = rawToOriented(orientedToRaw(p, orientation), orientation)
+                      guard approx(roundTrip.x, p.x), approx(roundTrip.y, p.y) else {
+                          fatalError("orientation inverse failed \(orientation.rawValue) \(p) -> \(roundTrip)")
+                      }
+                  }
+                  for roi in rois {
+                      let orientedTL = orientedTopLeftRect(fromVisionROI: roi)
+                      let raw = rawNormalizedRect(forVisionROI: roi, orientation: orientation)
+                      let rawCorners = [
+                          Point2(x: raw.x, y: raw.y),
+                          Point2(x: raw.maxX, y: raw.y),
+                          Point2(x: raw.x, y: raw.maxY),
+                          Point2(x: raw.maxX, y: raw.maxY),
+                      ].map { rawToOriented($0, orientation) }
+                      let minX = rawCorners.map(\.x).min()!
+                      let maxX = rawCorners.map(\.x).max()!
+                      let minY = rawCorners.map(\.y).min()!
+                      let maxY = rawCorners.map(\.y).max()!
+                      guard approx(minX, orientedTL.x), approx(maxX, orientedTL.maxX),
+                            approx(minY, orientedTL.y), approx(maxY, orientedTL.maxY) else {
+                          fatalError("ROI orientation mapping failed orientation=\(orientation.rawValue)")
+                      }
+                  }
+              }
+              print("ORIENTATION_MATH_PASS count=8")
+          }
+
+          func sampleBGRA(_ buffer: CVPixelBuffer, x: Int, y: Int) -> (UInt8, UInt8, UInt8, UInt8) {
+              CVPixelBufferLockBaseAddress(buffer, .readOnly)
+              defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+              guard let base = CVPixelBufferGetBaseAddress(buffer) else { fatalError("no BGRA base") }
+              let row = CVPixelBufferGetBytesPerRow(buffer)
+              let p = base.advanced(by: y * row + x * 4).assumingMemoryBound(to: UInt8.self)
+              return (p[0], p[1], p[2], p[3])
+          }
+
+          func validateNV12Colors() throws {
+              let pre = NV12ReusablePreprocessor()
+              let full = CGRect(x: 0, y: 0, width: 1, height: 1)
+
+              let grayFull = makeNV12(width: 64, height: 64, format: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)
+              fillNV12(grayFull, yValue: 128, cb: 128, cr: 128)
+              _ = try pre.preprocess(source: grayFull, orientation: .up, visionROI: full)
+              let gray = sampleBGRA(pre.modelInput, x: 192, y: 192)
+              guard abs(Int(gray.0) - Int(gray.1)) <= 3,
+                    abs(Int(gray.1) - Int(gray.2)) <= 3,
+                    gray.3 >= 250 else {
+                  fatalError("420f gray conversion/channel order invalid \(gray)")
+              }
+
+              let grayVideo = makeNV12(width: 64, height: 64, format: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+              fillNV12(grayVideo, yValue: 126, cb: 128, cr: 128)
+              _ = try pre.preprocess(source: grayVideo, orientation: .up, visionROI: full)
+              let vg = sampleBGRA(pre.modelInput, x: 192, y: 192)
+              guard abs(Int(vg.0) - Int(vg.1)) <= 3,
+                    abs(Int(vg.1) - Int(vg.2)) <= 3,
+                    vg.3 >= 250 else {
+                  fatalError("420v gray conversion/channel order invalid \(vg)")
+              }
+
+              let redish = makeNV12(width: 64, height: 64, format: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)
+              fillNV12(redish, yValue: 76, cb: 84, cr: 255)
+              _ = try pre.preprocess(source: redish, orientation: .up, visionROI: full)
+              let red = sampleBGRA(pre.modelInput, x: 192, y: 192)
+              // modelInput memory must be BGRA: R is byte 2, B is byte 0, alpha byte 3.
+              guard red.2 > red.1 + 40, red.2 > red.0 + 40, red.3 >= 250 else {
+                  fatalError("BGRA permutation invalid for red-ish NV12 sample \(red)")
+              }
+              print("NV12_COLOR_CONTRACT_PASS full=\(gray) video=\(vg) red=\(red)")
+          }
+
+          func validateEvenROIAlignment() {
+              let roi = CGRect(x: 0.123, y: 0.217, width: 0.511, height: 0.433)
+              for orientation in orientations {
+                  let raw = rawNormalizedRect(forVisionROI: roi, orientation: orientation)
+                  let pixels = evenPixelRect(raw, width: 1920, height: 1080)
+                  guard pixels.x % 2 == 0, pixels.y % 2 == 0,
+                        pixels.width % 2 == 0, pixels.height % 2 == 0 else {
+                      fatalError("NV12 ROI is not chroma aligned")
+                  }
+                  let pxMinX = Double(pixels.x) / 1920.0
+                  let pxMaxX = Double(pixels.x + pixels.width) / 1920.0
+                  let pxMinY = Double(pixels.y) / 1080.0
+                  let pxMaxY = Double(pixels.y + pixels.height) / 1080.0
+                  guard abs(pxMinX - raw.x) <= 2.0 / 1920.0 + 1e-9,
+                        abs(pxMaxX - raw.maxX) <= 2.0 / 1920.0 + 1e-9,
+                        abs(pxMinY - raw.y) <= 2.0 / 1080.0 + 1e-9,
+                        abs(pxMaxY - raw.maxY) <= 2.0 / 1080.0 + 1e-9 else {
+                      fatalError("NV12 ROI alignment drift too large orientation=\(orientation.rawValue)")
+                  }
+              }
+              print("NV12_EVEN_ROI_ALIGNMENT_PASS")
+          }
+
+          guard CommandLine.arguments.count == 4 else {
+              fatalError("usage: probe <model.mlmodelc> <420f|420v> <iterations>")
+          }
+          let modelURL = URL(fileURLWithPath: CommandLine.arguments[1])
+          let mode = CommandLine.arguments[2]
+          guard ["420f", "420v"].contains(mode),
+                let iterations = Int(CommandLine.arguments[3]), iterations >= 600 else {
+              fatalError("bad arguments")
+          }
+
+          validateOrientationMath()
+          validateEvenROIAlignment()
+          try validateNV12Colors()
+
+          let format: OSType = mode == "420f"
+              ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+              : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+          let source = makeNV12(width: 1920, height: 1080, format: format)
+          fillNV12(
+              source,
+              yValue: mode == "420f" ? 128 : 126,
+              cb: 128,
+              cr: 128
+          )
+          let preprocessor = NV12ReusablePreprocessor()
+
+          let config = MLModelConfiguration()
+          config.computeUnits = .cpuAndNeuralEngine
+          let model = try MLModel(contentsOf: modelURL, configuration: config)
+          let imageInputs = model.modelDescription.inputDescriptionsByName.filter { $0.value.type == .image }
+          guard imageInputs.count == 1, let inputName = imageInputs.first?.key else {
+              fatalError("expected one image input")
+          }
+          let provider = PixelBufferProvider(inputName: inputName, pixelBuffer: preprocessor.modelInput)
+
+          let rois = [
+              CGRect(x: 0, y: 0, width: 1, height: 1),
+              CGRect(x: 0, y: 0, width: 0.68, height: 1),
+              CGRect(x: 0.32, y: 0, width: 0.68, height: 1),
+          ]
+
+          func run(_ index: Int) throws {
+              let orientation = orientations[index % orientations.count]
+              let roi: CGRect
+              if index % 12 == 0 {
+                  roi = rois[0]
+              } else {
+                  roi = index % 2 == 0 ? rois[1] : rois[2]
+              }
+              _ = try preprocessor.preprocess(
+                  source: source,
+                  orientation: orientation,
+                  visionROI: roi
+              )
+              let output = try model.prediction(from: provider)
+              let arrays = output.featureNames.compactMap { output.featureValue(for: $0)?.multiArrayValue }
+              guard let array = arrays.first else { fatalError("missing model output") }
+              let shape = array.shape.map(\.intValue)
+              guard shape.count == 3, shape.contains(84) else {
+                  fatalError("unexpected model output shape \(shape)")
+              }
+          }
+
+          for i in 0..<64 {
+              try autoreleasepool { try run(i) }
+          }
+          print("NV12_LONGRUN_READY mode=\(mode)")
+          fflush(stdout)
+
+          let start = CFAbsoluteTimeGetCurrent()
+          for i in 0..<iterations {
+              try autoreleasepool { try run(i) }
+              if i % 100 == 0 {
+                  print("NV12_LONGRUN_PROGRESS mode=\(mode) iteration=\(i)")
+                  fflush(stdout)
+              }
+          }
+          print(String(
+              format: "NV12_LONGRUN_DONE mode=%@ iterations=%d elapsed_sec=%.3f",
+              mode, iterations, CFAbsoluteTimeGetCurrent() - start
+          ))
+          SWIFT
+
+          xcrun swiftc "$RUNNER_TEMP/nv12_orientation_probe.swift" -o "$RUNNER_TEMP/nv12_orientation_probe"
+
+      - name: Run 420f and 420v 1200-request stress
+        shell: bash
+        run: |
+          set -euo pipefail
+          MODEL="$(cat build/nv12-contract/model_path.txt)"
+          for MODE in 420f 420v; do
+            OUT="build/nv12-contract/${MODE}.stdout"
+            ERR="build/nv12-contract/${MODE}.stderr"
+            RSS="build/nv12-contract/${MODE}.rss_kib"
+            : > "$RSS"
+
+            "$RUNNER_TEMP/nv12_orientation_probe" "$MODEL" "$MODE" 1200 >"$OUT" 2>"$ERR" &
+            PID=$!
+            SAMPLE=0
+            while kill -0 "$PID" 2>/dev/null; do
+              VALUE="$(ps -o rss= -p "$PID" 2>/dev/null | awk '{print $1}' || true)"
+              if [ -n "$VALUE" ]; then
+                printf '%d %s\n' "$SAMPLE" "$VALUE" >> "$RSS"
+                SAMPLE=$((SAMPLE + 1))
+              fi
+              sleep 0.15
+            done
+            wait "$PID"
+            cat "$OUT"
+            cat "$ERR"
+            echo "${MODE}_RSS_SAMPLES=$(wc -l < "$RSS" | tr -d ' ')"
+          done
+
+      - name: Guard NV12 memory plateau
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, re, statistics
+
+          def metrics(mode):
+              vals = []
+              for line in Path(f'build/nv12-contract/{mode}.rss_kib').read_text().splitlines():
+                  p = line.split()
+                  if len(p) == 2:
+                      vals.append(int(p[1]) / 1024.0)
+              assert len(vals) >= 150, (mode, len(vals))
+              n = len(vals)
+              q3 = vals[n//2:(3*n)//4]
+              q4 = vals[(3*n)//4:]
+              late = vals[n//2:]
+              q3m = statistics.median(q3)
+              q4m = statistics.median(q4)
+              xs = list(range(len(late)))
+              xb = statistics.mean(xs)
+              yb = statistics.mean(late)
+              den = sum((x-xb)**2 for x in xs)
+              slope = sum((x-xb)*(y-yb) for x,y in zip(xs,late))/den if den else 0.0
+              stdout = Path(f'build/nv12-contract/{mode}.stdout').read_text()
+              assert 'ORIENTATION_MATH_PASS count=8' in stdout, mode
+              assert 'NV12_EVEN_ROI_ALIGNMENT_PASS' in stdout, mode
+              assert 'NV12_COLOR_CONTRACT_PASS' in stdout, mode
+              m = re.search(r'elapsed_sec=([0-9.]+)', stdout)
+              return {
+                  'samples': n,
+                  'q3_median_mib': round(q3m, 3),
+                  'q4_median_mib': round(q4m, 3),
+                  'late_growth_mib': round(q4m-q3m, 3),
+                  'late_slope_mib_per_sample': round(slope, 6),
+                  'peak_mib': round(max(vals), 3),
+                  'elapsed_sec': float(m.group(1)) if m else None,
+              }
+
+          report = {'420f': metrics('420f'), '420v': metrics('420v')}
+          Path('build/nv12-contract/report.json').write_text(json.dumps(report, indent=2))
+          print(json.dumps(report, indent=2))
+          for mode, values in report.items():
+              assert values['late_growth_mib'] <= 2.0, (mode, values)
+              assert values['late_slope_mib_per_sample'] <= 0.015, (mode, values)
+              assert values['peak_mib'] <= 62.0, (mode, values)
+          print('NV12_ORIENTATION_MEMORY_CONTRACT_PASS')
+          PY
+
+      - name: Publish evidence
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## LiteView NV12 + orientation preprocessor contract'
+            echo
+            echo '- Validates all 8 CGImagePropertyOrientation transforms and inverse ROI mapping.'
+            echo '- Enforces even chroma-aligned raw ROIs for NV12.'
+            echo '- Validates 420f and 420v YCbCr conversion into BGRA model input, including a red-channel permutation check.'
+            echo '- Cycles all 8 orientations while running 1200 direct Core ML predictions for each NV12 range.'
+            echo '- Reuses one 384x384 BGRA work buffer, one 384x384 model input, one 384x384 scratch buffer, scaled Y/CbCr planes, and vImage temporary workspaces.'
+            echo
+            if [ -f build/nv12-contract/report.json ]; then
+              echo '```json'
+              cat build/nv12-contract/report.json
+              echo '```'
+            fi
+            echo
+            echo 'Host-side memory trend only; this does not establish the iPhone ReplayKit jetsam ceiling.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-nv12-orientation-preprocessor-contract
+          path: build/nv12-contract/
+          retention-days: 7
+          if-no-files-found: warn
