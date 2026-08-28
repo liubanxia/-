@@ -36,14 +36,43 @@ def crop(frame,d,margin=.18):
     c=frame[y1:y2,x1:x2]
     return None if c.size==0 or min(c.shape[:2])<8 else c
 
+def gradient_descriptor(gray):
+    """Portable HOG-like descriptor using only Sobel plus NumPy.
+
+    OpenCV 5 wheels used by GitHub Actions no longer expose cv2.HOGDescriptor
+    consistently. Keep the same 64x128 / 8x8-cell / 9-bin geometry without
+    depending on that optional API.
+    """
+    g=gray.astype(np.float32)/255.0
+    gx=cv2.Sobel(g,cv2.CV_32F,1,0,ksize=3)
+    gy=cv2.Sobel(g,cv2.CV_32F,0,1,ksize=3)
+    mag=np.sqrt(gx*gx+gy*gy)
+    ang=(np.degrees(np.arctan2(gy,gx))+180.0)%180.0
+    bins=np.floor(ang/20.0).astype(np.int32)
+    bins=np.clip(bins,0,8)
+    cell_h=8; cell_w=8
+    rows=gray.shape[0]//cell_h; cols=gray.shape[1]//cell_w
+    desc=[]
+    for cy in range(rows):
+        y1=cy*cell_h; y2=y1+cell_h
+        for cx in range(cols):
+            x1=cx*cell_w; x2=x1+cell_w
+            b=bins[y1:y2,x1:x2].reshape(-1)
+            m=mag[y1:y2,x1:x2].reshape(-1)
+            hist=np.bincount(b,weights=m,minlength=9).astype(np.float32)[:9]
+            hist/=float(np.sqrt(np.dot(hist,hist)+1e-6))
+            desc.append(hist)
+    return np.concatenate(desc).astype(np.float32)
+
 def feat(frame,d,circle):
     c=crop(frame,d)
     if c is None:return None
     r=cv2.resize(c,(64,128),interpolation=cv2.INTER_AREA)
     g=cv2.cvtColor(r,cv2.COLOR_BGR2GRAY)
-    hog=cv2.HOGDescriptor((64,128),(16,16),(8,8),(8,8),9).compute(g).reshape(-1)
+    hog=gradient_descriptor(g)
     hsv=cv2.cvtColor(r,cv2.COLOR_BGR2HSV)
-    hist=cv2.normalize(cv2.calcHist([hsv],[0,1],None,[12,4],[0,180,0,256]),None).reshape(-1)
+    hist=cv2.calcHist([hsv],[0,1],None,[12,4],[0,180,0,256]).reshape(-1).astype(np.float32)
+    hist/=float(np.sqrt(np.dot(hist,hist)+1e-6))
     edge=np.array([(cv2.Canny(g,70,160)>0).mean()],np.float32)
     h,w=frame.shape[:2]
     sd,sr=2.,0.
@@ -52,7 +81,7 @@ def feat(frame,d,circle):
         sd=math.hypot(d.cx-sx,d.cy-sy)/max(srr,1.)
         sr=srr/max(h,1)
     geo=np.array([d.cx/w,d.cy/h,d.width/w,d.height/h,d.aspect_hw,d.confidence,d.seg_overlap,d.pose_score,sd,sr],np.float32)
-    return np.concatenate([hog.astype(np.float32),hist.astype(np.float32),edge,geo]),c
+    return np.concatenate([hog,hist,edge,geo]).astype(np.float32),c
 
 def label(d,w,h,circle):
     if base.scope_ring_reject(d,circle):return 0,"scope_ring"
@@ -105,13 +134,15 @@ def balance(samples,limit=96):
 def train(samples):
     x=np.stack([s.x for s in samples]).astype(np.float32)
     y=np.array([s.y for s in samples],np.int32)
+    if not hasattr(cv2,"ml") or not hasattr(cv2.ml,"SVM_create"):
+        raise SystemExit("OpenCV ML SVM API unavailable")
     svm=cv2.ml.SVM_create(); svm.setType(cv2.ml.SVM_C_SVC); svm.setKernel(cv2.ml.SVM_LINEAR); svm.setC(.75)
     svm.setTermCriteria((cv2.TERM_CRITERIA_MAX_ITER|cv2.TERM_CRITERIA_EPS,1200,1e-6))
     if not svm.train(x,cv2.ml.ROW_SAMPLE,y):raise SystemExit("SVM training failed")
     _,pred=svm.predict(x); acc=float((pred.reshape(-1).astype(np.int32)==y).mean())
     _,raw=svm.predict(x,flags=cv2.ml.STAT_MODEL_RAW_OUTPUT); raw=raw.reshape(-1)
     direction=1. if raw[y==1].mean()>raw[y==0].mean() else -1.
-    return svm,direction,{"samples":len(samples),"positive":int((y==1).sum()),"negative":int((y==0).sum()),"pseudo_train_agreement":acc}
+    return svm,direction,{"samples":len(samples),"positive":int((y==1).sum()),"negative":int((y==0).sum()),"feature_dimensions":int(x.shape[1]),"pseudo_train_agreement":acc}
 
 def prob(svm,direction,x):
     _,raw=svm.predict(x.reshape(1,-1).astype(np.float32),flags=cv2.ml.STAT_MODEL_RAW_OUTPUT)
@@ -189,6 +220,7 @@ def main():
     bank(samples,out/"hard_negative_training_bank.jpg")
     svm,direction,cal=train(samples); svm.save(str(out/"fps_hard_negative_svm.xml"))
     vst,rows,visuals=validate(Path(a.validation_frames),detector,segmenter,poser,svm,direction,a)
+    if not rows:raise SystemExit("no validation rows produced")
     with (out/"validation_detections_v3.csv").open("w",newline="",encoding="utf-8") as f:
         w=csv.DictWriter(f,fieldnames=list(rows[0].keys())); w.writeheader(); w.writerows(rows)
     sheet(visuals,out/"validation_contact_sheet_v3.jpg")
@@ -203,6 +235,7 @@ def main():
 - Hard negatives mined: **{mining['negative']}**
 - Strong visible-human positives mined: **{mining['positive']}**
 - Balanced calibration samples: **{cal['samples']}**
+- Feature dimensions: **{cal['feature_dimensions']}**
 - Pseudo-label training agreement: **{cal['pseudo_train_agreement']:.3f}**
 - Independent validation frames: **{vst['frames']}**
 - V2 accepted boxes: **{vst['v2_accept']}**
