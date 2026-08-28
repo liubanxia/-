@@ -1,4 +1,4 @@
-name: LiteView CoreML 384 vs 768 Validation
+name: LiteView CoreML Input Memory Sweep
 
 on:
   workflow_dispatch:
@@ -53,12 +53,12 @@ jobs:
           [[ "$ok" -eq 1 ]] || { echo 'ERROR: model download failed'; exit 2; }
           shasum -a 256 "$MODEL"
 
-      - name: Export and compile 384 and 768 Core ML models
+      - name: Export and compile Core ML input-size sweep
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p build/export build/compiled build/report
-          for SIZE in 384 768; do
+          for SIZE in 384 448 512 576 640 704 768; do
             DIR="build/export/$SIZE"
             mkdir -p "$DIR" "build/compiled/$SIZE"
             cp build/models/yolo11n.pt "$DIR/yolo11n.pt"
@@ -98,7 +98,7 @@ jobs:
             du -sk "$PKG" "$COMPILED"
           done
 
-      - name: Build Core ML runtime smoke probe
+      - name: Build Core ML runtime probe
         shell: bash
         run: |
           set -euo pipefail
@@ -114,7 +114,7 @@ jobs:
 
           let modelURL = URL(fileURLWithPath: CommandLine.arguments[1])
           let configuration = MLModelConfiguration()
-          configuration.computeUnits = .all
+          configuration.computeUnits = .cpuAndNeuralEngine
           let model = try MLModel(contentsOf: modelURL, configuration: configuration)
 
           guard let input = model.modelDescription.inputDescriptionsByName.first(where: { $0.value.type == .image }),
@@ -180,19 +180,21 @@ jobs:
           SWIFT
           xcrun swiftc "$RUNNER_TEMP/coreml_runtime_probe.swift" -o "$RUNNER_TEMP/coreml_runtime_probe"
 
-      - name: Run compiled Core ML models and record memory
+      - name: Run Core ML memory and latency sweep
         shell: bash
         run: |
           set -euo pipefail
           SUMMARY='build/report/summary.md'
           cat > "$SUMMARY" <<'EOF'
-          ## LiteView Core ML 384 vs 768 validation
+          ## LiteView Core ML input memory sweep
 
-          | input | runtime result | median ms | p90 ms | max RSS bytes | compiled KiB |
-          |---:|---|---:|---:|---:|---:|
+          Runtime compute units match the current Broadcast detector: `cpuAndNeuralEngine`.
+
+          | input | runtime | median ms | p90 ms | max RSS MiB | peak footprint MiB | compiled KiB |
+          |---:|---|---:|---:|---:|---:|---:|
           EOF
 
-          for SIZE in 384 768; do
+          for SIZE in 384 448 512 576 640 704 768; do
             COMPILED="$(find "build/compiled/$SIZE" -maxdepth 1 -type d -name '*.mlmodelc' -print -quit)"
             test -n "$COMPILED"
             STDOUT="build/report/runtime_${SIZE}.stdout"
@@ -204,14 +206,17 @@ jobs:
             MEDIAN="$(sed -n 's/.*median_ms=\([0-9.]*\).*/\1/p' "$STDOUT" | head -1)"
             P90="$(sed -n 's/.*p90_ms=\([0-9.]*\).*/\1/p' "$STDOUT" | head -1)"
             RSS="$(awk '/maximum resident set size/{print $1; exit}' "$STDERR")"
+            PEAK="$(awk '/peak memory footprint/{print $1; exit}' "$STDERR")"
             KIB="$(du -sk "$COMPILED" | awk '{print $1}')"
-            test -n "$MEDIAN" && test -n "$P90" && test -n "$RSS" && test -n "$KIB"
-            echo "| $SIZE | PASS | $MEDIAN | $P90 | $RSS | $KIB |" >> "$SUMMARY"
+            test -n "$MEDIAN" && test -n "$P90" && test -n "$RSS" && test -n "$PEAK" && test -n "$KIB"
+            RSS_MIB="$(awk -v b="$RSS" 'BEGIN {printf "%.1f", b/1048576.0}')"
+            PEAK_MIB="$(awk -v b="$PEAK" 'BEGIN {printf "%.1f", b/1048576.0}')"
+            echo "| $SIZE | PASS | $MEDIAN | $P90 | $RSS_MIB | $PEAK_MIB | $KIB |" >> "$SUMMARY"
           done
 
           cat >> "$SUMMARY" <<'EOF'
 
-          This validation checks Core ML export contract, `coremlc` compilation, and repeated inference on the same Apple-silicon macOS runner. It does not prove iPhone ReplayKit memory or latency and does not publish or replace the production model asset.
+          These macOS runner measurements are comparative evidence only. They do not establish the exact ReplayKit process limit or iPhone on-device latency. No production model or IPA is published by this workflow.
           EOF
           cat "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
           cat "$SUMMARY"
@@ -219,8 +224,7 @@ jobs:
       - name: Upload validation evidence
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-coreml-384-vs-768-validation
-          path: |
-            build/report/
+          name: liteview-coreml-input-memory-sweep
+          path: build/report/
           retention-days: 7
           if-no-files-found: error

@@ -44,7 +44,7 @@ jobs:
           echo "work=$WORK" >> "$GITHUB_OUTPUT"
           echo "dataset=$WORK/data/coco128" >> "$GITHUB_OUTPUT"
 
-      - name: Sweep nano input size recall precision and latency
+      - name: Sweep memory-candidate input sizes for visible persons
         shell: bash
         env:
           WORK: ${{ steps.data.outputs.work }}
@@ -55,7 +55,7 @@ jobs:
             --dataset "$DATASET" \
             --output "$WORK/results" \
             --models yolo11n.pt \
-            --imgsz 640 768 832 896 960 \
+            --imgsz 384 448 512 576 640 704 768 \
             --reference-imgsz 640 \
             --confidence 0.05 \
             --iou-threshold 0.30
@@ -63,10 +63,10 @@ jobs:
           echo '--- natural_person_pixel_floor.json ---'
           cat "$WORK/results/natural_person_pixel_floor.json"
 
-      - name: Upload nano input-size decision evidence
+      - name: Upload memory-candidate recall evidence
         uses: actions/upload-artifact@v4
         with:
-          name: natural-person-pixel-floor-nano-sweep-v4
+          name: natural-person-memory-candidate-sweep
           path: |
             ${{ steps.data.outputs.work }}/results/natural_person_pixel_floor.json
             ${{ steps.data.outputs.work }}/results/natural_person_pixel_floor.csv
