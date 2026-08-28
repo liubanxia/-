@@ -72,13 +72,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$WORK/frames"
-          # 2 fps gives temporal continuity without making this CPU benchmark excessively heavy.
           ffmpeg -hide_banner -loglevel error -i "$VIDEO" -vf 'fps=2' -q:v 2 "$WORK/frames/frame_%03d.jpg"
           FRAME_COUNT="$(find "$WORK/frames" -type f -name 'frame_*.jpg' | wc -l | tr -d ' ')"
           echo "FRAME_COUNT=$FRAME_COUNT"
           test "$FRAME_COUNT" -ge 20
 
-      - name: Run detector plus segmentation plus temporal replay benchmark
+      - name: Run detector segmentation pose and temporal replay benchmark
         shell: bash
         env:
           WORK: ${{ steps.video.outputs.work }}
@@ -91,23 +90,25 @@ jobs:
             --source-url "$SOURCE_URL" \
             --model yolo11n.pt \
             --seg-model yolo11n-seg.pt \
+            --pose-model yolo11n-pose.pt \
             --confidence 0.12 \
             --seg-confidence 0.10 \
+            --pose-confidence 0.10 \
             --min-track-hits 2
-          cat "$WORK/results/summary_verified.md" >> "$GITHUB_STEP_SUMMARY"
-          echo '--- benchmark_verified.json ---'
-          cat "$WORK/results/benchmark_verified.json"
+          cat "$WORK/results/summary_verified_v2.md" >> "$GITHUB_STEP_SUMMARY"
+          echo '--- benchmark_verified_v2.json ---'
+          cat "$WORK/results/benchmark_verified_v2.json"
 
       - name: Upload numeric report and visual evidence
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-offline-public-video-benchmark-verified
+          name: liteview-offline-public-video-benchmark-verified-v2
           path: |
             ${{ steps.video.outputs.work }}/source_probe.json
             ${{ steps.video.outputs.work }}/source_url.txt
-            ${{ steps.video.outputs.work }}/results/benchmark_verified.json
-            ${{ steps.video.outputs.work }}/results/detections.csv
-            ${{ steps.video.outputs.work }}/results/summary_verified.md
-            ${{ steps.video.outputs.work }}/results/contact_sheet_verified.jpg
+            ${{ steps.video.outputs.work }}/results/benchmark_verified_v2.json
+            ${{ steps.video.outputs.work }}/results/detections_v2.csv
+            ${{ steps.video.outputs.work }}/results/summary_verified_v2.md
+            ${{ steps.video.outputs.work }}/results/contact_sheet_verified_v2.jpg
           retention-days: 7
           if-no-files-found: error
