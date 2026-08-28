@@ -1,4 +1,4 @@
-name: LiteView Offline Public Gameplay Pixel Benchmark
+name: LiteView Offline Cross-Source Domain Calibration
 
 on:
   push:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  benchmark:
+  domain-calibration:
     runs-on: macos-15
     steps:
       - name: Checkout
@@ -29,65 +29,94 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install yt-dlp ultralytics opencv-python-headless
 
-      - name: Download short public Delta Force Mobile gameplay excerpt
+      - name: Download mining and independent validation excerpts
         id: video
         shell: bash
         run: |
           set -euo pipefail
-          WORK="$RUNNER_TEMP/liteview-public-video"
-          mkdir -p "$WORK"
-          PRIMARY='https://www.dailymotion.com/video/x9j3ct8'
-          FALLBACK='https://www.youtube.com/watch?v=ucgP6Tz7Mck'
+          WORK="$RUNNER_TEMP/liteview-domain-v3"
+          mkdir -p "$WORK/train" "$WORK/validation"
+
+          TRAIN_URL='https://www.dailymotion.com/video/x9j3ct8'
+          VALIDATION_PRIMARY='https://www.youtube.com/watch?v=bBUEkd70Ax8'
+          VALIDATION_FALLBACK='https://www.dailymotion.com/video/x9lml5g'
+
           download_excerpt() {
             local url="$1"
-            rm -f "$WORK"/source.*
+            local outdir="$2"
+            local section="$3"
+            rm -f "$outdir"/source.*
             python -m yt_dlp \
               --no-playlist \
-              --download-sections '*00:00:32-00:01:02' \
+              --download-sections "$section" \
               --force-keyframes-at-cuts \
-              -f 'bv*[height<=720]+ba/b[height<=720]' \
+              -f 'bv*[height<=1080]+ba/b[height<=1080]/best[height<=1080]/best' \
               --merge-output-format mp4 \
-              -o "$WORK/source.%(ext)s" \
+              -o "$outdir/source.%(ext)s" \
               "$url"
           }
-          SOURCE_URL="$PRIMARY"
-          if ! download_excerpt "$PRIMARY"; then
-            echo 'PRIMARY_SOURCE_FAILED=1'
-            SOURCE_URL="$FALLBACK"
-            download_excerpt "$FALLBACK"
+
+          download_excerpt "$TRAIN_URL" "$WORK/train" '*00:00:32-00:01:02'
+          TRAIN_VIDEO="$(find "$WORK/train" -maxdepth 1 -type f \( -name 'source.mp4' -o -name 'source.mkv' -o -name 'source.webm' -o -name 'source.mov' \) -print -quit)"
+          test -n "$TRAIN_VIDEO"
+
+          VALIDATION_URL="$VALIDATION_PRIMARY"
+          if ! download_excerpt "$VALIDATION_PRIMARY" "$WORK/validation" '*00:00:45-00:01:15'; then
+            echo 'VALIDATION_PRIMARY_FAILED=1'
+            VALIDATION_URL="$VALIDATION_FALLBACK"
+            download_excerpt "$VALIDATION_FALLBACK" "$WORK/validation" '*00:01:00-00:01:30'
           fi
-          VIDEO="$(find "$WORK" -maxdepth 1 -type f \( -name 'source.mp4' -o -name 'source.mkv' -o -name 'source.webm' -o -name 'source.mov' \) -print -quit)"
-          test -n "$VIDEO"
-          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate -show_entries format=duration,size -of json "$VIDEO" > "$WORK/source_probe.json"
-          printf '%s\n' "$SOURCE_URL" > "$WORK/source_url.txt"
-          echo "video=$VIDEO" >> "$GITHUB_OUTPUT"
+          VALIDATION_VIDEO="$(find "$WORK/validation" -maxdepth 1 -type f \( -name 'source.mp4' -o -name 'source.mkv' -o -name 'source.webm' -o -name 'source.mov' \) -print -quit)"
+          test -n "$VALIDATION_VIDEO"
+
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate -show_entries format=duration,size -of json "$TRAIN_VIDEO" > "$WORK/train_probe.json"
+          ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate -show_entries format=duration,size -of json "$VALIDATION_VIDEO" > "$WORK/validation_probe.json"
+          printf '%s\n' "$TRAIN_URL" > "$WORK/train_source_url.txt"
+          printf '%s\n' "$VALIDATION_URL" > "$WORK/validation_source_url.txt"
+
+          echo "TRAIN_PROBE"
+          cat "$WORK/train_probe.json"
+          echo "VALIDATION_PROBE"
+          cat "$WORK/validation_probe.json"
+
           echo "work=$WORK" >> "$GITHUB_OUTPUT"
-          echo "source_url=$SOURCE_URL" >> "$GITHUB_OUTPUT"
+          echo "train_video=$TRAIN_VIDEO" >> "$GITHUB_OUTPUT"
+          echo "validation_video=$VALIDATION_VIDEO" >> "$GITHUB_OUTPUT"
+          echo "train_url=$TRAIN_URL" >> "$GITHUB_OUTPUT"
+          echo "validation_url=$VALIDATION_URL" >> "$GITHUB_OUTPUT"
 
-      - name: Extract source-resolution benchmark frames
-        shell: bash
-        env:
-          VIDEO: ${{ steps.video.outputs.video }}
-          WORK: ${{ steps.video.outputs.work }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$WORK/frames"
-          ffmpeg -hide_banner -loglevel error -i "$VIDEO" -vf 'fps=2' -q:v 2 "$WORK/frames/frame_%03d.jpg"
-          FRAME_COUNT="$(find "$WORK/frames" -type f -name 'frame_*.jpg' | wc -l | tr -d ' ')"
-          echo "FRAME_COUNT=$FRAME_COUNT"
-          test "$FRAME_COUNT" -ge 20
-
-      - name: Run detector segmentation pose and temporal replay benchmark
+      - name: Extract source-resolution train and validation frames
         shell: bash
         env:
           WORK: ${{ steps.video.outputs.work }}
-          SOURCE_URL: ${{ steps.video.outputs.source_url }}
+          TRAIN_VIDEO: ${{ steps.video.outputs.train_video }}
+          VALIDATION_VIDEO: ${{ steps.video.outputs.validation_video }}
         run: |
           set -euo pipefail
-          python ios/PhoenixRealtimeVisionAssist/Tests/OfflineVisualBenchmark/run_yolo_pixel_benchmark.py \
-            --frames "$WORK/frames" \
+          mkdir -p "$WORK/train_frames" "$WORK/validation_frames"
+          ffmpeg -hide_banner -loglevel error -i "$TRAIN_VIDEO" -vf 'fps=2' -q:v 2 "$WORK/train_frames/frame_%03d.jpg"
+          ffmpeg -hide_banner -loglevel error -i "$VALIDATION_VIDEO" -vf 'fps=2' -q:v 2 "$WORK/validation_frames/frame_%03d.jpg"
+          TRAIN_COUNT="$(find "$WORK/train_frames" -type f -name 'frame_*.jpg' | wc -l | tr -d ' ')"
+          VALIDATION_COUNT="$(find "$WORK/validation_frames" -type f -name 'frame_*.jpg' | wc -l | tr -d ' ')"
+          echo "TRAIN_FRAME_COUNT=$TRAIN_COUNT"
+          echo "VALIDATION_FRAME_COUNT=$VALIDATION_COUNT"
+          test "$TRAIN_COUNT" -ge 30
+          test "$VALIDATION_COUNT" -ge 30
+
+      - name: Mine hard negatives train calibrator and validate on independent source
+        shell: bash
+        env:
+          WORK: ${{ steps.video.outputs.work }}
+          TRAIN_URL: ${{ steps.video.outputs.train_url }}
+          VALIDATION_URL: ${{ steps.video.outputs.validation_url }}
+        run: |
+          set -euo pipefail
+          python ios/PhoenixRealtimeVisionAssist/Tests/OfflineVisualBenchmark/run_domain_calibrated_benchmark.py \
+            --train-frames "$WORK/train_frames" \
+            --validation-frames "$WORK/validation_frames" \
             --output "$WORK/results" \
-            --source-url "$SOURCE_URL" \
+            --train-source-url "$TRAIN_URL" \
+            --validation-source-url "$VALIDATION_URL" \
             --model yolo11n.pt \
             --seg-model yolo11n-seg.pt \
             --pose-model yolo11n-pose.pt \
@@ -95,20 +124,24 @@ jobs:
             --seg-confidence 0.10 \
             --pose-confidence 0.10 \
             --min-track-hits 2
-          cat "$WORK/results/summary_verified_v2.md" >> "$GITHUB_STEP_SUMMARY"
-          echo '--- benchmark_verified_v2.json ---'
-          cat "$WORK/results/benchmark_verified_v2.json"
+          cat "$WORK/results/summary_domain_v3.md" >> "$GITHUB_STEP_SUMMARY"
+          echo '--- benchmark_domain_v3.json ---'
+          cat "$WORK/results/benchmark_domain_v3.json"
 
-      - name: Upload numeric report and visual evidence
+      - name: Upload domain-calibration numeric report and visual evidence
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-offline-public-video-benchmark-verified-v2
+          name: liteview-offline-domain-calibration-v3
           path: |
-            ${{ steps.video.outputs.work }}/source_probe.json
-            ${{ steps.video.outputs.work }}/source_url.txt
-            ${{ steps.video.outputs.work }}/results/benchmark_verified_v2.json
-            ${{ steps.video.outputs.work }}/results/detections_v2.csv
-            ${{ steps.video.outputs.work }}/results/summary_verified_v2.md
-            ${{ steps.video.outputs.work }}/results/contact_sheet_verified_v2.jpg
+            ${{ steps.video.outputs.work }}/train_probe.json
+            ${{ steps.video.outputs.work }}/validation_probe.json
+            ${{ steps.video.outputs.work }}/train_source_url.txt
+            ${{ steps.video.outputs.work }}/validation_source_url.txt
+            ${{ steps.video.outputs.work }}/results/benchmark_domain_v3.json
+            ${{ steps.video.outputs.work }}/results/validation_detections_v3.csv
+            ${{ steps.video.outputs.work }}/results/summary_domain_v3.md
+            ${{ steps.video.outputs.work }}/results/hard_negative_training_bank.jpg
+            ${{ steps.video.outputs.work }}/results/validation_contact_sheet_v3.jpg
+            ${{ steps.video.outputs.work }}/results/fps_hard_negative_svm.xml
           retention-days: 7
           if-no-files-found: error
