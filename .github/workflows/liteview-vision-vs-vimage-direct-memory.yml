@@ -1,0 +1,447 @@
+name: LiteView Vision ROI vs vImage Direct Memory
+
+on:
+  push:
+    branches:
+      - feature/ios-realtime-vision-runtime-candidate
+    paths:
+      - '.github/workflows/liteview-vision-vs-vimage-direct-memory.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vision-vs-vimage-direct:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Stage one YOLO11n 384 Core ML model
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
+          UNZIP_DIR="$RUNNER_TEMP/liteview-yolo11n-coreml"
+          COMPILE_DIR="$RUNNER_TEMP/liteview-yolo11n-compiled"
+          URL='https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
+
+          rm -rf "$UNZIP_DIR" "$COMPILE_DIR"
+          mkdir -p "$UNZIP_DIR" "$COMPILE_DIR" build/vimage-direct
+          curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 -o "$ZIP" "$URL"
+          unzip -q "$ZIP" -d "$UNZIP_DIR"
+          SRC="$(find "$UNZIP_DIR" -type d -name 'yolo11n.mlpackage' -print -quit)"
+          test -n "$SRC"
+          xcrun coremlc compile "$SRC" "$COMPILE_DIR"
+          MODEL="$(find "$COMPILE_DIR" -type d -name 'yolo11n.mlmodelc' -print -quit)"
+          test -n "$MODEL"
+          echo "$MODEL" > build/vimage-direct/model_path.txt
+
+      - name: Build full-frame ROI preprocessing A-B probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/vimage_direct_probe.swift" <<'SWIFT'
+          import Accelerate
+          import CoreFoundation
+          import CoreML
+          import CoreVideo
+          import Foundation
+          import ImageIO
+          import Vision
+
+          final class PixelBufferProvider: NSObject, MLFeatureProvider {
+              let featureNames: Set<String>
+              private let inputName: String
+              private let value: MLFeatureValue
+
+              init(inputName: String, pixelBuffer: CVPixelBuffer) {
+                  self.inputName = inputName
+                  self.featureNames = [inputName]
+                  self.value = MLFeatureValue(pixelBuffer: pixelBuffer)
+              }
+
+              func featureValue(for featureName: String) -> MLFeatureValue? {
+                  featureName == inputName ? value : nil
+              }
+          }
+
+          struct PixelROI {
+              let x: Int
+              let y: Int
+              let width: Int
+              let height: Int
+          }
+
+          final class VImageScaleFitPreprocessor {
+              private let output: CVPixelBuffer
+              private let temp: UnsafeMutableRawPointer
+              private let tempBytes: Int
+
+              init(output: CVPixelBuffer, sourceWidth: Int, sourceHeight: Int) {
+                  self.output = output
+
+                  // Size the reusable temporary workspace for the largest scale operation.
+                  var fakeSource = vImage_Buffer(
+                      data: UnsafeMutableRawPointer(bitPattern: 0x1000),
+                      height: vImagePixelCount(sourceHeight),
+                      width: vImagePixelCount(sourceWidth),
+                      rowBytes: sourceWidth * 4
+                  )
+                  var fakeDestination = vImage_Buffer(
+                      data: UnsafeMutableRawPointer(bitPattern: 0x2000),
+                      height: 216,
+                      width: 384,
+                      rowBytes: 384 * 4
+                  )
+                  let query = vImageScale_ARGB8888(
+                      &fakeSource,
+                      &fakeDestination,
+                      nil,
+                      vImage_Flags(kvImageHighQualityResampling | kvImageGetTempBufferSize)
+                  )
+                  let bytes = max(1, Int(query))
+                  self.tempBytes = bytes
+                  self.temp = UnsafeMutableRawPointer.allocate(
+                      byteCount: bytes,
+                      alignment: MemoryLayout<UInt64>.alignment
+                  )
+              }
+
+              deinit {
+                  temp.deallocate()
+              }
+
+              func preprocess(source: CVPixelBuffer, roi: PixelROI) throws {
+                  CVPixelBufferLockBaseAddress(source, .readOnly)
+                  CVPixelBufferLockBaseAddress(output, [])
+                  defer {
+                      CVPixelBufferUnlockBaseAddress(output, [])
+                      CVPixelBufferUnlockBaseAddress(source, .readOnly)
+                  }
+
+                  guard let sourceBase = CVPixelBufferGetBaseAddress(source),
+                        let outputBase = CVPixelBufferGetBaseAddress(output) else {
+                      throw NSError(domain: "LiteViewVImage", code: 1)
+                  }
+
+                  let sourceRowBytes = CVPixelBufferGetBytesPerRow(source)
+                  let outputRowBytes = CVPixelBufferGetBytesPerRow(output)
+                  memset(outputBase, 114, CVPixelBufferGetDataSize(output))
+
+                  let srcX = max(0, min(CVPixelBufferGetWidth(source) - 1, roi.x))
+                  let srcY = max(0, min(CVPixelBufferGetHeight(source) - 1, roi.y))
+                  let srcW = max(1, min(roi.width, CVPixelBufferGetWidth(source) - srcX))
+                  let srcH = max(1, min(roi.height, CVPixelBufferGetHeight(source) - srcY))
+
+                  let sourceOffset = srcY * sourceRowBytes + srcX * 4
+                  var src = vImage_Buffer(
+                      data: sourceBase.advanced(by: sourceOffset),
+                      height: vImagePixelCount(srcH),
+                      width: vImagePixelCount(srcW),
+                      rowBytes: sourceRowBytes
+                  )
+
+                  let scale = min(384.0 / Double(srcW), 384.0 / Double(srcH))
+                  let dstW = max(1, min(384, Int((Double(srcW) * scale).rounded(.toNearestOrAwayFromZero))))
+                  let dstH = max(1, min(384, Int((Double(srcH) * scale).rounded(.toNearestOrAwayFromZero))))
+                  let dstX = (384 - dstW) / 2
+                  let dstY = (384 - dstH) / 2
+                  let destinationOffset = dstY * outputRowBytes + dstX * 4
+
+                  var dst = vImage_Buffer(
+                      data: outputBase.advanced(by: destinationOffset),
+                      height: vImagePixelCount(dstH),
+                      width: vImagePixelCount(dstW),
+                      rowBytes: outputRowBytes
+                  )
+
+                  let result = vImageScale_ARGB8888(
+                      &src,
+                      &dst,
+                      temp,
+                      vImage_Flags(kvImageHighQualityResampling)
+                  )
+                  guard result == kvImageNoError else {
+                      throw NSError(
+                          domain: "LiteViewVImage",
+                          code: Int(result),
+                          userInfo: ["tempBytes": tempBytes]
+                      )
+                  }
+              }
+          }
+
+          func makePixelBuffer(width: Int, height: Int) -> CVPixelBuffer {
+              var buffer: CVPixelBuffer?
+              let attrs: [CFString: Any] = [
+                  kCVPixelBufferCGImageCompatibilityKey: true,
+                  kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+                  kCVPixelBufferMetalCompatibilityKey: true,
+                  kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+              ]
+              let status = CVPixelBufferCreate(
+                  kCFAllocatorDefault,
+                  width,
+                  height,
+                  kCVPixelFormatType_32BGRA,
+                  attrs as CFDictionary,
+                  &buffer
+              )
+              guard status == kCVReturnSuccess, let buffer else {
+                  fatalError("CVPixelBufferCreate failed: \(status)")
+              }
+              return buffer
+          }
+
+          func fillSource(_ buffer: CVPixelBuffer) {
+              CVPixelBufferLockBaseAddress(buffer, [])
+              defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+              guard let base = CVPixelBufferGetBaseAddress(buffer) else { fatalError("no source base") }
+              let width = CVPixelBufferGetWidth(buffer)
+              let height = CVPixelBufferGetHeight(buffer)
+              let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
+              for y in 0..<height {
+                  let row = base.advanced(by: y * rowBytes).assumingMemoryBound(to: UInt8.self)
+                  for x in 0..<width {
+                      let i = x * 4
+                      row[i + 0] = UInt8((x + y) & 0xff)
+                      row[i + 1] = UInt8((x >> 2) & 0xff)
+                      row[i + 2] = UInt8((y >> 1) & 0xff)
+                      row[i + 3] = 255
+                  }
+              }
+          }
+
+          func validateArrays(_ arrays: [MLMultiArray]) {
+              guard let array = arrays.first else { fatalError("missing model output") }
+              let shape = array.shape.map(\.intValue)
+              guard shape.count == 3, shape.contains(84) else {
+                  fatalError("unexpected model output shape \(shape)")
+              }
+          }
+
+          guard CommandLine.arguments.count == 4 else {
+              fatalError("usage: probe <model.mlmodelc> <vision|vimageDirect> <iterations>")
+          }
+          let modelURL = URL(fileURLWithPath: CommandLine.arguments[1])
+          let mode = CommandLine.arguments[2]
+          guard ["vision", "vimageDirect"].contains(mode),
+                let iterations = Int(CommandLine.arguments[3]), iterations >= 600 else {
+              fatalError("bad arguments")
+          }
+
+          let source = makePixelBuffer(width: 1920, height: 1080)
+          let modelInput = makePixelBuffer(width: 384, height: 384)
+          fillSource(source)
+
+          let config = MLModelConfiguration()
+          config.computeUnits = .cpuAndNeuralEngine
+          let mlModel = try MLModel(contentsOf: modelURL, configuration: config)
+          let imageInputs = mlModel.modelDescription.inputDescriptionsByName.filter { $0.value.type == .image }
+          guard imageInputs.count == 1, let inputName = imageInputs.first?.key else {
+              fatalError("expected one image input, got \(imageInputs.keys.sorted())")
+          }
+          let provider = PixelBufferProvider(inputName: inputName, pixelBuffer: modelInput)
+          let visionModel = try VNCoreMLModel(for: mlModel)
+          let preprocessor = VImageScaleFitPreprocessor(
+              output: modelInput,
+              sourceWidth: 1920,
+              sourceHeight: 1080
+          )
+
+          let fullVision = CGRect(x: 0, y: 0, width: 1, height: 1)
+          let leftVision = CGRect(x: 0, y: 0, width: 0.68, height: 1)
+          let rightVision = CGRect(x: 0.32, y: 0, width: 0.68, height: 1)
+
+          let fullPixels = PixelROI(x: 0, y: 0, width: 1920, height: 1080)
+          let roiWidth = Int((1920.0 * 0.68).rounded(.toNearestOrAwayFromZero))
+          let rightX = 1920 - roiWidth
+          let leftPixels = PixelROI(x: 0, y: 0, width: roiWidth, height: 1080)
+          let rightPixels = PixelROI(x: rightX, y: 0, width: roiWidth, height: 1080)
+
+          func selectedVisionROI(_ index: Int) -> CGRect {
+              if index % 12 == 0 { return fullVision }
+              return index % 2 == 0 ? leftVision : rightVision
+          }
+
+          func selectedPixelROI(_ index: Int) -> PixelROI {
+              if index % 12 == 0 { return fullPixels }
+              return index % 2 == 0 ? leftPixels : rightPixels
+          }
+
+          func runVision(index: Int) throws {
+              let isFull = index % 12 == 0
+              let request = VNCoreMLRequest(model: visionModel)
+              request.imageCropAndScaleOption = .scaleFit
+              request.regionOfInterest = selectedVisionROI(index)
+              request.preferBackgroundProcessing = isFull
+              let handler = VNImageRequestHandler(cvPixelBuffer: source, orientation: .up, options: [:])
+              try handler.perform([request])
+              let arrays = (request.results ?? [])
+                  .compactMap { $0 as? VNCoreMLFeatureValueObservation }
+                  .compactMap { $0.featureValue.multiArrayValue }
+              validateArrays(arrays)
+          }
+
+          func runVImageDirect(index: Int) throws {
+              try preprocessor.preprocess(source: source, roi: selectedPixelROI(index))
+              let output = try mlModel.prediction(from: provider)
+              let arrays = output.featureNames.compactMap {
+                  output.featureValue(for: $0)?.multiArrayValue
+              }
+              validateArrays(arrays)
+          }
+
+          // Warm all preprocessing shapes before measured work.
+          for i in 0..<48 {
+              try autoreleasepool {
+                  if mode == "vision" {
+                      try runVision(index: i)
+                  } else {
+                      try runVImageDirect(index: i)
+                  }
+              }
+          }
+          print("VIMAGE_AB_READY mode=\(mode) input=\(inputName)")
+          fflush(stdout)
+
+          let started = CFAbsoluteTimeGetCurrent()
+          for i in 0..<iterations {
+              try autoreleasepool {
+                  if mode == "vision" {
+                      try runVision(index: i)
+                  } else {
+                      try runVImageDirect(index: i)
+                  }
+              }
+              if i % 100 == 0 {
+                  print("VIMAGE_AB_PROGRESS mode=\(mode) iteration=\(i)")
+                  fflush(stdout)
+              }
+          }
+          print(String(
+              format: "VIMAGE_AB_DONE mode=%@ iterations=%d elapsed_sec=%.3f",
+              mode, iterations, CFAbsoluteTimeGetCurrent() - started
+          ))
+          SWIFT
+
+          xcrun swiftc "$RUNNER_TEMP/vimage_direct_probe.swift" -o "$RUNNER_TEMP/vimage_direct_probe"
+
+      - name: Run Vision ROI and reusable vImage Direct processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          MODEL="$(cat build/vimage-direct/model_path.txt)"
+          for MODE in vision vimageDirect; do
+            OUT="build/vimage-direct/${MODE}.stdout"
+            ERR="build/vimage-direct/${MODE}.stderr"
+            RSS="build/vimage-direct/${MODE}.rss_kib"
+            : > "$RSS"
+
+            "$RUNNER_TEMP/vimage_direct_probe" "$MODEL" "$MODE" 1200 >"$OUT" 2>"$ERR" &
+            PID=$!
+            SAMPLE=0
+            while kill -0 "$PID" 2>/dev/null; do
+              VALUE="$(ps -o rss= -p "$PID" 2>/dev/null | awk '{print $1}' || true)"
+              if [ -n "$VALUE" ]; then
+                printf '%d %s\n' "$SAMPLE" "$VALUE" >> "$RSS"
+                SAMPLE=$((SAMPLE + 1))
+              fi
+              sleep 0.15
+            done
+            wait "$PID"
+            cat "$OUT"
+            cat "$ERR"
+            echo "${MODE}_RSS_SAMPLES=$(wc -l < "$RSS" | tr -d ' ')"
+          done
+
+      - name: Compare late-run memory trends
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, re, statistics
+
+          def metrics(mode):
+              vals = []
+              for line in Path(f'build/vimage-direct/{mode}.rss_kib').read_text().splitlines():
+                  p = line.split()
+                  if len(p) == 2:
+                      vals.append(int(p[1]) / 1024.0)
+              assert len(vals) >= 150, (mode, len(vals))
+              n = len(vals)
+              q3 = vals[n//2:(3*n)//4]
+              q4 = vals[(3*n)//4:]
+              late = vals[n//2:]
+              q3m = statistics.median(q3)
+              q4m = statistics.median(q4)
+              xs = list(range(len(late)))
+              xb = statistics.mean(xs)
+              yb = statistics.mean(late)
+              den = sum((x-xb)**2 for x in xs)
+              slope = sum((x-xb)*(y-yb) for x,y in zip(xs,late))/den if den else 0.0
+              stdout = Path(f'build/vimage-direct/{mode}.stdout').read_text()
+              m = re.search(r'elapsed_sec=([0-9.]+)', stdout)
+              return {
+                  'samples': n,
+                  'q3_median_mib': round(q3m, 3),
+                  'q4_median_mib': round(q4m, 3),
+                  'late_growth_mib': round(q4m-q3m, 3),
+                  'late_slope_mib_per_sample': round(slope, 6),
+                  'peak_mib': round(max(vals), 3),
+                  'elapsed_sec': float(m.group(1)) if m else None,
+              }
+
+          vision = metrics('vision')
+          direct = metrics('vimageDirect')
+          report = {'vision': vision, 'vimageDirect': direct}
+          Path('build/vimage-direct/report.json').write_text(json.dumps(report, indent=2))
+          print(json.dumps(report, indent=2))
+
+          # Production-candidate target: manual reusable preprocessing must materially beat
+          # the long-run Vision ROI path and itself approach a late-run plateau.
+          assert direct['late_growth_mib'] <= 3.0, report
+          assert direct['late_slope_mib_per_sample'] <= 0.025, report
+          assert direct['peak_mib'] <= vision['peak_mib'] + 4.0, report
+          assert direct['late_growth_mib'] <= vision['late_growth_mib'] - 2.0, report
+          print('VIMAGE_DIRECT_MEMORY_CANDIDATE_PASS')
+          PY
+
+      - name: Publish evidence
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Vision ROI vs reusable vImage + Direct Core ML'
+            echo
+            echo 'Both processes use one 1920x1080 BGRA source, identical full/68% ROI cadence, one YOLO11n-384 model, cpu+Neural Engine, 48 warmups, and 1200 measured requests.'
+            echo
+            echo 'The vImage path keeps one reusable 384x384 BGRA pixel buffer and one reusable vImage temporary workspace, then calls MLModel.prediction directly.'
+            echo
+            if [ -f build/vimage-direct/report.json ]; then
+              echo '```json'
+              cat build/vimage-direct/report.json
+              echo '```'
+            fi
+            echo
+            echo 'This is a macOS memory-trend comparison. It does not establish the iPhone ReplayKit jetsam ceiling.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-vision-vs-vimage-direct-memory
+          path: build/vimage-direct/
+          retention-days: 7
+          if-no-files-found: warn
