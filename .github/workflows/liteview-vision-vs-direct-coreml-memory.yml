@@ -1,0 +1,277 @@
+name: LiteView Vision vs Direct Core ML Memory
+
+on:
+  push:
+    branches:
+      - feature/ios-realtime-vision-runtime-candidate
+    paths:
+      - '.github/workflows/liteview-vision-vs-direct-coreml-memory.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vision-vs-direct:
+    runs-on: macos-15
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Stage one YOLO11n 384 Core ML model
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
+          UNZIP_DIR="$RUNNER_TEMP/liteview-yolo11n-coreml"
+          COMPILE_DIR="$RUNNER_TEMP/liteview-yolo11n-compiled"
+          URL='https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
+          rm -rf "$UNZIP_DIR" "$COMPILE_DIR"
+          mkdir -p "$UNZIP_DIR" "$COMPILE_DIR" build/vision-direct
+          curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 -o "$ZIP" "$URL"
+          unzip -q "$ZIP" -d "$UNZIP_DIR"
+          SRC="$(find "$UNZIP_DIR" -type d -name 'yolo11n.mlpackage' -print -quit)"
+          test -n "$SRC"
+          xcrun coremlc compile "$SRC" "$COMPILE_DIR"
+          MODEL="$(find "$COMPILE_DIR" -type d -name 'yolo11n.mlmodelc' -print -quit)"
+          test -n "$MODEL"
+          echo "$MODEL" > build/vision-direct/model_path.txt
+
+      - name: Build isolated inference-path probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/vision_direct_probe.swift" <<'SWIFT'
+          import CoreML
+          import CoreVideo
+          import Foundation
+          import ImageIO
+          import Vision
+
+          final class ReusablePixelBufferProvider: NSObject, MLFeatureProvider {
+              let featureNames: Set<String>
+              private let inputName: String
+              private let featureValue: MLFeatureValue
+
+              init(inputName: String, pixelBuffer: CVPixelBuffer) {
+                  self.inputName = inputName
+                  self.featureNames = [inputName]
+                  self.featureValue = MLFeatureValue(pixelBuffer: pixelBuffer)
+              }
+
+              func featureValue(for featureName: String) -> MLFeatureValue? {
+                  featureName == inputName ? featureValue : nil
+              }
+          }
+
+          guard CommandLine.arguments.count == 4 else {
+              fatalError("usage: probe <model.mlmodelc> <vision|direct> <iterations>")
+          }
+          let modelURL = URL(fileURLWithPath: CommandLine.arguments[1])
+          let mode = CommandLine.arguments[2]
+          guard ["vision", "direct"].contains(mode),
+                let iterations = Int(CommandLine.arguments[3]), iterations >= 400 else {
+              fatalError("bad arguments")
+          }
+
+          var source: CVPixelBuffer?
+          let attrs: [CFString: Any] = [
+              kCVPixelBufferCGImageCompatibilityKey: true,
+              kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+              kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+              kCVPixelBufferMetalCompatibilityKey: true,
+          ]
+          let status = CVPixelBufferCreate(
+              kCFAllocatorDefault,
+              384,
+              384,
+              kCVPixelFormatType_32BGRA,
+              attrs as CFDictionary,
+              &source
+          )
+          guard status == kCVReturnSuccess, let pixelBuffer = source else {
+              fatalError("pixel buffer create failed")
+          }
+          CVPixelBufferLockBaseAddress(pixelBuffer, [])
+          if let base = CVPixelBufferGetBaseAddress(pixelBuffer) {
+              memset(base, 31, CVPixelBufferGetDataSize(pixelBuffer))
+          }
+          CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+
+          let config = MLModelConfiguration()
+          config.computeUnits = .cpuAndNeuralEngine
+          let mlModel = try MLModel(contentsOf: modelURL, configuration: config)
+          let imageInputs = mlModel.modelDescription.inputDescriptionsByName.filter {
+              $0.value.type == .image
+          }
+          guard imageInputs.count == 1, let inputName = imageInputs.first?.key else {
+              fatalError("expected exactly one image input, got \(imageInputs.keys.sorted())")
+          }
+          let provider = ReusablePixelBufferProvider(inputName: inputName, pixelBuffer: pixelBuffer)
+          let visionModel = try VNCoreMLModel(for: mlModel)
+
+          func validateOutput(_ arrays: [MLMultiArray]) {
+              guard let array = arrays.first else { fatalError("missing multiarray output") }
+              let shape = array.shape.map(\.intValue)
+              guard shape.count == 3, shape.contains(84) else {
+                  fatalError("unexpected output shape \(shape)")
+              }
+          }
+
+          func runVision() throws {
+              let request = VNCoreMLRequest(model: visionModel)
+              request.imageCropAndScaleOption = .scaleFit
+              request.preferBackgroundProcessing = false
+              let handler = VNImageRequestHandler(
+                  cvPixelBuffer: pixelBuffer,
+                  orientation: .up,
+                  options: [:]
+              )
+              try handler.perform([request])
+              let arrays = (request.results ?? [])
+                  .compactMap { $0 as? VNCoreMLFeatureValueObservation }
+                  .compactMap { $0.featureValue.multiArrayValue }
+              validateOutput(arrays)
+          }
+
+          func runDirect() throws {
+              let output = try mlModel.prediction(from: provider)
+              let arrays = output.featureNames.compactMap {
+                  output.featureValue(for: $0)?.multiArrayValue
+              }
+              validateOutput(arrays)
+          }
+
+          for _ in 0..<40 {
+              try autoreleasepool {
+                  if mode == "vision" { try runVision() } else { try runDirect() }
+              }
+          }
+          print("PATH_READY mode=\(mode) input=\(inputName)")
+          fflush(stdout)
+
+          let start = CFAbsoluteTimeGetCurrent()
+          for i in 0..<iterations {
+              try autoreleasepool {
+                  if mode == "vision" { try runVision() } else { try runDirect() }
+              }
+              if i % 100 == 0 {
+                  print("PATH_PROGRESS mode=\(mode) iteration=\(i)")
+                  fflush(stdout)
+              }
+          }
+          print(String(
+              format: "PATH_DONE mode=%@ iterations=%d elapsed_sec=%.3f",
+              mode, iterations, CFAbsoluteTimeGetCurrent() - start
+          ))
+          SWIFT
+          xcrun swiftc "$RUNNER_TEMP/vision_direct_probe.swift" -o "$RUNNER_TEMP/vision_direct_probe"
+
+      - name: Run Vision and direct Core ML processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          MODEL="$(cat build/vision-direct/model_path.txt)"
+          for MODE in vision direct; do
+            OUT="build/vision-direct/${MODE}.stdout"
+            ERR="build/vision-direct/${MODE}.stderr"
+            RSS="build/vision-direct/${MODE}.rss_kib"
+            : > "$RSS"
+            "$RUNNER_TEMP/vision_direct_probe" "$MODEL" "$MODE" 800 >"$OUT" 2>"$ERR" &
+            PID=$!
+            SAMPLE=0
+            while kill -0 "$PID" 2>/dev/null; do
+              VALUE="$(ps -o rss= -p "$PID" 2>/dev/null | awk '{print $1}' || true)"
+              if [ -n "$VALUE" ]; then
+                printf '%d %s\n' "$SAMPLE" "$VALUE" >> "$RSS"
+                SAMPLE=$((SAMPLE + 1))
+              fi
+              sleep 0.15
+            done
+            wait "$PID"
+            cat "$OUT"
+            cat "$ERR"
+            echo "${MODE}_RSS_SAMPLES=$(wc -l < "$RSS" | tr -d ' ')"
+          done
+
+      - name: Compare isolated memory trends
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, re, statistics
+
+          def metrics(mode):
+              vals = []
+              for line in Path(f'build/vision-direct/{mode}.rss_kib').read_text().splitlines():
+                  p = line.split()
+                  if len(p) == 2:
+                      vals.append(int(p[1]) / 1024.0)
+              assert len(vals) >= 100, (mode, len(vals))
+              n = len(vals)
+              q3 = vals[n//2:(3*n)//4]
+              q4 = vals[(3*n)//4:]
+              late = vals[n//2:]
+              q3m = statistics.median(q3)
+              q4m = statistics.median(q4)
+              xs = list(range(len(late)))
+              xb = statistics.mean(xs)
+              yb = statistics.mean(late)
+              den = sum((x-xb)**2 for x in xs)
+              slope = sum((x-xb)*(y-yb) for x,y in zip(xs,late))/den if den else 0.0
+              stdout = Path(f'build/vision-direct/{mode}.stdout').read_text()
+              m = re.search(r'elapsed_sec=([0-9.]+)', stdout)
+              return {
+                  'samples': n,
+                  'q3_median_mib': round(q3m, 3),
+                  'q4_median_mib': round(q4m, 3),
+                  'late_growth_mib': round(q4m-q3m, 3),
+                  'late_slope_mib_per_sample': round(slope, 6),
+                  'peak_mib': round(max(vals), 3),
+                  'elapsed_sec': float(m.group(1)) if m else None,
+              }
+
+          vision = metrics('vision')
+          direct = metrics('direct')
+          report = {'vision': vision, 'direct': direct}
+          Path('build/vision-direct/report.json').write_text(json.dumps(report, indent=2))
+          print(json.dumps(report, indent=2))
+          print(f"DIRECT_SLOPE_DELTA={direct['late_slope_mib_per_sample']-vision['late_slope_mib_per_sample']:.6f}")
+          print(f"DIRECT_GROWTH_DELTA_MIB={direct['late_growth_mib']-vision['late_growth_mib']:.3f}")
+          print('VISION_DIRECT_AB_COMPLETE')
+          PY
+
+      - name: Publish evidence
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Vision versus direct Core ML — isolated 384 input'
+            echo
+            echo 'Both processes use the same compiled YOLO11n-384 model, the same single reusable 384x384 BGRA pixel buffer, cpu+Neural Engine compute units, 40 warmups, and 800 predictions. Vision creates a request/handler per prediction; direct Core ML uses one reusable custom MLFeatureProvider that wraps the same pixel buffer.'
+            echo
+            if [ -f build/vision-direct/report.json ]; then
+              echo '```json'
+              cat build/vision-direct/report.json
+              echo '```'
+            fi
+            echo
+            echo 'This isolates inference-path retention. It does not yet validate manual 1920x1080 ROI preprocessing or iPhone ReplayKit memory.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-vision-vs-direct-coreml-memory
+          path: build/vision-direct/
+          retention-days: 7
+          if-no-files-found: warn
