@@ -142,6 +142,6 @@ jobs:
             ${{ steps.video.outputs.work }}/results/summary_domain_v3.md
             ${{ steps.video.outputs.work }}/results/hard_negative_training_bank.jpg
             ${{ steps.video.outputs.work }}/results/validation_contact_sheet_v3.jpg
-            ${{ steps.video.outputs.work }}/results/fps_hard_negative_svm.xml
+            ${{ steps.video.outputs.work }}/results/fps_hard_negative_linear.npz
           retention-days: 7
           if-no-files-found: error
