@@ -14,6 +14,10 @@ struct BroadcastNanoDetectionResult: Sendable {
     let detections: [BroadcastNanoDetection]
     let succeeded: Bool
     let modelName: String?
+    let coreMLInvoked: Bool
+    let decoder: LiteViewTelemetryDecoder
+    let decodeSucceeded: Bool
+    let inferenceFailed: Bool
 }
 
 /// Tiny Core ML detector for the ReplayKit process.
@@ -38,7 +42,7 @@ final class BroadcastNanoPersonDetector {
     }
 
     private enum DecodeResult {
-        case detections([BroadcastNanoDetection])
+        case detections([BroadcastNanoDetection], LiteViewTelemetryDecoder)
         case unsupported
     }
 
@@ -66,15 +70,17 @@ final class BroadcastNanoPersonDetector {
         independentVisibleMissCount = 0
     }
 
-    func reportIndependentVisibleMiss() {
+    @discardableResult
+    func reportIndependentVisibleMiss() -> Bool {
         independentVisibleMissCount += 1
         guard independentVisibleMissCount >= 2,
               let urls = candidateURLs,
-              urls.count > 1 else { return }
+              urls.count > 1 else { return false }
         independentVisibleMissCount = 0
         preferredIndex = (preferredIndex + 1) % urls.count
         visionModel = nil
         activeURL = nil
+        return true
     }
 
     func reportVisibleDetection() {
@@ -87,31 +93,61 @@ final class BroadcastNanoPersonDetector {
         minimumConfidence: Double = 0.22
     ) -> BroadcastNanoDetectionResult {
         guard let model = ensureModel() else {
-            return .init(detections: [], succeeded: false, modelName: nil)
+            return .init(
+                detections: [],
+                succeeded: false,
+                modelName: nil,
+                coreMLInvoked: false,
+                decoder: .none,
+                decodeSucceeded: false,
+                inferenceFailed: true
+            )
         }
 
         let request = VNCoreMLRequest(model: model)
         request.imageCropAndScaleOption = .scaleFit
-        request.preferBackgroundProcessing = true
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation, options: [:])
+        let modelName = activeURL?.deletingPathExtension().lastPathComponent
 
         do {
             try handler.perform([request])
         } catch {
             blockCurrentModel()
-            return .init(detections: [], succeeded: false, modelName: nil)
+            return .init(
+                detections: [],
+                succeeded: false,
+                modelName: modelName,
+                coreMLInvoked: true,
+                decoder: .none,
+                decodeSucceeded: false,
+                inferenceFailed: true
+            )
         }
 
-        let modelName = activeURL?.deletingPathExtension().lastPathComponent
         let geometry = Self.sourceGeometry(pixelBuffer: pixelBuffer, orientation: orientation)
-
         switch decodeResults(request.results ?? [], minimumConfidence: minimumConfidence, geometry: geometry) {
-        case let .detections(detections):
+        case let .detections(detections, decoder):
             if !detections.isEmpty { reportVisibleDetection() }
-            return .init(detections: detections, succeeded: true, modelName: modelName)
+            return .init(
+                detections: detections,
+                succeeded: true,
+                modelName: modelName,
+                coreMLInvoked: true,
+                decoder: decoder,
+                decodeSucceeded: true,
+                inferenceFailed: false
+            )
         case .unsupported:
             blockCurrentModel()
-            return .init(detections: [], succeeded: false, modelName: modelName)
+            return .init(
+                detections: [],
+                succeeded: false,
+                modelName: modelName,
+                coreMLInvoked: true,
+                decoder: .unsupported,
+                decodeSucceeded: false,
+                inferenceFailed: true
+            )
         }
     }
 
@@ -163,9 +199,16 @@ final class BroadcastNanoPersonDetector {
                 guard acceptedLabels.contains(label), Double(best.confidence) >= minimumConfidence else { return nil }
                 let box = observation.boundingBox
                 guard box.width > 0.006, box.height > 0.012 else { return nil }
-                return .init(boundingBox: box, point: Self.point(forVisionBox: box), confidence: Double(best.confidence))
+                return .init(
+                    boundingBox: box,
+                    point: Self.point(forVisionBox: box),
+                    confidence: Double(best.confidence)
+                )
             }
-            return .detections(Array(detections.sorted(by: { $0.confidence > $1.confidence }).prefix(8)))
+            return .detections(
+                Array(detections.sorted(by: { $0.confidence > $1.confidence }).prefix(8)),
+                .recognizedObject
+            )
         }
 
         let features = results
@@ -176,20 +219,27 @@ final class BroadcastNanoPersonDetector {
             }
 
         if let pairCandidates = decodeCoordinateConfidencePair(features, minimumConfidence: minimumConfidence) {
-            return .detections(makeDetections(from: pairCandidates, geometry: geometry))
+            return .detections(
+                makeDetections(from: pairCandidates, geometry: geometry),
+                .coordinateConfidence
+            )
         }
 
         let arrays = features.map(\.array)
-        guard let rawOutput = arrays.first(where: { array in
+        if let rawOutput = arrays.first(where: { array in
             let shape = array.shape.map(\.intValue)
             return shape.count == 3 && shape.contains(where: { $0 >= 5 })
-        }) else {
-            return results.isEmpty ? .detections([]) : .unsupported
+        }) {
+            guard let candidates = decodeUltralytics(rawOutput, minimumConfidence: minimumConfidence) else {
+                return .unsupported
+            }
+            return .detections(
+                makeDetections(from: candidates, geometry: geometry),
+                .ultralyticsRaw
+            )
         }
-        guard let candidates = decodeUltralytics(rawOutput, minimumConfidence: minimumConfidence) else {
-            return .unsupported
-        }
-        return .detections(makeDetections(from: candidates, geometry: geometry))
+
+        return results.isEmpty ? .detections([], .emptyOutput) : .unsupported
     }
 
     private func decodeCoordinateConfidencePair(
@@ -197,6 +247,7 @@ final class BroadcastNanoPersonDetector {
         minimumConfidence: Double
     ) -> [RawCandidate]? {
         guard features.count >= 2 else { return nil }
+
         let coordinateFeature = features.first { feature in
             guard let shape = matrixShape(feature.array) else { return false }
             return feature.name.contains("coord") || shape.columns == 4
@@ -222,6 +273,7 @@ final class BroadcastNanoPersonDetector {
         for row in 0..<coordinateShape.rows {
             let confidence = matrixValue(confidenceFeature.array, row: row, column: 0)
             guard confidence.isFinite, confidence >= minimumConfidence else { continue }
+
             let x = matrixValue(coordinateFeature.array, row: row, column: 0)
             let y = matrixValue(coordinateFeature.array, row: row, column: 1)
             let w = matrixValue(coordinateFeature.array, row: row, column: 2)
@@ -229,6 +281,7 @@ final class BroadcastNanoPersonDetector {
             guard x.isFinite, y.isFinite, w.isFinite, h.isFinite,
                   x >= -0.2, x <= 1.2, y >= -0.2, y <= 1.2,
                   w > 0.004, h > 0.008, w <= 1.2, h <= 1.2 else { continue }
+
             candidates.append(.init(x: x, y: y, w: w, h: h, confidence: confidence))
         }
         return candidates
@@ -237,6 +290,7 @@ final class BroadcastNanoPersonDetector {
     private func decodeUltralytics(_ array: MLMultiArray, minimumConfidence: Double) -> [RawCandidate]? {
         let shape = array.shape.map(\.intValue)
         guard shape.count == 3 else { return nil }
+
         let channelsFirst = shape[1] >= 5 && shape[1] < shape[2]
         let count = channelsFirst ? shape[2] : shape[1]
         let featureCount = channelsFirst ? shape[1] : shape[2]
@@ -252,6 +306,7 @@ final class BroadcastNanoPersonDetector {
             let confidence = value(array, feature: 4, index: index, channelsFirst: channelsFirst)
             guard rawX.isFinite, rawY.isFinite, rawW.isFinite, rawH.isFinite,
                   confidence.isFinite, confidence >= minimumConfidence else { continue }
+
             let coordinateScale = max(abs(rawX), abs(rawY), abs(rawW), abs(rawH)) > 2 ? 640.0 : 1.0
             let x = rawX / coordinateScale
             let y = rawY / coordinateScale
@@ -259,27 +314,51 @@ final class BroadcastNanoPersonDetector {
             let h = rawH / coordinateScale
             guard x >= -0.2, x <= 1.2, y >= -0.2, y <= 1.2,
                   w > 0.004, h > 0.008, w <= 1.2, h <= 1.2 else { continue }
+
             result.append(.init(x: x, y: y, w: w, h: h, confidence: confidence))
         }
         return result
     }
 
-    private func makeDetections(from candidates: [RawCandidate], geometry: SourceGeometry) -> [BroadcastNanoDetection] {
-        nonMaximumSuppression(candidates, threshold: 0.45).prefix(8).compactMap { candidate in
-            guard let sourceCandidate = remapScaleFitCandidate(candidate, geometry: geometry) else { return nil }
-            let minX = min(max(sourceCandidate.x - sourceCandidate.w / 2, 0), 1)
-            let minYTop = min(max(sourceCandidate.y - sourceCandidate.h / 2, 0), 1)
-            let width = min(max(sourceCandidate.w, 0.001), 1 - minX)
-            let height = min(max(sourceCandidate.h, 0.001), 1 - minYTop)
-            guard width > 0.006, height > 0.012 else { return nil }
-            let visionBox = CGRect(x: minX, y: min(max(1 - (minYTop + height), 0), 1), width: width, height: height)
-            return .init(boundingBox: visionBox, point: Self.point(forVisionBox: visionBox), confidence: sourceCandidate.confidence)
-        }
+    private func makeDetections(
+        from candidates: [RawCandidate],
+        geometry: SourceGeometry
+    ) -> [BroadcastNanoDetection] {
+        nonMaximumSuppression(candidates, threshold: 0.45)
+            .prefix(8)
+            .compactMap { candidate in
+                guard let sourceCandidate = remapScaleFitCandidate(candidate, geometry: geometry) else { return nil }
+
+                let minX = min(max(sourceCandidate.x - sourceCandidate.w / 2, 0), 1)
+                let minYTop = min(max(sourceCandidate.y - sourceCandidate.h / 2, 0), 1)
+                let width = min(max(sourceCandidate.w, 0.001), 1 - minX)
+                let height = min(max(sourceCandidate.h, 0.001), 1 - minYTop)
+                guard width > 0.006, height > 0.012 else { return nil }
+
+                let visionBox = CGRect(
+                    x: minX,
+                    y: min(max(1 - (minYTop + height), 0), 1),
+                    width: width,
+                    height: height
+                )
+                return .init(
+                    boundingBox: visionBox,
+                    point: Self.point(forVisionBox: visionBox),
+                    confidence: sourceCandidate.confidence
+                )
+            }
     }
 
-    private func remapScaleFitCandidate(_ candidate: RawCandidate, geometry: SourceGeometry) -> RawCandidate? {
+    private func remapScaleFitCandidate(
+        _ candidate: RawCandidate,
+        geometry: SourceGeometry
+    ) -> RawCandidate? {
         guard geometry.width > 0, geometry.height > 0 else { return nil }
-        var x = candidate.x, y = candidate.y, w = candidate.w, h = candidate.h
+        var x = candidate.x
+        var y = candidate.y
+        var w = candidate.w
+        var h = candidate.h
+
         if geometry.width >= geometry.height {
             let fittedHeight = geometry.height / geometry.width
             let padY = (1 - fittedHeight) / 2
@@ -291,37 +370,68 @@ final class BroadcastNanoPersonDetector {
             x = (x - padX) / fittedWidth
             w /= fittedWidth
         }
-        let minX = x - w / 2, maxX = x + w / 2, minY = y - h / 2, maxY = y + h / 2
+
+        let minX = x - w / 2
+        let maxX = x + w / 2
+        let minY = y - h / 2
+        let maxY = y + h / 2
         guard maxX > 0, minX < 1, maxY > 0, minY < 1 else { return nil }
-        let clippedMinX = min(max(minX, 0), 1), clippedMaxX = min(max(maxX, 0), 1)
-        let clippedMinY = min(max(minY, 0), 1), clippedMaxY = min(max(maxY, 0), 1)
-        let clippedW = clippedMaxX - clippedMinX, clippedH = clippedMaxY - clippedMinY
+
+        let clippedMinX = min(max(minX, 0), 1)
+        let clippedMaxX = min(max(maxX, 0), 1)
+        let clippedMinY = min(max(minY, 0), 1)
+        let clippedMaxY = min(max(maxY, 0), 1)
+        let clippedW = clippedMaxX - clippedMinX
+        let clippedH = clippedMaxY - clippedMinY
         guard clippedW > 0.004, clippedH > 0.008 else { return nil }
-        return .init(x: (clippedMinX + clippedMaxX) / 2, y: (clippedMinY + clippedMaxY) / 2, w: clippedW, h: clippedH, confidence: candidate.confidence)
+
+        return .init(
+            x: (clippedMinX + clippedMaxX) / 2,
+            y: (clippedMinY + clippedMaxY) / 2,
+            w: clippedW,
+            h: clippedH,
+            confidence: candidate.confidence
+        )
     }
 
     private func matrixShape(_ array: MLMultiArray) -> (rows: Int, columns: Int)? {
         let shape = array.shape.map(\.intValue)
-        if shape.count == 2, shape[0] > 0, shape[1] > 0 { return (shape[0], shape[1]) }
-        if shape.count == 3, shape[0] == 1, shape[1] > 0, shape[2] > 0 { return (shape[1], shape[2]) }
+        if shape.count == 2, shape[0] > 0, shape[1] > 0 {
+            return (shape[0], shape[1])
+        }
+        if shape.count == 3, shape[0] == 1, shape[1] > 0, shape[2] > 0 {
+            return (shape[1], shape[2])
+        }
         return nil
     }
 
     private func matrixValue(_ array: MLMultiArray, row: Int, column: Int) -> Double {
         let shape = array.shape.map(\.intValue)
-        if shape.count == 2 { return array[[NSNumber(value: row), NSNumber(value: column)]].doubleValue }
-        if shape.count == 3 { return array[[0, NSNumber(value: row), NSNumber(value: column)]].doubleValue }
+        if shape.count == 2 {
+            return array[[NSNumber(value: row), NSNumber(value: column)]].doubleValue
+        }
+        if shape.count == 3 {
+            return array[[0, NSNumber(value: row), NSNumber(value: column)]].doubleValue
+        }
         return .nan
     }
 
-    private func value(_ array: MLMultiArray, feature: Int, index: Int, channelsFirst: Bool) -> Double {
+    private func value(
+        _ array: MLMultiArray,
+        feature: Int,
+        index: Int,
+        channelsFirst: Bool
+    ) -> Double {
         let indexes: [NSNumber] = channelsFirst
             ? [0, NSNumber(value: feature), NSNumber(value: index)]
             : [0, NSNumber(value: index), NSNumber(value: feature)]
         return array[indexes].doubleValue
     }
 
-    private func nonMaximumSuppression(_ candidates: [RawCandidate], threshold: Double) -> [RawCandidate] {
+    private func nonMaximumSuppression(
+        _ candidates: [RawCandidate],
+        threshold: Double
+    ) -> [RawCandidate] {
         var remaining = candidates.sorted { $0.confidence > $1.confidence }
         var kept: [RawCandidate] = []
         while let best = remaining.first, kept.count < 8 {
@@ -333,35 +443,54 @@ final class BroadcastNanoPersonDetector {
     }
 
     private func intersectionOverUnion(_ a: RawCandidate, _ b: RawCandidate) -> Double {
-        let aMinX = a.x - a.w / 2, aMaxX = a.x + a.w / 2, aMinY = a.y - a.h / 2, aMaxY = a.y + a.h / 2
-        let bMinX = b.x - b.w / 2, bMaxX = b.x + b.w / 2, bMinY = b.y - b.h / 2, bMaxY = b.y + b.h / 2
-        let iw = max(0, min(aMaxX, bMaxX) - max(aMinX, bMinX))
-        let ih = max(0, min(aMaxY, bMaxY) - max(aMinY, bMinY))
-        let intersectionArea = iw * ih
+        let aMinX = a.x - a.w / 2
+        let aMaxX = a.x + a.w / 2
+        let aMinY = a.y - a.h / 2
+        let aMaxY = a.y + a.h / 2
+        let bMinX = b.x - b.w / 2
+        let bMaxX = b.x + b.w / 2
+        let bMinY = b.y - b.h / 2
+        let bMaxY = b.y + b.h / 2
+
+        let intersectionWidth = max(0, min(aMaxX, bMaxX) - max(aMinX, bMinX))
+        let intersectionHeight = max(0, min(aMaxY, bMaxY) - max(aMinY, bMinY))
+        let intersectionArea = intersectionWidth * intersectionHeight
         let unionArea = a.w * a.h + b.w * b.h - intersectionArea
         return unionArea > 0 ? intersectionArea / unionArea : 0
     }
 
     private static func point(forVisionBox box: CGRect) -> LightweightTargetPoint {
-        .init(x: min(max(Double(box.midX), 0), 1), y: min(max(1.0 - Double(box.minY + box.height * 0.68), 0), 1))
+        .init(
+            x: min(max(Double(box.midX), 0), 1),
+            y: min(max(1.0 - Double(box.minY + box.height * 0.68), 0), 1)
+        )
     }
 
-    private static func sourceGeometry(pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation) -> SourceGeometry {
-        let width = Double(CVPixelBufferGetWidth(pixelBuffer)), height = Double(CVPixelBufferGetHeight(pixelBuffer))
+    private static func sourceGeometry(
+        pixelBuffer: CVPixelBuffer,
+        orientation: CGImagePropertyOrientation
+    ) -> SourceGeometry {
+        let width = Double(CVPixelBufferGetWidth(pixelBuffer))
+        let height = Double(CVPixelBufferGetHeight(pixelBuffer))
         switch orientation {
-        case .left, .leftMirrored, .right, .rightMirrored: return .init(width: height, height: width)
-        default: return .init(width: width, height: height)
+        case .left, .leftMirrored, .right, .rightMirrored:
+            return .init(width: height, height: width)
+        default:
+            return .init(width: width, height: height)
         }
     }
 
     private static func discoverModels() -> [URL] {
-        var result: [URL] = [], seen: Set<String> = []
+        var result: [URL] = []
+        var seen: Set<String> = []
         for name in preferredNames {
             let candidates = [
                 Bundle.main.url(forResource: name, withExtension: "mlmodelc", subdirectory: "BroadcastModels"),
                 Bundle.main.url(forResource: name, withExtension: "mlmodelc")
             ]
-            for case let url? in candidates where seen.insert(url.path).inserted { result.append(url) }
+            for case let url? in candidates where seen.insert(url.path).inserted {
+                result.append(url)
+            }
         }
         return result
     }
