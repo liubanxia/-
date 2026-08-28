@@ -1,4 +1,4 @@
-name: LiteView CoreML Export
+name: LiteView 384 CoreML Export
 
 on:
   workflow_dispatch:
@@ -64,18 +64,40 @@ jobs:
           [[ "$ok" -eq 1 ]] || { echo 'ERROR: model download failed'; exit 2; }
           ls -lh "$MODEL"
 
-      - name: Export Core ML
+      - name: Export 384-pixel Core ML hot detector
         shell: bash
         run: |
           set -euo pipefail
           cd build/models
           python - <<'PY'
+          from pathlib import Path
+
+          import coremltools as ct
           import numpy as np
           from ultralytics import YOLO
+
           print('numpy before export=', np.__version__)
           model = YOLO('yolo11n.pt')
-          result = model.export(format='coreml', imgsz=640, nms=False)
+          result = model.export(format='coreml', imgsz=384, nms=False)
           print('EXPORT_RESULT=', result)
+
+          package = Path(result)
+          spec = ct.utils.load_spec(str(package))
+          image_inputs = [
+              value.type.imageType
+              for value in spec.description.input
+              if value.type.WhichOneof('Type') == 'imageType'
+          ]
+          if len(image_inputs) != 1:
+              raise SystemExit(f'expected exactly one image input, got {len(image_inputs)}')
+          image_input = image_inputs[0]
+          actual_size = (int(image_input.width), int(image_input.height))
+          if actual_size != (384, 384):
+              raise SystemExit(f'expected 384x384 Core ML input, got {actual_size}')
+          output_names = [value.name for value in spec.description.output]
+          if not output_names:
+              raise SystemExit('Core ML export has no outputs')
+          print('COREML_CONTRACT input=', actual_size, 'outputs=', output_names)
           PY
           find . -maxdepth 2 \( -name '*.mlpackage' -o -name '*.mlmodel' \) -print
 
@@ -105,11 +127,16 @@ jobs:
         run: |
           set -euo pipefail
           TAG='liteview-coreml-latest'
+          git tag -f "$TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG" --force
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" liteview-yolo11n-coreml.zip --clobber
+            gh release edit "$TAG" \
+              --title 'LiteView 384 Core ML latest' \
+              --notes 'Automatically exported 384x384 Core ML hot detector for LiteView ReplayKit.'
           else
             gh release create "$TAG" liteview-yolo11n-coreml.zip \
-              --title 'LiteView Core ML latest' \
-              --notes 'Automatically exported Core ML model for LiteView.' \
+              --title 'LiteView 384 Core ML latest' \
+              --notes 'Automatically exported 384x384 Core ML hot detector for LiteView ReplayKit.' \
               --target "${GITHUB_SHA}"
           fi
