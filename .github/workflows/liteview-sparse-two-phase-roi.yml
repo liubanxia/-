@@ -1,0 +1,103 @@
+name: LiteView Sparse Two-Phase ROI Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/ios-realtime-vision-assist
+    paths:
+      - '.github/workflows/liteview-sparse-two-phase-roi.yml'
+      - 'ios/PhoenixRealtimeVisionAssist/Tests/SparseROI/**'
+
+permissions:
+  contents: read
+
+jobs:
+  sparse-roi:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install benchmark dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install ultralytics opencv-python-headless numpy
+
+      - name: Download COCO128
+        id: data
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/sparse-two-phase-roi"
+          mkdir -p "$WORK/data" "$WORK/results"
+          curl -fL --retry 5 --retry-delay 2 \
+            https://github.com/ultralytics/assets/releases/download/v0.0.0/coco128.zip \
+            -o "$WORK/coco128.zip"
+          unzip -q "$WORK/coco128.zip" -d "$WORK/data"
+          test -d "$WORK/data/coco128/images"
+          test -d "$WORK/data/coco128/labels"
+          echo "work=$WORK" >> "$GITHUB_OUTPUT"
+          echo "dataset=$WORK/data/coco128" >> "$GITHUB_OUTPUT"
+
+      - name: Run deterministic two-phase ROI benchmark
+        shell: bash
+        env:
+          WORK: ${{ steps.data.outputs.work }}
+          DATASET: ${{ steps.data.outputs.dataset }}
+        run: |
+          set -euo pipefail
+          python ios/PhoenixRealtimeVisionAssist/Tests/SparseROI/run_sparse_two_phase_roi.py \
+            --dataset "$DATASET" \
+            --output "$WORK/results" \
+            --model yolo11n.pt \
+            --imgsz 384 \
+            --reference-imgsz 640 \
+            --confidence 0.05 \
+            --hit-iou 0.30 \
+            --merge-iou 0.50 \
+            --coverages 0.60 0.68 0.75
+          cat "$WORK/results/summary_sparse_two_phase_roi.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validate report contract
+        shell: bash
+        env:
+          WORK: ${{ steps.data.outputs.work }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = Path(os.environ['WORK']) / 'results' / 'sparse_two_phase_roi.json'
+          data = json.loads(report.read_text(encoding='utf-8'))
+          assert data['model'] == 'yolo11n.pt'
+          assert data['imgsz'] == 384
+          assert data['person_annotations'] > 0
+          assert len(data['two_phase']) == 3
+          for row in data['two_phase']:
+              assert 0 <= row['cycle_under32_recall'] <= 1
+              assert 0 <= row['cycle_overall_recall'] <= 1
+              assert 0 <= row['cycle_precision'] <= 1
+              assert row['median_ms_per_phase_scan'] > 0
+              assert row['median_ms_per_two_phase_cycle'] > 0
+          print('SPARSE_ROI_REPORT_PASS')
+          PY
+
+      - name: Upload sparse ROI evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-sparse-two-phase-roi
+          path: ${{ steps.data.outputs.work }}/results/
+          retention-days: 7
+          if-no-files-found: error
