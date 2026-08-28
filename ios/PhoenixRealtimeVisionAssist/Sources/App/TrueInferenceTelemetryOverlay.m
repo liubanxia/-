@@ -2,7 +2,7 @@
 #import <notify.h>
 
 static NSString * const LiteViewTelemetryNotificationName = @"com.phoenix.realtimevisionassist.broadcast.true-inference.v1";
-static NSInteger const LiteViewTelemetryOverlayTag = 83014;
+static NSInteger const LiteViewTelemetryOverlayTag = 84015;
 static int LiteViewTelemetryToken = -1;
 
 @interface LiteViewTrueInferenceTelemetryOverlay : NSObject
@@ -103,13 +103,13 @@ static int LiteViewTelemetryToken = -1;
 
 + (NSString *)telemetryText {
     if (LiteViewTelemetryToken < 0) {
-        return @"真推理遥测 0.8.3 · 通道不可用";
+        return @"真推理遥测 0.8.4 · 通道不可用";
     }
 
     uint64_t state = 0;
     if (notify_get_state(LiteViewTelemetryToken, &state) != NOTIFY_STATUS_OK ||
         (state & (UINT64_C(1) << 63)) == 0) {
-        return @"真推理遥测 0.8.3 · 等待 ReplayKit 首次分析";
+        return @"真推理遥测 0.8.4 · 等待 ReplayKit 首次分析";
     }
 
     uint64_t coreML = state & UINT64_C(0x0FFF);
@@ -123,7 +123,7 @@ static int LiteViewTelemetryToken = -1;
     uint64_t sequence = (state >> 55) & UINT64_C(0x00FF);
 
     return [NSString stringWithFormat:
-            @"真推理遥测 0.8.3 / Build 14\n"
+            @"真推理遥测 0.8.4 / Build 15 · hot 384px\n"
              "Core ML %llu · 解码 %llu · 非空目标 %llu · 切备用 %llu · 失败 %llu\n"
              "模型 %@ · 解码路径 %@ · 当前来源 %@ · seq %llu",
             coreML,

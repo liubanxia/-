@@ -36,6 +36,11 @@ final class BroadcastNanoPersonDetector {
         let height: Double
     }
 
+    private struct ModelInputSize {
+        let width: Double
+        let height: Double
+    }
+
     private struct FeatureArray {
         let name: String
         let array: MLMultiArray
@@ -50,6 +55,7 @@ final class BroadcastNanoPersonDetector {
 
     private var candidateURLs: [URL]?
     private var activeURL: URL?
+    private var activeModelInputSize: ModelInputSize?
     private var visionModel: VNCoreMLModel?
     private var blockedPaths: Set<String> = []
     private var preferredIndex = 0
@@ -57,6 +63,7 @@ final class BroadcastNanoPersonDetector {
 
     func reset() {
         activeURL = nil
+        activeModelInputSize = nil
         visionModel = nil
         candidateURLs = nil
         blockedPaths.removeAll(keepingCapacity: false)
@@ -67,6 +74,7 @@ final class BroadcastNanoPersonDetector {
     func releaseResources() {
         visionModel = nil
         activeURL = nil
+        activeModelInputSize = nil
         independentVisibleMissCount = 0
     }
 
@@ -80,6 +88,7 @@ final class BroadcastNanoPersonDetector {
         preferredIndex = (preferredIndex + 1) % urls.count
         visionModel = nil
         activeURL = nil
+        activeModelInputSize = nil
         return true
     }
 
@@ -125,7 +134,12 @@ final class BroadcastNanoPersonDetector {
         }
 
         let geometry = Self.sourceGeometry(pixelBuffer: pixelBuffer, orientation: orientation)
-        switch decodeResults(request.results ?? [], minimumConfidence: minimumConfidence, geometry: geometry) {
+        switch decodeResults(
+            request.results ?? [],
+            minimumConfidence: minimumConfidence,
+            geometry: geometry,
+            inputSize: activeModelInputSize
+        ) {
         case let .detections(detections, decoder):
             if !detections.isEmpty { reportVisibleDetection() }
             return .init(
@@ -171,6 +185,7 @@ final class BroadcastNanoPersonDetector {
             }
             preferredIndex = index
             activeURL = url
+            activeModelInputSize = Self.modelInputSize(for: model)
             visionModel = candidate
             independentVisibleMissCount = 0
             return candidate
@@ -181,6 +196,7 @@ final class BroadcastNanoPersonDetector {
     private func blockCurrentModel() {
         if let activeURL { blockedPaths.insert(activeURL.path) }
         activeURL = nil
+        activeModelInputSize = nil
         visionModel = nil
         independentVisibleMissCount = 0
     }
@@ -188,7 +204,8 @@ final class BroadcastNanoPersonDetector {
     private func decodeResults(
         _ results: [VNObservation],
         minimumConfidence: Double,
-        geometry: SourceGeometry
+        geometry: SourceGeometry,
+        inputSize: ModelInputSize?
     ) -> DecodeResult {
         let objectResults = results.compactMap { $0 as? VNRecognizedObjectObservation }
         if !objectResults.isEmpty {
@@ -230,7 +247,11 @@ final class BroadcastNanoPersonDetector {
             let shape = array.shape.map(\.intValue)
             return shape.count == 3 && shape.contains(where: { $0 >= 5 })
         }) {
-            guard let candidates = decodeUltralytics(rawOutput, minimumConfidence: minimumConfidence) else {
+            guard let candidates = decodeUltralytics(
+                rawOutput,
+                minimumConfidence: minimumConfidence,
+                inputSize: inputSize
+            ) else {
                 return .unsupported
             }
             return .detections(
@@ -287,7 +308,11 @@ final class BroadcastNanoPersonDetector {
         return candidates
     }
 
-    private func decodeUltralytics(_ array: MLMultiArray, minimumConfidence: Double) -> [RawCandidate]? {
+    private func decodeUltralytics(
+        _ array: MLMultiArray,
+        minimumConfidence: Double,
+        inputSize: ModelInputSize?
+    ) -> [RawCandidate]? {
         let shape = array.shape.map(\.intValue)
         guard shape.count == 3 else { return nil }
 
@@ -307,11 +332,13 @@ final class BroadcastNanoPersonDetector {
             guard rawX.isFinite, rawY.isFinite, rawW.isFinite, rawH.isFinite,
                   confidence.isFinite, confidence >= minimumConfidence else { continue }
 
-            let coordinateScale = max(abs(rawX), abs(rawY), abs(rawW), abs(rawH)) > 2 ? 640.0 : 1.0
-            let x = rawX / coordinateScale
-            let y = rawY / coordinateScale
-            let w = rawW / coordinateScale
-            let h = rawH / coordinateScale
+            let isPixelSpace = max(abs(rawX), abs(rawY), abs(rawW), abs(rawH)) > 2
+            let scaleX = isPixelSpace ? max(inputSize?.width ?? 640.0, 1.0) : 1.0
+            let scaleY = isPixelSpace ? max(inputSize?.height ?? 640.0, 1.0) : 1.0
+            let x = rawX / scaleX
+            let y = rawY / scaleY
+            let w = rawW / scaleX
+            let h = rawH / scaleY
             guard x >= -0.2, x <= 1.2, y >= -0.2, y <= 1.2,
                   w > 0.004, h > 0.008, w <= 1.2, h <= 1.2 else { continue }
 
@@ -478,6 +505,19 @@ final class BroadcastNanoPersonDetector {
         default:
             return .init(width: width, height: height)
         }
+    }
+
+    private static func modelInputSize(for model: MLModel) -> ModelInputSize? {
+        for description in model.modelDescription.inputDescriptionsByName.values {
+            guard let constraint = description.imageConstraint,
+                  constraint.pixelsWide > 0,
+                  constraint.pixelsHigh > 0 else { continue }
+            return .init(
+                width: Double(constraint.pixelsWide),
+                height: Double(constraint.pixelsHigh)
+            )
+        }
+        return nil
     }
 
     private static func discoverModels() -> [URL] {

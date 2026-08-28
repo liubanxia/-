@@ -1,4 +1,4 @@
-name: LiteView 0.8.3 True Inference Telemetry Package
+name: LiteView 0.8.4 384 Hot Detector Package
 
 on:
   push:
@@ -29,7 +29,7 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Stage hot ReplayKit detector matrix
+      - name: Stage 384px hot ReplayKit detector matrix
         shell: bash
         run: |
           set -euo pipefail
@@ -169,12 +169,12 @@ jobs:
 
           set_plist_string "$APP/Info.plist" CFBundleDisplayName LiteView
           set_plist_string "$APP/Info.plist" CFBundleIdentifier com.phoenix.realtimevisionassist
-          set_plist_string "$APP/Info.plist" CFBundleShortVersionString 0.8.3
-          set_plist_string "$APP/Info.plist" CFBundleVersion 14
+          set_plist_string "$APP/Info.plist" CFBundleShortVersionString 0.8.4
+          set_plist_string "$APP/Info.plist" CFBundleVersion 15
           set_plist_string "$EXT/Info.plist" CFBundleDisplayName 'LiteView Broadcast'
           set_plist_string "$EXT/Info.plist" CFBundleIdentifier com.phoenix.realtimevisionassist.broadcast
-          set_plist_string "$EXT/Info.plist" CFBundleShortVersionString 0.8.3
-          set_plist_string "$EXT/Info.plist" CFBundleVersion 14
+          set_plist_string "$EXT/Info.plist" CFBundleShortVersionString 0.8.4
+          set_plist_string "$EXT/Info.plist" CFBundleVersion 15
 
           /usr/libexec/PlistBuddy -c 'Delete :NSExtension' "$EXT/Info.plist" >/dev/null 2>&1 || true
           /usr/libexec/PlistBuddy -c 'Add :NSExtension dict' "$EXT/Info.plist"
@@ -192,17 +192,17 @@ jobs:
           test "$EXT_MODEL_COUNT" = '2'
           test "$EXT_SIZE_BYTES" -lt 41943040
 
-      - name: Package and verify LiteView 0.8.3 full-bank IPA
+      - name: Package and verify LiteView 0.8.4 full-bank IPA
         shell: bash
         run: |
           set -euo pipefail
           PRODUCTS="$RUNNER_TEMP/LiteViewSentinelDerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
-          ROOT="$RUNNER_TEMP/liteview-083-package"
+          ROOT="$RUNNER_TEMP/liteview-084-package"
           PAYLOAD="$ROOT/Payload"
           IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
           MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
-          VERIFY="$RUNNER_TEMP/liteview-083-verify"
+          VERIFY="$RUNNER_TEMP/liteview-084-verify"
 
           rm -rf "$ROOT" "$VERIFY" "$IPA" "$MANIFEST"
           mkdir -p "$PAYLOAD" "$VERIFY"
@@ -217,23 +217,24 @@ jobs:
 
           VAPP="$VERIFY/Payload/PhoenixRealtimeVisionAssist.app"
           VEXT="$VAPP/PlugIns/PhoenixBroadcastExtension.appex"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VAPP/Info.plist")" = '0.8.3'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$VAPP/Info.plist")" = '14'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VEXT/Info.plist")" = '0.8.3'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$VEXT/Info.plist")" = '14'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VAPP/Info.plist")" = '0.8.4'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$VAPP/Info.plist")" = '15'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VEXT/Info.plist")" = '0.8.4'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$VEXT/Info.plist")" = '15'
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$VEXT/Info.plist")" = 'com.phoenix.realtimevisionassist.broadcast'
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$VEXT/Info.plist")" = 'com.apple.broadcast-services-upload'
           test "$(find "$VEXT/BroadcastModels" -type d -name '*.mlmodelc' -prune | wc -l | tr -d ' ')" = '2'
           test "$(find "$VAPP" -maxdepth 1 -type d -name '*.mlmodelc' -prune | wc -l | tr -d ' ')" -ge 12
 
           cat > "$MANIFEST" <<EOF
-          LiteView 0.8.3 true-inference telemetry full-bank sideload package
+          LiteView 0.8.4 384px hot-detector full-bank sideload package
           commit=${GITHUB_SHA}
-          build=14
+          build=15
           source_bank_tag=${SOURCE_TAG}
           package_base=fresh main executable + fresh ReplayKit extension + transplanted cold model resources only
-          replaykit_runtime=single hot Core ML detector + fast Vision tracker + independently confirmed failover
-          replaykit_hot_models=yolo11n + YOLOv3TinyInt8LUT
+          replaykit_runtime=single 384px hot Core ML detector + fast Vision tracker + independently confirmed failover
+          replaykit_hot_models=yolo11n 384x384 + YOLOv3TinyInt8LUT fallback
+          raw_decoder_scale=read from active Core ML image input constraint; 384/640 compatible, no hard-coded 640 geometry
           fallback_decoder=coordinates/confidence pair + raw Ultralytics tensor + recognized-object output
           true_inference_telemetry=Core ML invocation + decode + non-empty target + active model + decoder path + result source + failover/failure counters
           telemetry_transport=entitlement-free libnotify 64-bit counter state; final session counters remain readable until next broadcast reset
@@ -250,7 +251,7 @@ jobs:
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-083-fullbank
+          name: liteview-084-fullbank
           path: |
             ${{ runner.temp }}/LiteView-unsigned-sideload.ipa
             ${{ runner.temp }}/LiteView-sideload-manifest.txt
@@ -265,7 +266,7 @@ jobs:
           TAG='liteview-sentinel-latest'
           IPA="$RUNNER_TEMP/LiteView-unsigned-sideload.ipa"
           MANIFEST="$RUNNER_TEMP/LiteView-sideload-manifest.txt"
-          NOTES='LiteView 0.8.3 adds entitlement-free true-inference telemetry for Core ML invocation, decoder success, non-empty target output, active model, decoder path, tracker/fallback source, failover count and inference failures. Core ML request-level background preference is removed while the existing frame-pressure, latency, thermal and low-power governor continues to protect the foreground game. The Phoenix capability bank remains cold on disk.'
+          NOTES='LiteView 0.8.4 uses the newly exported 384x384 yolo11n hot detector to reduce ReplayKit inference load. Raw Ultralytics coordinates are now normalized from the active Core ML image-input contract instead of a hard-coded 640, so both 384 and 640 exports decode correctly. True-inference telemetry, independent visible-miss failover, the frame-pressure governor, and the cold Phoenix capability bank are retained.'
 
           git tag -f "$TAG" "$GITHUB_SHA"
           git push origin "refs/tags/$TAG" --force
@@ -273,8 +274,8 @@ jobs:
           if gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber --repo "${GITHUB_REPOSITORY}"
             gh release edit "$TAG" --repo "${GITHUB_REPOSITORY}" \
-              --title 'LiteView 0.8.3 True Inference Telemetry Full Bank' --notes "$NOTES"
+              --title 'LiteView 0.8.4 384px Adaptive Detector Full Bank' --notes "$NOTES"
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" --repo "${GITHUB_REPOSITORY}" \
-              --title 'LiteView 0.8.3 True Inference Telemetry Full Bank' --notes "$NOTES"
+              --title 'LiteView 0.8.4 384px Adaptive Detector Full Bank' --notes "$NOTES"
           fi
