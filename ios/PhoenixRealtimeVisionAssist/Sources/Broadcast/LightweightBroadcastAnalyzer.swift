@@ -25,17 +25,12 @@ struct LightweightVisionAnalysis {
     let successfulLaneCount: Int
 }
 
-/// Two-tier realtime analyzer for the ReplayKit Upload Extension.
+/// Detector + tracker cascade for visible on-screen people.
 ///
-/// Heavy work is a single tiny Core ML detector lane. Once a visible target is found, most
-/// subsequent updates use VNTrackObjectRequest(.fast), with the detector only refreshing the lock
-/// periodically. A full-frame Apple Vision human request is reserved for model-unavailable/error
-/// recovery or a sparse verifier. Body-pose inference is intentionally removed from the extension
-/// because it produced large CPU/GPU spikes while the foreground game was running.
-///
-/// Prediction is deliberately short-horizon and visible-only: it is emitted only on a frame that
-/// still contains a confirmed current target, and is cleared immediately when that target is not
-/// observed. No hidden-position continuation is produced.
+/// A tiny Core ML detector performs global search. VNTrackObjectRequest(.fast) carries a valid
+/// visible lock between detector refreshes. Repeated empty detector results are periodically
+/// cross-checked with Apple's human rectangle detector so a healthy-but-blind custom model cannot
+/// permanently suppress the independent fallback lane.
 final class LightweightBroadcastAnalyzer {
     private struct TargetObservation {
         let point: LightweightTargetPoint
@@ -55,6 +50,7 @@ final class LightweightBroadcastAnalyzer {
     private var stableTargetFrameCount = 0
     private var lastHeavyTargetCount = 0
     private var analysisOrdinal: UInt64 = 0
+    private var consecutivePrimaryEmptyScans = 0
 
     func reset() {
         nanoDetector.reset()
@@ -69,6 +65,7 @@ final class LightweightBroadcastAnalyzer {
         stableTargetFrameCount = 0
         lastHeavyTargetCount = 0
         analysisOrdinal = 0
+        consecutivePrimaryEmptyScans = 0
     }
 
     func releaseResources() {
@@ -115,7 +112,7 @@ final class LightweightBroadcastAnalyzer {
             let nanoResult = nanoDetector.detect(
                 in: pixelBuffer,
                 orientation: orientation,
-                minimumConfidence: 0.28
+                minimumConfidence: 0.22
             )
             lastHeavyScanUptime = now
 
@@ -123,7 +120,9 @@ final class LightweightBroadcastAnalyzer {
                 successfulLaneCount += 1
                 lastHeavyTargetCount = nanoResult.detections.count
                 targetCount = nanoResult.detections.count
+
                 if let selected = selectPrimaryNanoTarget(nanoResult.detections) {
+                    consecutivePrimaryEmptyScans = 0
                     currentObservation = TargetObservation(
                         point: selected.point,
                         confidence: selected.confidence,
@@ -134,8 +133,29 @@ final class LightweightBroadcastAnalyzer {
                     )
                 } else {
                     trackedObservation = nil
+                    consecutivePrimaryEmptyScans += 1
+
+                    if shouldCrossCheckEmptyPrimaryResult {
+                        attemptedLaneCount += 1
+                        if let fallback = runHumanRectangleFallback(
+                            pixelBuffer: pixelBuffer,
+                            orientation: orientation
+                        ) {
+                            successfulLaneCount += 1
+                            if fallback.count > 0 {
+                                consecutivePrimaryEmptyScans = 0
+                                targetCount = fallback.count
+                                lastHeavyTargetCount = fallback.count
+                                currentObservation = fallback.primary
+                                trackedObservation = fallback.primary.map {
+                                    VNDetectedObjectObservation(boundingBox: $0.boundingBox)
+                                }
+                            }
+                        }
+                    }
                 }
             } else {
+                consecutivePrimaryEmptyScans = 0
                 attemptedLaneCount += 1
                 if let fallback = runHumanRectangleFallback(
                     pixelBuffer: pixelBuffer,
@@ -195,6 +215,19 @@ final class LightweightBroadcastAnalyzer {
         )
     }
 
+    private var shouldCrossCheckEmptyPrimaryResult: Bool {
+        guard consecutivePrimaryEmptyScans >= 2,
+              analysisOrdinal % 2 == 0,
+              !ProcessInfo.processInfo.isLowPowerModeEnabled else {
+            return false
+        }
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal, .fair: return true
+        case .serious, .critical: return false
+        @unknown default: return false
+        }
+    }
+
     private var shouldRunSparseVisionVerifier: Bool {
         guard analysisOrdinal % 24 == 0,
               !ProcessInfo.processInfo.isLowPowerModeEnabled else {
@@ -208,7 +241,7 @@ final class LightweightBroadcastAnalyzer {
         pixelBuffer: CVPixelBuffer,
         orientation: CGImagePropertyOrientation
     ) -> TargetObservation? {
-        return autoreleasepool { () -> TargetObservation? in
+        autoreleasepool { () -> TargetObservation? in
             let request = VNTrackObjectRequest(detectedObjectObservation: observation)
             request.trackingLevel = .fast
             do {
@@ -238,7 +271,7 @@ final class LightweightBroadcastAnalyzer {
         pixelBuffer: CVPixelBuffer,
         orientation: CGImagePropertyOrientation
     ) -> (count: Int, primary: TargetObservation?)? {
-        return autoreleasepool { () -> (count: Int, primary: TargetObservation?)? in
+        autoreleasepool { () -> (count: Int, primary: TargetObservation?)? in
             let request = VNDetectHumanRectanglesRequest()
             request.upperBodyOnly = false
             request.preferBackgroundProcessing = true
@@ -251,7 +284,7 @@ final class LightweightBroadcastAnalyzer {
             do {
                 try handler.perform([request])
                 let observations = (request.results ?? [])
-                    .filter { $0.confidence >= 0.28 }
+                    .filter { $0.confidence >= 0.25 }
                     .prefix(8)
                     .map { observation in
                         TargetObservation(

@@ -71,7 +71,7 @@ final class BroadcastLifecycleTests: XCTestCase {
         XCTAssertEqual(state.phase, .recovering)
     }
 
-    func testCompactDarwinStateRoundTrip() {
+    func testCompactDarwinStatePreservesVisibleCoordinateAndStage() {
         let source = SharedRealtimeSnapshot(
             sessionID: "test",
             sequence: 250,
@@ -95,18 +95,73 @@ final class BroadcastLifecycleTests: XCTestCase {
         )
 
         let packed = CompactBroadcastState(snapshot: source).rawValue
-        let decoded = CompactBroadcastState(rawValue: packed)
-        XCTAssertNotNil(decoded)
+        let restored = CompactBroadcastState(rawValue: packed)?.makeSnapshot(at: 1_234.5)
 
-        let restored = decoded?.makeSnapshot(at: 1_234.5)
         XCTAssertEqual(restored?.phase, .paused)
         XCTAssertEqual(restored?.targetCount, 7)
-        XCTAssertEqual(restored?.soundIndicatorCount, 0)
-        XCTAssertEqual(restored?.videoFramesPerSecond, 59.5, accuracy: 0.51)
-        XCTAssertEqual(restored?.analysisLatencyMilliseconds, 84, accuracy: 4.1)
         XCTAssertEqual(restored?.visionPipelineStage, .stableTarget)
-        XCTAssertNil(restored?.primaryTarget)
+        XCTAssertEqual(restored?.primaryTarget?.x ?? -1, 0.42, accuracy: 0.006)
+        XCTAssertEqual(restored?.primaryTarget?.y ?? -1, 0.31, accuracy: 0.006)
+        XCTAssertEqual(restored?.primaryTargetConfidence ?? -1, 0.88, accuracy: 0.08)
         XCTAssertTrue(restored?.isFresh(at: 1_234.5) == true)
+    }
+
+    func testCompactDarwinStateDoesNotTurnInferenceFailureIntoSuccess() {
+        let source = SharedRealtimeSnapshot(
+            sessionID: "failed",
+            sequence: 1,
+            phase: .running,
+            timestamp: 500,
+            targetCount: 0,
+            soundIndicatorCount: 0,
+            videoFrameCount: 20,
+            videoFramesPerSecond: 30,
+            droppedAnalysisFrameCount: 0,
+            analysisLatencyMilliseconds: 42,
+            analysisMode: .lightweightVision,
+            analysisFrameCount: 1,
+            successfulAnalysisFrameCount: 0,
+            lastAnalysisSucceeded: false,
+            attemptedLaneCount: 1,
+            successfulLaneCount: 0,
+            primaryTarget: nil,
+            primaryTargetConfidence: 0,
+            stableTargetFrameCount: 0
+        )
+
+        let packed = CompactBroadcastState(snapshot: source).rawValue
+        let restored = CompactBroadcastState(rawValue: packed)?.makeSnapshot(at: 500.25)
+        XCTAssertEqual(restored?.visionPipelineStage, .inferenceFailed)
+        XCTAssertFalse(restored?.lastAnalysisSucceeded ?? true)
+    }
+
+    func testCompactDarwinStatePreservesNoVisibleTarget() {
+        let source = SharedRealtimeSnapshot(
+            sessionID: "empty",
+            sequence: 1,
+            phase: .running,
+            timestamp: 700,
+            targetCount: 0,
+            soundIndicatorCount: 0,
+            videoFrameCount: 20,
+            videoFramesPerSecond: 30,
+            droppedAnalysisFrameCount: 0,
+            analysisLatencyMilliseconds: 24,
+            analysisMode: .lightweightVision,
+            analysisFrameCount: 1,
+            successfulAnalysisFrameCount: 1,
+            lastAnalysisSucceeded: true,
+            attemptedLaneCount: 1,
+            successfulLaneCount: 1,
+            primaryTarget: nil,
+            primaryTargetConfidence: 0,
+            stableTargetFrameCount: 0
+        )
+
+        let packed = CompactBroadcastState(snapshot: source).rawValue
+        let restored = CompactBroadcastState(rawValue: packed)?.makeSnapshot(at: 700.25)
+        XCTAssertEqual(restored?.visionPipelineStage, .noVisibleTarget)
+        XCTAssertTrue(restored?.lastAnalysisSucceeded == true)
     }
 
     func testVisionPipelineRequiresFramesInferenceCoordinatesAndStability() {
@@ -149,6 +204,10 @@ final class BroadcastLifecycleTests: XCTestCase {
             .framesReceived
         )
         XCTAssertEqual(
+            snapshot(videoFrames: 8, analyses: 1, succeeded: false, targets: 0, point: nil, stableFrames: 0).visionPipelineStage,
+            .inferenceFailed
+        )
+        XCTAssertEqual(
             snapshot(videoFrames: 8, analyses: 1, succeeded: true, targets: 0, point: nil, stableFrames: 0).visionPipelineStage,
             .noVisibleTarget
         )
@@ -170,15 +229,15 @@ final class BroadcastLifecycleTests: XCTestCase {
         XCTAssertFalse(candidates.contains { $0.capability != .visibleLocalization })
     }
 
-    func testDefaultRuntimeIsLightweightVisibleOnly() {
+    func testDefaultRuntimeIsVisibleOnlyAndWithinBudgets() {
         let configuration = RuntimeConfiguration.default
-        XCTAssertFalse(configuration.useCustomCoreMLModel)
+        XCTAssertTrue(configuration.useCustomCoreMLModel)
         XCTAssertFalse(configuration.enableAudioLevelAnalysis)
         XCTAssertFalse(configuration.enableScreenCueAnalysis)
         XCTAssertEqual(configuration.predictionCount, 0)
         XCTAssertEqual(configuration.predictionHoldSeconds, 0)
         XCTAssertEqual(configuration.maxPredictionOffsetPerStep, 0)
         XCTAssertEqual(RuntimeResourcePolicy.packageSizeBudgetBytes, 1_073_741_824)
-        XCTAssertEqual(RuntimeResourcePolicy.broadcastExtensionSizeBudgetBytes, 12_582_912)
+        XCTAssertEqual(RuntimeResourcePolicy.broadcastExtensionSizeBudgetBytes, 41_943_040)
     }
 }

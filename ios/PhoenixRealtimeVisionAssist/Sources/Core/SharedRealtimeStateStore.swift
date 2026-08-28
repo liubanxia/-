@@ -1,9 +1,6 @@
 import Darwin
 import Foundation
 
-// Darwin's notify(3) state functions are exported by libSystem on Apple platforms but
-// are not imported into Swift by every SDK/toolchain combination. Bind only the small,
-// stable C surface we use for a 64-bit cross-process status word.
 @_silgen_name("notify_register_check")
 private func liteview_notify_register_check(
     _ name: UnsafePointer<CChar>,
@@ -103,7 +100,7 @@ struct SharedRealtimeSnapshot: Codable, Sendable, Equatable {
     let stableTargetFrameCount: Int
 
     init(
-        schemaVersion: Int = 4,
+        schemaVersion: Int = 5,
         sessionID: String,
         sequence: UInt64,
         phase: SharedBroadcastPhase,
@@ -211,14 +208,8 @@ struct SharedRealtimeSnapshot: Codable, Sendable, Equatable {
             try values.decodeIfPresent(UInt64.self, forKey: .successfulAnalysisFrameCount) ?? 0,
             analysisFrameCount
         )
-        lastAnalysisSucceeded = try values.decodeIfPresent(
-            Bool.self,
-            forKey: .lastAnalysisSucceeded
-        ) ?? false
-        attemptedLaneCount = max(
-            0,
-            try values.decodeIfPresent(Int.self, forKey: .attemptedLaneCount) ?? 0
-        )
+        lastAnalysisSucceeded = try values.decodeIfPresent(Bool.self, forKey: .lastAnalysisSucceeded) ?? false
+        attemptedLaneCount = max(0, try values.decodeIfPresent(Int.self, forKey: .attemptedLaneCount) ?? 0)
         successfulLaneCount = min(
             max(0, try values.decodeIfPresent(Int.self, forKey: .successfulLaneCount) ?? 0),
             attemptedLaneCount
@@ -235,37 +226,53 @@ struct SharedRealtimeSnapshot: Codable, Sendable, Equatable {
     }
 }
 
-/// Compact state carried by Darwin notify state. It is intentionally coarse: the goal is
-/// to prove that the Broadcast Extension is alive even when third-party re-signing strips
-/// the App Group entitlement. No frame data, audio data, or history crosses this channel.
+/// Compact entitlement-free fallback state.
+///
+/// Version 3 prioritizes what is needed for a real fallback path after third-party re-signing:
+/// lifecycle, exact pipeline stage, a quantized visible coordinate, coarse confidence, target
+/// count, and freshness. FPS/latency remain available through App Group when that entitlement is
+/// preserved, but are intentionally omitted here so a visible point can still cross processes.
 struct CompactBroadcastState: Sendable, Equatable {
-    private static let formatVersion: UInt64 = 2
+    private static let formatVersion: UInt64 = 3
     private static let magic: UInt64 = 0xB7
+    private static let missingCoordinate: UInt8 = 0xFF
 
     let phase: SharedBroadcastPhase
     let sequence: UInt8
     let targetCount: UInt8
     let visionEvidenceCode: UInt8
-    let videoFramesPerSecond: Double
-    let analysisLatencyMilliseconds: Double
+    let confidenceCode: UInt8
+    let coordinateXCode: UInt8
+    let coordinateYCode: UInt8
     let uptimeTicks: UInt16
 
     init(snapshot: SharedRealtimeSnapshot) {
         phase = snapshot.phase
-        sequence = UInt8(truncatingIfNeeded: snapshot.sequence)
-        targetCount = UInt8(clamping: snapshot.targetCount)
+        sequence = UInt8(truncatingIfNeeded: snapshot.sequence) & 0x0F
+        targetCount = UInt8(clamping: min(snapshot.targetCount, 7))
+
         switch snapshot.visionPipelineStage {
-        case .waitingForFrames:
-            visionEvidenceCode = 0
-        case .framesReceived:
-            visionEvidenceCode = 1
-        case .inferenceFailed, .noVisibleTarget, .targetDetected, .coordinateReady:
-            visionEvidenceCode = 2
-        case .stableTarget:
-            visionEvidenceCode = 3
+        case .waitingForFrames: visionEvidenceCode = 0
+        case .framesReceived: visionEvidenceCode = 1
+        case .inferenceFailed: visionEvidenceCode = 2
+        case .noVisibleTarget: visionEvidenceCode = 3
+        case .targetDetected: visionEvidenceCode = 4
+        case .coordinateReady: visionEvidenceCode = 5
+        case .stableTarget: visionEvidenceCode = 6
         }
-        videoFramesPerSecond = min(max(snapshot.videoFramesPerSecond, 0), 127.5)
-        analysisLatencyMilliseconds = min(max(snapshot.analysisLatencyMilliseconds, 0), 1_020)
+
+        confidenceCode = UInt8(
+            clamping: Int((min(max(snapshot.primaryTargetConfidence, 0), 1) * 15).rounded())
+        )
+
+        if let point = snapshot.primaryTarget {
+            coordinateXCode = Self.encodeCoordinate(point.x)
+            coordinateYCode = Self.encodeCoordinate(point.y)
+        } else {
+            coordinateXCode = Self.missingCoordinate
+            coordinateYCode = Self.missingCoordinate
+        }
+
         uptimeTicks = UInt16(truncatingIfNeeded: Int(snapshot.timestamp * 4))
     }
 
@@ -283,11 +290,12 @@ struct CompactBroadcastState: Sendable, Equatable {
         default: return nil
         }
 
-        sequence = UInt8((rawValue >> 2) & 0xFF)
-        targetCount = UInt8((rawValue >> 10) & 0x0F)
-        visionEvidenceCode = UInt8((rawValue >> 14) & 0x03)
-        videoFramesPerSecond = Double((rawValue >> 16) & 0xFF) / 2.0
-        analysisLatencyMilliseconds = Double((rawValue >> 24) & 0xFF) * 4.0
+        sequence = UInt8((rawValue >> 2) & 0x0F)
+        targetCount = UInt8((rawValue >> 6) & 0x07)
+        visionEvidenceCode = UInt8((rawValue >> 9) & 0x07)
+        confidenceCode = UInt8((rawValue >> 12) & 0x0F)
+        coordinateXCode = UInt8((rawValue >> 16) & 0xFF)
+        coordinateYCode = UInt8((rawValue >> 24) & 0xFF)
         uptimeTicks = UInt16((rawValue >> 32) & 0xFFFF)
     }
 
@@ -299,19 +307,13 @@ struct CompactBroadcastState: Sendable, Equatable {
         case .finished: phaseCode = 3
         }
 
-        let fpsCode = UInt64(
-            min(max(Int((videoFramesPerSecond * 2).rounded()), 0), 255)
-        )
-        let latencyCode = UInt64(
-            min(max(Int((analysisLatencyMilliseconds / 4).rounded()), 0), 255)
-        )
-
         return phaseCode
-            | (UInt64(sequence) << 2)
-            | (UInt64(min(targetCount, 15)) << 10)
-            | (UInt64(min(visionEvidenceCode, 3)) << 14)
-            | (fpsCode << 16)
-            | (latencyCode << 24)
+            | (UInt64(sequence & 0x0F) << 2)
+            | (UInt64(min(targetCount, 7)) << 6)
+            | (UInt64(min(visionEvidenceCode, 7)) << 9)
+            | (UInt64(min(confidenceCode, 15)) << 12)
+            | (UInt64(coordinateXCode) << 16)
+            | (UInt64(coordinateYCode) << 24)
             | (UInt64(uptimeTicks) << 32)
             | (Self.magic << 48)
             | (Self.formatVersion << 56)
@@ -323,35 +325,58 @@ struct CompactBroadcastState: Sendable, Equatable {
         let age = Double(ageTicks) / 4.0
         let reconstructedTimestamp = max(0, currentUptime - age)
 
+        let hasFrames = visionEvidenceCode >= 1
+        let hasAnalysis = visionEvidenceCode >= 2
+        let inferenceSucceeded = visionEvidenceCode >= 3
+        let hasTarget = visionEvidenceCode >= 4
+        let hasCoordinate = visionEvidenceCode >= 5
+            && coordinateXCode != Self.missingCoordinate
+            && coordinateYCode != Self.missingCoordinate
+
+        let point: SharedNormalizedPoint? = hasCoordinate
+            ? SharedNormalizedPoint(
+                x: Self.decodeCoordinate(coordinateXCode),
+                y: Self.decodeCoordinate(coordinateYCode)
+            )
+            : nil
+
+        let restoredTargetCount = hasTarget ? max(Int(targetCount), 1) : 0
+        let restoredStableFrames = visionEvidenceCode == 6 && point != nil ? 3 : (point == nil ? 0 : 1)
+
         return SharedRealtimeSnapshot(
-            sessionID: "darwin-state",
+            sessionID: "darwin-state-v3",
             sequence: UInt64(sequence),
             phase: phase,
             timestamp: reconstructedTimestamp,
-            targetCount: Int(targetCount),
+            targetCount: restoredTargetCount,
             soundIndicatorCount: 0,
-            videoFrameCount: visionEvidenceCode > 0 ? 1 : 0,
-            videoFramesPerSecond: videoFramesPerSecond,
+            videoFrameCount: hasFrames ? 1 : 0,
+            videoFramesPerSecond: 0,
             droppedAnalysisFrameCount: 0,
-            analysisLatencyMilliseconds: analysisLatencyMilliseconds,
+            analysisLatencyMilliseconds: 0,
             analysisMode: .lightweightVision,
-            analysisFrameCount: visionEvidenceCode >= 2 ? 1 : 0,
-            successfulAnalysisFrameCount: visionEvidenceCode >= 2 ? 1 : 0,
-            lastAnalysisSucceeded: visionEvidenceCode >= 2,
-            attemptedLaneCount: visionEvidenceCode >= 2 ? 1 : 0,
-            successfulLaneCount: visionEvidenceCode >= 2 ? 1 : 0,
-            primaryTarget: nil,
-            primaryTargetConfidence: 0,
-            stableTargetFrameCount: visionEvidenceCode == 3 ? 3 : 0
+            analysisFrameCount: hasAnalysis ? 1 : 0,
+            successfulAnalysisFrameCount: inferenceSucceeded ? 1 : 0,
+            lastAnalysisSucceeded: inferenceSucceeded,
+            attemptedLaneCount: hasAnalysis ? 1 : 0,
+            successfulLaneCount: inferenceSucceeded ? 1 : 0,
+            primaryTarget: point,
+            primaryTargetConfidence: Double(confidenceCode) / 15.0,
+            stableTargetFrameCount: restoredStableFrames
         )
+    }
+
+    private static func encodeCoordinate(_ value: Double) -> UInt8 {
+        UInt8(clamping: Int((min(max(value, 0), 1) * 254).rounded()))
+    }
+
+    private static func decodeCoordinate(_ code: UInt8) -> Double {
+        Double(min(code, 254)) / 254.0
     }
 }
 
-/// libnotify state is a 64-bit, entitlement-free cross-process fallback. The App Group
-/// remains the richer primary channel, while this path survives many third-party
-/// re-signing setups that do not preserve application-groups entitlements.
 final class EntitlementFreeBroadcastStateChannel {
-    static let notificationName = "com.phoenix.realtimevisionassist.broadcast.compact-state.v1"
+    static let notificationName = "com.phoenix.realtimevisionassist.broadcast.compact-state.v2"
 
     private var token: Int32 = -1
     let isAvailable: Bool
@@ -398,10 +423,10 @@ final class EntitlementFreeBroadcastStateChannel {
 
 final class SharedRealtimeStateStore {
     static let suiteName = "group.com.phoenix.realtimevisionassist"
-    private static let snapshotKey = "phoenix.realtime.snapshot.v4"
-    private static let previousSnapshotKey = "phoenix.realtime.snapshot.v3"
-    private static let olderSnapshotKey = "phoenix.realtime.snapshot.v2"
-    private static let legacySnapshotKey = "phoenix.realtime.snapshot"
+    private static let snapshotKey = "phoenix.realtime.snapshot.v5"
+    private static let previousSnapshotKey = "phoenix.realtime.snapshot.v4"
+    private static let olderSnapshotKey = "phoenix.realtime.snapshot.v3"
+    private static let legacySnapshotKey = "phoenix.realtime.snapshot.v2"
 
     let isAvailable: Bool
     let entitlementFreeFallbackAvailable: Bool
@@ -493,8 +518,6 @@ final class SharedRealtimeStateStore {
 
         let fallbackSnapshot = fallbackChannel.read(at: now)
 
-        // The App Group payload carries exact counters and normalized coordinates. Prefer it
-        // whenever it is fresh; the compact Darwin state exists only as a signing fallback.
         if let appGroupSnapshot,
            appGroupSnapshot.isFresh(at: now, tolerance: 5) {
             return appGroupSnapshot

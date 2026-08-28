@@ -18,9 +18,9 @@ struct BroadcastNanoDetectionResult: Sendable {
 
 /// Tiny Core ML detector for the ReplayKit process.
 ///
-/// Multiple models may live on disk, but only one VNCoreMLModel is resident at a time. The
-/// detector starts with the Phoenix/LiteView nano lane and can move to the quantized backup after
-/// repeated empty scans. Loading stays lazy so broadcast startup itself remains cheap.
+/// The source frame is aspect-fit into the square detector input. Raw Ultralytics coordinates are
+/// mapped back through the letterbox before being published, preventing landscape gameplay frames
+/// from being geometrically stretched by `.scaleFill`.
 final class BroadcastNanoPersonDetector {
     private struct RawCandidate {
         let x: Double
@@ -28,6 +28,11 @@ final class BroadcastNanoPersonDetector {
         let w: Double
         let h: Double
         let confidence: Double
+    }
+
+    private struct SourceGeometry {
+        let width: Double
+        let height: Double
     }
 
     private enum DecodeResult {
@@ -66,7 +71,7 @@ final class BroadcastNanoPersonDetector {
     func detect(
         in pixelBuffer: CVPixelBuffer,
         orientation: CGImagePropertyOrientation,
-        minimumConfidence: Double = 0.28
+        minimumConfidence: Double = 0.22
     ) -> BroadcastNanoDetectionResult {
         guard let model = ensureModel() else {
             return BroadcastNanoDetectionResult(
@@ -77,7 +82,7 @@ final class BroadcastNanoPersonDetector {
         }
 
         let request = VNCoreMLRequest(model: model)
-        request.imageCropAndScaleOption = .scaleFill
+        request.imageCropAndScaleOption = .scaleFit
         request.preferBackgroundProcessing = true
 
         let handler = VNImageRequestHandler(
@@ -98,9 +103,15 @@ final class BroadcastNanoPersonDetector {
         }
 
         let modelName = activeURL?.deletingPathExtension().lastPathComponent
+        let geometry = Self.sourceGeometry(
+            pixelBuffer: pixelBuffer,
+            orientation: orientation
+        )
+
         switch decodeResults(
             request.results ?? [],
-            minimumConfidence: minimumConfidence
+            minimumConfidence: minimumConfidence,
+            geometry: geometry
         ) {
         case let .detections(detections):
             if detections.isEmpty {
@@ -166,7 +177,7 @@ final class BroadcastNanoPersonDetector {
 
     private func noteEmptyScan() {
         consecutiveEmptyScans += 1
-        guard consecutiveEmptyScans >= 6,
+        guard consecutiveEmptyScans >= 4,
               !switchedForEmptySession,
               let urls = candidateURLs,
               urls.count > 1 else {
@@ -182,7 +193,8 @@ final class BroadcastNanoPersonDetector {
 
     private func decodeResults(
         _ results: [VNObservation],
-        minimumConfidence: Double
+        minimumConfidence: Double,
+        geometry: SourceGeometry
     ) -> DecodeResult {
         let objectResults = results.compactMap { $0 as? VNRecognizedObjectObservation }
         if !objectResults.isEmpty {
@@ -200,7 +212,7 @@ final class BroadcastNanoPersonDetector {
                 }
 
                 let box = observation.boundingBox
-                guard box.width > 0.008, box.height > 0.015 else { return nil }
+                guard box.width > 0.006, box.height > 0.012 else { return nil }
                 return BroadcastNanoDetection(
                     boundingBox: box,
                     point: Self.point(forVisionBox: box),
@@ -229,11 +241,17 @@ final class BroadcastNanoPersonDetector {
         }
 
         let filtered = nonMaximumSuppression(candidates, threshold: 0.45)
-        let detections = filtered.prefix(8).map { candidate -> BroadcastNanoDetection in
-            let minX = min(max(candidate.x - candidate.w / 2, 0), 1)
-            let minYTop = min(max(candidate.y - candidate.h / 2, 0), 1)
-            let width = min(max(candidate.w, 0.001), 1 - minX)
-            let height = min(max(candidate.h, 0.001), 1 - minYTop)
+        let detections = filtered.prefix(8).compactMap { candidate -> BroadcastNanoDetection? in
+            guard let sourceCandidate = remapScaleFitCandidate(candidate, geometry: geometry) else {
+                return nil
+            }
+
+            let minX = min(max(sourceCandidate.x - sourceCandidate.w / 2, 0), 1)
+            let minYTop = min(max(sourceCandidate.y - sourceCandidate.h / 2, 0), 1)
+            let width = min(max(sourceCandidate.w, 0.001), 1 - minX)
+            let height = min(max(sourceCandidate.h, 0.001), 1 - minYTop)
+            guard width > 0.006, height > 0.012 else { return nil }
+
             let visionBox = CGRect(
                 x: minX,
                 y: min(max(1 - (minYTop + height), 0), 1),
@@ -243,7 +261,7 @@ final class BroadcastNanoPersonDetector {
             return BroadcastNanoDetection(
                 boundingBox: visionBox,
                 point: Self.point(forVisionBox: visionBox),
-                confidence: candidate.confidence
+                confidence: sourceCandidate.confidence
             )
         }
         return .detections(Array(detections))
@@ -282,22 +300,68 @@ final class BroadcastNanoPersonDetector {
             let w = rawW / coordinateScale
             let h = rawH / coordinateScale
             guard x >= -0.2, x <= 1.2, y >= -0.2, y <= 1.2,
-                  w > 0.005, h > 0.01, w <= 1.2, h <= 1.2 else {
+                  w > 0.004, h > 0.008, w <= 1.2, h <= 1.2 else {
                 continue
             }
 
             result.append(
                 RawCandidate(
-                    x: min(max(x, 0), 1),
-                    y: min(max(y, 0), 1),
-                    w: min(max(w, 0), 1),
-                    h: min(max(h, 0), 1),
+                    x: x,
+                    y: y,
+                    w: w,
+                    h: h,
                     confidence: confidence
                 )
             )
         }
 
         return result
+    }
+
+    private func remapScaleFitCandidate(
+        _ candidate: RawCandidate,
+        geometry: SourceGeometry
+    ) -> RawCandidate? {
+        guard geometry.width > 0, geometry.height > 0 else { return nil }
+
+        var x = candidate.x
+        var y = candidate.y
+        var w = candidate.w
+        var h = candidate.h
+
+        if geometry.width >= geometry.height {
+            let fittedHeight = geometry.height / geometry.width
+            let padY = (1 - fittedHeight) / 2
+            y = (y - padY) / fittedHeight
+            h /= fittedHeight
+        } else {
+            let fittedWidth = geometry.width / geometry.height
+            let padX = (1 - fittedWidth) / 2
+            x = (x - padX) / fittedWidth
+            w /= fittedWidth
+        }
+
+        let minX = x - w / 2
+        let maxX = x + w / 2
+        let minY = y - h / 2
+        let maxY = y + h / 2
+        guard maxX > 0, minX < 1, maxY > 0, minY < 1 else { return nil }
+
+        let clippedMinX = min(max(minX, 0), 1)
+        let clippedMaxX = min(max(maxX, 0), 1)
+        let clippedMinY = min(max(minY, 0), 1)
+        let clippedMaxY = min(max(maxY, 0), 1)
+        let clippedW = clippedMaxX - clippedMinX
+        let clippedH = clippedMaxY - clippedMinY
+        guard clippedW > 0.004, clippedH > 0.008 else { return nil }
+
+        return RawCandidate(
+            x: (clippedMinX + clippedMaxX) / 2,
+            y: (clippedMinY + clippedMaxY) / 2,
+            w: clippedW,
+            h: clippedH,
+            confidence: candidate.confidence
+        )
     }
 
     private func value(
@@ -351,13 +415,25 @@ final class BroadcastNanoPersonDetector {
 
     private static func point(forVisionBox box: CGRect) -> LightweightTargetPoint {
         let x = min(max(Double(box.midX), 0), 1)
-        // A slightly upper-body-biased point is less jittery than the top edge and more useful
-        // than the feet/box centre for small visible people.
         let visionY = Double(box.minY + box.height * 0.68)
         return LightweightTargetPoint(
             x: x,
             y: min(max(1.0 - visionY, 0), 1)
         )
+    }
+
+    private static func sourceGeometry(
+        pixelBuffer: CVPixelBuffer,
+        orientation: CGImagePropertyOrientation
+    ) -> SourceGeometry {
+        let width = Double(CVPixelBufferGetWidth(pixelBuffer))
+        let height = Double(CVPixelBufferGetHeight(pixelBuffer))
+        switch orientation {
+        case .left, .leftMirrored, .right, .rightMirrored:
+            return SourceGeometry(width: height, height: width)
+        default:
+            return SourceGeometry(width: width, height: height)
+        }
     }
 
     private static func discoverModels() -> [URL] {
