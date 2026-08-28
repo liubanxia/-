@@ -1,0 +1,248 @@
+name: LiteView VNCoreMLRequest Reuse Memory A-B
+
+on:
+  push:
+    branches:
+      - feature/ios-realtime-vision-runtime-candidate
+    paths:
+      - '.github/workflows/liteview-vnrequest-reuse-memory-ab.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  request-reuse-memory-ab:
+    runs-on: macos-15
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Stage one YOLO11n 384 Core ML model
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
+          UNZIP_DIR="$RUNNER_TEMP/liteview-yolo11n-coreml"
+          COMPILE_DIR="$RUNNER_TEMP/liteview-yolo11n-compiled"
+          URL='https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
+          rm -rf "$UNZIP_DIR" "$COMPILE_DIR"
+          mkdir -p "$UNZIP_DIR" "$COMPILE_DIR" build/request-reuse
+          curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 -o "$ZIP" "$URL"
+          unzip -q "$ZIP" -d "$UNZIP_DIR"
+          SRC="$(find "$UNZIP_DIR" -type d -name 'yolo11n.mlpackage' -print -quit)"
+          test -n "$SRC"
+          xcrun coremlc compile "$SRC" "$COMPILE_DIR"
+          MODEL="$(find "$COMPILE_DIR" -type d -name 'yolo11n.mlmodelc' -print -quit)"
+          test -n "$MODEL"
+          echo "$MODEL" > build/request-reuse/model_path.txt
+
+      - name: Build request-allocation A-B probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/request_reuse_probe.swift" <<'SWIFT'
+          import CoreFoundation
+          import CoreML
+          import CoreVideo
+          import Foundation
+          import ImageIO
+          import Vision
+
+          guard CommandLine.arguments.count == 4 else {
+              fatalError("usage: probe <model.mlmodelc> <recreate|reuse> <iterations>")
+          }
+          let modelURL = URL(fileURLWithPath: CommandLine.arguments[1])
+          let mode = CommandLine.arguments[2]
+          guard ["recreate", "reuse"].contains(mode),
+                let iterations = Int(CommandLine.arguments[3]), iterations >= 300 else {
+              fatalError("bad arguments")
+          }
+
+          var source: CVPixelBuffer?
+          let attrs: [CFString: Any] = [
+              kCVPixelBufferCGImageCompatibilityKey: true,
+              kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+              kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+          ]
+          let status = CVPixelBufferCreate(
+              kCFAllocatorDefault, 1920, 1080, kCVPixelFormatType_32BGRA,
+              attrs as CFDictionary, &source
+          )
+          guard status == kCVReturnSuccess, let pixelBuffer = source else {
+              fatalError("pixel buffer create failed")
+          }
+          CVPixelBufferLockBaseAddress(pixelBuffer, [])
+          if let base = CVPixelBufferGetBaseAddress(pixelBuffer) {
+              memset(base, 31, CVPixelBufferGetDataSize(pixelBuffer))
+          }
+          CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+
+          let config = MLModelConfiguration()
+          config.computeUnits = .cpuAndNeuralEngine
+          let mlModel = try MLModel(contentsOf: modelURL, configuration: config)
+          let visionModel = try VNCoreMLModel(for: mlModel)
+          let reusableRequest = VNCoreMLRequest(model: visionModel)
+
+          let full = CGRect(x: 0, y: 0, width: 1, height: 1)
+          let left = CGRect(x: 0, y: 0, width: 0.68, height: 1)
+          let right = CGRect(x: 0.32, y: 0, width: 0.68, height: 1)
+
+          func execute(index: Int) throws {
+              let isFull = index % 12 == 0
+              let roi = isFull ? full : (index % 2 == 0 ? left : right)
+              let request = mode == "reuse" ? reusableRequest : VNCoreMLRequest(model: visionModel)
+              request.imageCropAndScaleOption = .scaleFit
+              request.regionOfInterest = roi
+              request.preferBackgroundProcessing = isFull
+              let handler = VNImageRequestHandler(
+                  cvPixelBuffer: pixelBuffer,
+                  orientation: .up,
+                  options: [:]
+              )
+              try handler.perform([request])
+              guard let array = (request.results ?? [])
+                  .compactMap({ $0 as? VNCoreMLFeatureValueObservation })
+                  .compactMap({ $0.featureValue.multiArrayValue }).first else {
+                  fatalError("missing output")
+              }
+              let shape = array.shape.map(\.intValue)
+              guard shape.count == 3, shape.contains(84) else {
+                  fatalError("unexpected output shape \(shape)")
+              }
+          }
+
+          for i in 0..<36 {
+              try autoreleasepool { try execute(index: i) }
+          }
+          print("AB_READY mode=\(mode)")
+          fflush(stdout)
+
+          let started = CFAbsoluteTimeGetCurrent()
+          for i in 0..<iterations {
+              try autoreleasepool { try execute(index: i) }
+              if i % 100 == 0 {
+                  print("AB_PROGRESS mode=\(mode) iteration=\(i)")
+                  fflush(stdout)
+              }
+          }
+          print(String(
+              format: "AB_DONE mode=%@ iterations=%d elapsed_sec=%.3f",
+              mode, iterations, CFAbsoluteTimeGetCurrent() - started
+          ))
+          SWIFT
+          xcrun swiftc "$RUNNER_TEMP/request_reuse_probe.swift" -o "$RUNNER_TEMP/request_reuse_probe"
+
+      - name: Run recreate versus reuse stress
+        shell: bash
+        run: |
+          set -euo pipefail
+          MODEL="$(cat build/request-reuse/model_path.txt)"
+          for MODE in recreate reuse; do
+            OUT="build/request-reuse/${MODE}.stdout"
+            ERR="build/request-reuse/${MODE}.stderr"
+            RSS="build/request-reuse/${MODE}.rss_kib"
+            : > "$RSS"
+            "$RUNNER_TEMP/request_reuse_probe" "$MODEL" "$MODE" 600 >"$OUT" 2>"$ERR" &
+            PID=$!
+            SAMPLE=0
+            while kill -0 "$PID" 2>/dev/null; do
+              VALUE="$(ps -o rss= -p "$PID" 2>/dev/null | awk '{print $1}' || true)"
+              if [ -n "$VALUE" ]; then
+                printf '%d %s\n' "$SAMPLE" "$VALUE" >> "$RSS"
+                SAMPLE=$((SAMPLE + 1))
+              fi
+              sleep 0.15
+            done
+            wait "$PID"
+            cat "$OUT"
+            cat "$ERR"
+            echo "${MODE}_RSS_SAMPLES=$(wc -l < "$RSS" | tr -d ' ')"
+          done
+
+      - name: Compare late-run memory behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json, statistics
+
+          def metrics(mode):
+              vals = []
+              for line in Path(f'build/request-reuse/{mode}.rss_kib').read_text().splitlines():
+                  p = line.split()
+                  if len(p) == 2:
+                      vals.append(int(p[1]) / 1024.0)
+              assert len(vals) >= 100, (mode, len(vals))
+              n = len(vals)
+              q3 = vals[n//2:(3*n)//4]
+              q4 = vals[(3*n)//4:]
+              late = vals[n//2:]
+              q3m = statistics.median(q3)
+              q4m = statistics.median(q4)
+              xs = list(range(len(late)))
+              xb = statistics.mean(xs)
+              yb = statistics.mean(late)
+              den = sum((x-xb)**2 for x in xs)
+              slope = sum((x-xb)*(y-yb) for x,y in zip(xs,late))/den if den else 0.0
+              return {
+                  'samples': n,
+                  'q3_median_mib': q3m,
+                  'q4_median_mib': q4m,
+                  'late_growth_mib': q4m-q3m,
+                  'late_slope_mib_per_sample': slope,
+                  'peak_mib': max(vals),
+              }
+
+          recreate = metrics('recreate')
+          reuse = metrics('reuse')
+          report = {'recreate': recreate, 'reuse': reuse}
+          Path('build/request-reuse/report.json').write_text(json.dumps(report, indent=2))
+          print(json.dumps(report, indent=2))
+
+          # This is an A/B experiment, not a production gate. It must at least tell us whether
+          # request reuse materially reduces the late-run growth seen when allocating each scan.
+          improvement = recreate['late_slope_mib_per_sample'] - reuse['late_slope_mib_per_sample']
+          growth_improvement = recreate['late_growth_mib'] - reuse['late_growth_mib']
+          print(f'SLOPE_IMPROVEMENT={improvement:.5f}')
+          print(f'GROWTH_IMPROVEMENT_MIB={growth_improvement:.2f}')
+          print('REQUEST_REUSE_AB_COMPLETE')
+          PY
+
+      - name: Publish A-B evidence
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## VNCoreMLRequest reuse memory A/B'
+            echo
+            echo 'Both processes share one VNCoreMLModel and recreate VNImageRequestHandler for each image. The only variable is whether VNCoreMLRequest is recreated per scan or reused serially.'
+            echo
+            if [ -f build/request-reuse/report.json ]; then
+              echo '```json'
+              cat build/request-reuse/report.json
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload A-B evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-vnrequest-reuse-memory-ab
+          path: build/request-reuse/
+          retention-days: 7
+          if-no-files-found: warn
