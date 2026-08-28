@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "purpose": "offline generic visible-human detector benchmark",
+  "classification_boundary": "human/person only; no enemy/team classification",
+  "samples": [
+    {
+      "id": "dfm_001",
+      "scene": "near_indoor",
+      "source_page": "https://delta-force-hawk-ops-cn.en.uptodown.com/android/download",
+      "image_url": "https://img.utdstc.com/screen/c1b/ba7/c1bba735a825dc2980febc9f9853a53dab0af144ff5ff62ddebb7dc668d8dda6%3A600",
+      "manual_visible_person_count": 1,
+      "notes": "doorway figure; large target"
+    },
+    {
+      "id": "dfm_002",
+      "scene": "optic_view",
+      "source_page": "https://www.dailymotion.com/video/x9j3ct8",
+      "image_url": "https://s1.dmcdn.net/v/YMHgS1e6qEqAJ_Ty5/x480",
+      "manual_visible_person_count": 1,
+      "notes": "scope view; medium target"
+    },
+    {
+      "id": "dfm_003",
+      "scene": "medium_outdoor",
+      "source_page": "https://gamingonphone.com/guides/delta-force-best-settings-and-sensitivity-guide-tips/",
+      "image_url": "https://i0.wp.com/gamingonphone.com/wp-content/uploads/2025/04/IMG_8831-scaled.jpeg",
+      "manual_visible_person_count": 1,
+      "notes": "outdoor target inside optic"
+    },
+    {
+      "id": "dfm_004",
+      "scene": "near_indoor",
+      "source_page": "https://timesindonesia.co.id/tekno/502899/revolusi-game-mobile-tencent-hadirkan-delta-force-mobile-yang-siap-geser-call-of-duty-warzone-mobile",
+      "image_url": "https://cdn-1.timesmedia.co.id/images/2024/07/17/Game-Mobile-2.jpg",
+      "manual_visible_person_count": 2,
+      "notes": "corridor figures; one partially occluded"
+    },
+    {
+      "id": "dfm_005",
+      "scene": "medium_outdoor",
+      "source_page": "https://delta-force-hawk-ops.de.uptodown.com/android",
+      "image_url": "https://img.utdstc.com/screen/030/ca7/030ca719ad45ff2c5f60fd457005446ea7bce92465b01e4d16c08d8a545fad8d%3A600",
+      "manual_visible_person_count": 2,
+      "notes": "desert urban scene; small/medium figures"
+    },
+    {
+      "id": "dfm_006",
+      "scene": "partial_occlusion",
+      "source_page": "https://garena-delta-force.en.uptodown.com/android",
+      "image_url": "https://img.utdstc.com/screen/d72/442/d724423054ee984d3bfd5b6279ff78d0e516acaadcb9a0d2e4d03ca5e8dbb3be%3A600",
+      "manual_visible_person_count": 1,
+      "notes": "dim indoor edge-of-frame figure"
+    },
+    {
+      "id": "dfm_007",
+      "scene": "far_outdoor",
+      "source_page": "https://community.iqoo.com/in/thread/92539",
+      "image_url": "https://in-exstatic-vivofs.vivo.com/bCy1HLzT9bUXp6Mb/IN-IQOO/threadResource/20250504/2f2cc3918e104afd846f02bce5a69d75_w2800_h1260.jpg",
+      "manual_visible_person_count": 0,
+      "notes": "wide desert scene; negative/very-small-target stress case"
+    },
+    {
+      "id": "dfm_008",
+      "scene": "negative_or_ambiguous",
+      "source_page": "https://delta-force-hawk-ops.en.uptodown.com/android",
+      "image_url": "https://img.utdstc.com/screen/405/eb1/405eb1406c4e011185f31c1e56f8b7d66a60f35cd567fb9512c7e605408cd986%3A600",
+      "manual_visible_person_count": 0,
+      "notes": "terrain/HUD scene; false-positive control"
+    }
+  ]
+}
