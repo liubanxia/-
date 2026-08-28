@@ -1,0 +1,104 @@
+name: LiteView Sparse ROI Confidence Sweep
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/ios-realtime-vision-assist
+    paths:
+      - '.github/workflows/liteview-sparse-roi-confidence-sweep.yml'
+      - 'ios/PhoenixRealtimeVisionAssist/Tests/SparseROI/run_sparse_roi_confidence_sweep.py'
+      - 'ios/PhoenixRealtimeVisionAssist/Tests/SparseROI/run_sparse_two_phase_roi.py'
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install benchmark dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install ultralytics opencv-python-headless numpy
+
+      - name: Download COCO128
+        id: data
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/sparse-roi-confidence"
+          mkdir -p "$WORK/data" "$WORK/results"
+          curl -fL --retry 5 --retry-delay 2 \
+            https://github.com/ultralytics/assets/releases/download/v0.0.0/coco128.zip \
+            -o "$WORK/coco128.zip"
+          unzip -q "$WORK/coco128.zip" -d "$WORK/data"
+          test -d "$WORK/data/coco128/images"
+          test -d "$WORK/data/coco128/labels"
+          echo "work=$WORK" >> "$GITHUB_OUTPUT"
+          echo "dataset=$WORK/data/coco128" >> "$GITHUB_OUTPUT"
+
+      - name: Sweep slice confidence at fixed 384 input
+        shell: bash
+        env:
+          WORK: ${{ steps.data.outputs.work }}
+          DATASET: ${{ steps.data.outputs.dataset }}
+        run: |
+          set -euo pipefail
+          python ios/PhoenixRealtimeVisionAssist/Tests/SparseROI/run_sparse_roi_confidence_sweep.py \
+            --dataset "$DATASET" \
+            --output "$WORK/results" \
+            --base-script ios/PhoenixRealtimeVisionAssist/Tests/SparseROI/run_sparse_two_phase_roi.py \
+            --model yolo11n.pt \
+            --imgsz 384 \
+            --reference-imgsz 640 \
+            --baseline-confidence 0.05 \
+            --slice-floor-confidence 0.05 \
+            --thresholds 0.05 0.07 0.09 0.12 0.15 \
+            --coverages 0.68 0.75 \
+            --hit-iou 0.30 \
+            --merge-iou 0.50
+          cat "$WORK/results/summary_sparse_roi_confidence_sweep.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validate decision report
+        shell: bash
+        env:
+          WORK: ${{ steps.data.outputs.work }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          p = Path(os.environ['WORK']) / 'results' / 'sparse_roi_confidence_sweep.json'
+          d = json.loads(p.read_text(encoding='utf-8'))
+          assert d['model'] == 'yolo11n.pt'
+          assert d['imgsz'] == 384
+          assert len(d['rows']) == 10
+          assert abs(d['baseline']['confidence'] - 0.05) < 1e-9
+          for row in d['rows']:
+              assert 0 <= row['precision'] <= 1
+              assert 0 <= row['under32_recall'] <= 1
+              assert row['median_ms_per_phase'] > 0
+          print('SPARSE_ROI_CONFIDENCE_SWEEP_PASS')
+          PY
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-sparse-roi-confidence-sweep
+          path: ${{ steps.data.outputs.work }}/results/
+          retention-days: 7
+          if-no-files-found: error
