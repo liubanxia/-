@@ -1,0 +1,258 @@
+name: LiteView Runtime Long-Run Memory
+
+on:
+  push:
+    branches:
+      - feature/ios-realtime-vision-runtime-candidate
+    paths:
+      - '.github/workflows/liteview-runtime-longrun-memory.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  long-run-memory:
+    runs-on: macos-15
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Stage one YOLO11n 384 Core ML model
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
+          UNZIP_DIR="$RUNNER_TEMP/liteview-yolo11n-coreml"
+          COMPILE_DIR="$RUNNER_TEMP/liteview-yolo11n-compiled"
+          URL='https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
+
+          rm -rf "$UNZIP_DIR" "$COMPILE_DIR"
+          mkdir -p "$UNZIP_DIR" "$COMPILE_DIR" build/longrun
+          curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 -o "$ZIP" "$URL"
+          unzip -q "$ZIP" -d "$UNZIP_DIR"
+          SRC="$(find "$UNZIP_DIR" -type d -name 'yolo11n.mlpackage' -print -quit)"
+          test -n "$SRC"
+          xcrun coremlc compile "$SRC" "$COMPILE_DIR"
+          MODEL="$(find "$COMPILE_DIR" -type d -name 'yolo11n.mlmodelc' -print -quit)"
+          test -n "$MODEL"
+          echo "$MODEL" > build/longrun/model_path.txt
+
+      - name: Build resident-model stress probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/liteview_longrun_probe.swift" <<'SWIFT'
+          import CoreFoundation
+          import CoreML
+          import CoreVideo
+          import Foundation
+          import ImageIO
+          import Vision
+
+          guard CommandLine.arguments.count == 3 else {
+              fatalError("usage: probe <model.mlmodelc> <iterations>")
+          }
+          let modelURL = URL(fileURLWithPath: CommandLine.arguments[1])
+          guard let iterations = Int(CommandLine.arguments[2]), iterations >= 100 else {
+              fatalError("iterations must be >= 100")
+          }
+
+          var source: CVPixelBuffer?
+          let attrs: [CFString: Any] = [
+              kCVPixelBufferCGImageCompatibilityKey: true,
+              kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+              kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+          ]
+          let status = CVPixelBufferCreate(
+              kCFAllocatorDefault,
+              1920,
+              1080,
+              kCVPixelFormatType_32BGRA,
+              attrs as CFDictionary,
+              &source
+          )
+          guard status == kCVReturnSuccess, let pixelBuffer = source else {
+              fatalError("pixel buffer create failed")
+          }
+          CVPixelBufferLockBaseAddress(pixelBuffer, [])
+          if let base = CVPixelBufferGetBaseAddress(pixelBuffer) {
+              let bytes = CVPixelBufferGetDataSize(pixelBuffer)
+              memset(base, 31, bytes)
+          }
+          CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+
+          let configuration = MLModelConfiguration()
+          configuration.computeUnits = .cpuAndNeuralEngine
+          let mlModel = try MLModel(contentsOf: modelURL, configuration: configuration)
+          let visionModel = try VNCoreMLModel(for: mlModel)
+
+          let full = CGRect(x: 0, y: 0, width: 1, height: 1)
+          let left = CGRect(x: 0, y: 0, width: 0.68, height: 1)
+          let right = CGRect(x: 0.32, y: 0, width: 0.68, height: 1)
+
+          func perform(_ roi: CGRect, background: Bool) throws -> [Int] {
+              let request = VNCoreMLRequest(model: visionModel)
+              request.imageCropAndScaleOption = .scaleFit
+              request.regionOfInterest = roi
+              request.preferBackgroundProcessing = background
+              let handler = VNImageRequestHandler(
+                  cvPixelBuffer: pixelBuffer,
+                  orientation: .up,
+                  options: [:]
+              )
+              try handler.perform([request])
+              return (request.results ?? [])
+                  .compactMap { $0 as? VNCoreMLFeatureValueObservation }
+                  .compactMap { $0.featureValue.multiArrayValue }
+                  .first?.shape.map(\.intValue) ?? []
+          }
+
+          // Warm the resident model and Vision preprocessing before the measured stress phase.
+          for i in 0..<18 {
+              try autoreleasepool {
+                  let roi = i % 6 == 0 ? full : (i % 2 == 0 ? left : right)
+                  let shape = try perform(roi, background: roi == full)
+                  guard shape.count == 3, shape.contains(84) else {
+                      fatalError("unexpected warmup output shape \(shape)")
+                  }
+              }
+          }
+          print("LONGRUN_READY")
+          fflush(stdout)
+
+          var fullCount = 0
+          var roiCount = 0
+          let started = CFAbsoluteTimeGetCurrent()
+          for i in 0..<iterations {
+              try autoreleasepool {
+                  let isFull = i % 12 == 0
+                  let roi = isFull ? full : (i % 2 == 0 ? left : right)
+                  let shape = try perform(roi, background: isFull)
+                  guard shape.count == 3, shape.contains(84) else {
+                      fatalError("unexpected output shape at \(i): \(shape)")
+                  }
+                  if isFull { fullCount += 1 } else { roiCount += 1 }
+              }
+              if i % 25 == 0 {
+                  print("LONGRUN_PROGRESS iteration=\(i)")
+                  fflush(stdout)
+              }
+          }
+          let elapsed = CFAbsoluteTimeGetCurrent() - started
+          print(String(
+              format: "LONGRUN_DONE iterations=%d full=%d roi=%d elapsed_sec=%.3f",
+              iterations, fullCount, roiCount, elapsed
+          ))
+          SWIFT
+          xcrun swiftc "$RUNNER_TEMP/liteview_longrun_probe.swift" -o "$RUNNER_TEMP/liteview_longrun_probe"
+
+      - name: Run 300-request memory stress and sample RSS
+        shell: bash
+        run: |
+          set -euo pipefail
+          MODEL="$(cat build/longrun/model_path.txt)"
+          OUT='build/longrun/probe.stdout'
+          ERR='build/longrun/probe.stderr'
+          RSS='build/longrun/rss_kib.txt'
+          : > "$RSS"
+
+          "$RUNNER_TEMP/liteview_longrun_probe" "$MODEL" 300 >"$OUT" 2>"$ERR" &
+          PID=$!
+          SAMPLE=0
+          while kill -0 "$PID" 2>/dev/null; do
+            VALUE="$(ps -o rss= -p "$PID" 2>/dev/null | awk '{print $1}' || true)"
+            if [ -n "$VALUE" ]; then
+              printf '%d %s\n' "$SAMPLE" "$VALUE" >> "$RSS"
+              SAMPLE=$((SAMPLE + 1))
+            fi
+            sleep 0.15
+          done
+          wait "$PID"
+          cat "$OUT"
+          cat "$ERR"
+          echo "RSS_SAMPLES=$(wc -l < "$RSS" | tr -d ' ')"
+
+      - name: Guard against sustained resident-memory growth
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import statistics
+
+          samples = []
+          for line in Path('build/longrun/rss_kib.txt').read_text().splitlines():
+              parts = line.split()
+              if len(parts) == 2:
+                  samples.append(int(parts[1]) / 1024.0)
+          assert len(samples) >= 40, len(samples)
+
+          n = len(samples)
+          q2 = samples[n // 4:n // 2]
+          tail = samples[(3 * n) // 4:]
+          assert q2 and tail
+          q2_med = statistics.median(q2)
+          tail_med = statistics.median(tail)
+          tail_sorted = sorted(tail)
+          tail_p95 = tail_sorted[min(len(tail_sorted)-1, int((len(tail_sorted)-1)*0.95))]
+          peak = max(samples)
+          growth = tail_med - q2_med
+
+          report = {
+              'samples': n,
+              'second_quarter_median_mib': round(q2_med, 2),
+              'last_quarter_median_mib': round(tail_med, 2),
+              'last_quarter_p95_mib': round(tail_p95, 2),
+              'peak_mib': round(peak, 2),
+              'tail_median_growth_mib': round(growth, 2),
+          }
+          Path('build/longrun/memory_report.json').write_text(json.dumps(report, indent=2))
+          print(json.dumps(report, indent=2))
+
+          # Comparative host-side guard: after model warmup, memory must settle instead of
+          # accumulating model/request-sized allocations as serial ROI/full scans continue.
+          assert growth <= 8.0, report
+          assert tail_p95 <= q2_med + 16.0, report
+          print('LONGRUN_RESIDENT_MEMORY_GUARD_PASS')
+          PY
+
+      - name: Publish evidence summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## LiteView long-run resident-model stress'
+            echo
+            echo 'One resident YOLO11n-384 Vision model receives 300 serial requests after warmup. Every 12th request is full-frame/background-preferred; all other requests alternate the two 68% ROIs.'
+            echo
+            if [ -f build/longrun/memory_report.json ]; then
+              echo '```json'
+              cat build/longrun/memory_report.json
+              echo '```'
+            fi
+            echo
+            echo 'This is a macOS comparative memory-trend test. It does not establish the iPhone ReplayKit jetsam ceiling.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload long-run evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-runtime-longrun-memory
+          path: build/longrun/
+          retention-days: 7
+          if-no-files-found: warn
