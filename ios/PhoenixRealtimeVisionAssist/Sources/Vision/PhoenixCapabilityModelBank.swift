@@ -1,15 +1,13 @@
 import Foundation
 
-/// Phoenix-style split-capability registry for LiteView's offline vision bank.
+/// Pixel-centric capability registry for LiteView's offline vision bank.
 ///
-/// The bank can be large on disk, but this registry never loads a model. Runtime components ask
-/// for one capability at a time and may keep only the selected model resident. This mirrors the
-/// Phoenix approach of separating localization, segmentation, representation, scene routing and
-/// depth/geometry abilities instead of treating one large model as the only source of truth.
+/// The bank is allowed to be large on disk, but every model must provide a distinct visual role.
+/// Duplicate classifier/precision variants that do not improve localization, segmentation,
+/// representation or geometry are intentionally excluded.
 enum PhoenixVisionCapability: String, Sendable, CaseIterable {
     case visibleLocalization
     case segmentation
-    case sceneRouting
     case featureEmbedding
     case depthGeometry
 }
@@ -20,47 +18,126 @@ enum PhoenixModelResidency: String, Sendable, CaseIterable, Hashable {
     case coldOnly
 }
 
+enum PhoenixPixelRole: String, Sendable, CaseIterable, Hashable {
+    case fastLocalization
+    case highRecallLocalization
+    case pixelSegmentation
+    case appearanceEmbedding
+    case depthGeometry
+}
+
 struct PhoenixCapabilityModelDescriptor: Sendable, Hashable {
     let resourceName: String
     let capability: PhoenixVisionCapability
+    let pixelRole: PhoenixPixelRole
     let residency: PhoenixModelResidency
     let priority: Int
+    let preferredInputEdge: Int
 }
 
 enum PhoenixCapabilityModelBank {
-    static let realtimeResidencies: Set<PhoenixModelResidency> = [.hotNano, .warmFallback]
+    /// Only the two tiny localization probes are eligible for lightweight runtime experiments.
+    /// The rebuilt large bank stays cold until an offline benchmark explicitly requests it.
+    static let realtimeResidencies: Set<PhoenixModelResidency> = [.hotNano]
 
     static let descriptors: [PhoenixCapabilityModelDescriptor] = [
-        // Visible-content localization. Tiny/quantized models are tried before heavier fallbacks.
-        .init(resourceName: "yolo11n", capability: .visibleLocalization, residency: .hotNano, priority: 0),
-        .init(resourceName: "YOLOv3TinyInt8LUT", capability: .visibleLocalization, residency: .hotNano, priority: 1),
-        .init(resourceName: "YOLOv3TinyFP16", capability: .visibleLocalization, residency: .warmFallback, priority: 2),
-        .init(resourceName: "YOLOv3Tiny", capability: .visibleLocalization, residency: .warmFallback, priority: 3),
-        .init(resourceName: "YOLOv3Int8LUT", capability: .visibleLocalization, residency: .warmFallback, priority: 4),
-        .init(resourceName: "YOLOv3FP16", capability: .visibleLocalization, residency: .coldOnly, priority: 5),
-        .init(resourceName: "YOLOv3", capability: .visibleLocalization, residency: .coldOnly, priority: 6),
+        // Localization: retain architecturally/precision-distinct probes, not every duplicate.
+        .init(
+            resourceName: "yolo11n",
+            capability: .visibleLocalization,
+            pixelRole: .fastLocalization,
+            residency: .hotNano,
+            priority: 0,
+            preferredInputEdge: 640
+        ),
+        .init(
+            resourceName: "YOLOv3TinyInt8LUT",
+            capability: .visibleLocalization,
+            pixelRole: .fastLocalization,
+            residency: .hotNano,
+            priority: 1,
+            preferredInputEdge: 416
+        ),
+        .init(
+            resourceName: "YOLOv3Int8LUT",
+            capability: .visibleLocalization,
+            pixelRole: .highRecallLocalization,
+            residency: .coldOnly,
+            priority: 2,
+            preferredInputEdge: 416
+        ),
+        .init(
+            resourceName: "YOLOv3FP16",
+            capability: .visibleLocalization,
+            pixelRole: .highRecallLocalization,
+            residency: .coldOnly,
+            priority: 3,
+            preferredInputEdge: 416
+        ),
 
-        // Phoenix-style separated abilities. These remain cold unless a future lane explicitly
-        // requests that capability; they are never walked by the person-detector failover loop.
-        .init(resourceName: "DeepLabV3Int8LUT", capability: .segmentation, residency: .coldOnly, priority: 0),
-        .init(resourceName: "DeepLabV3FP16", capability: .segmentation, residency: .coldOnly, priority: 1),
-        .init(resourceName: "DeepLabV3", capability: .segmentation, residency: .coldOnly, priority: 2),
+        // Pixel segmentation: keep a fast quantized path and a higher-precision comparison path.
+        .init(
+            resourceName: "DeepLabV3Int8LUT",
+            capability: .segmentation,
+            pixelRole: .pixelSegmentation,
+            residency: .coldOnly,
+            priority: 0,
+            preferredInputEdge: 513
+        ),
+        .init(
+            resourceName: "DeepLabV3FP16",
+            capability: .segmentation,
+            pixelRole: .pixelSegmentation,
+            residency: .coldOnly,
+            priority: 1,
+            preferredInputEdge: 513
+        ),
 
-        .init(resourceName: "MobileNetV2Int8LUT", capability: .sceneRouting, residency: .coldOnly, priority: 0),
-        .init(resourceName: "MobileNetV2FP16", capability: .sceneRouting, residency: .coldOnly, priority: 1),
-        .init(resourceName: "MobileNetV2", capability: .sceneRouting, residency: .coldOnly, priority: 2),
-        .init(resourceName: "Resnet50Int8LUT", capability: .sceneRouting, residency: .coldOnly, priority: 3),
-        .init(resourceName: "Resnet50FP16", capability: .sceneRouting, residency: .coldOnly, priority: 4),
-        .init(resourceName: "Resnet50", capability: .sceneRouting, residency: .coldOnly, priority: 5),
-        .init(resourceName: "FastViTT8F16", capability: .sceneRouting, residency: .coldOnly, priority: 6),
-        .init(resourceName: "FastViTMA36F16", capability: .sceneRouting, residency: .coldOnly, priority: 7),
+        // Feature representation: headless networks keep the useful visual embedding while
+        // dropping redundant ImageNet classifier heads.
+        .init(
+            resourceName: "Resnet50Headless",
+            capability: .featureEmbedding,
+            pixelRole: .appearanceEmbedding,
+            residency: .coldOnly,
+            priority: 0,
+            preferredInputEdge: 224
+        ),
+        .init(
+            resourceName: "FastViTT8F16Headless",
+            capability: .featureEmbedding,
+            pixelRole: .appearanceEmbedding,
+            residency: .coldOnly,
+            priority: 1,
+            preferredInputEdge: 256
+        ),
+        .init(
+            resourceName: "FastViTMA36F16Headless",
+            capability: .featureEmbedding,
+            pixelRole: .appearanceEmbedding,
+            residency: .coldOnly,
+            priority: 2,
+            preferredInputEdge: 256
+        ),
 
-        .init(resourceName: "Resnet50Headless", capability: .featureEmbedding, residency: .coldOnly, priority: 0),
-        .init(resourceName: "FastViTT8F16Headless", capability: .featureEmbedding, residency: .coldOnly, priority: 1),
-        .init(resourceName: "FastViTMA36F16Headless", capability: .featureEmbedding, residency: .coldOnly, priority: 2),
-
-        .init(resourceName: "DepthAnythingV2SmallF16P6", capability: .depthGeometry, residency: .coldOnly, priority: 0),
-        .init(resourceName: "DepthAnythingV2SmallF16", capability: .depthGeometry, residency: .coldOnly, priority: 1)
+        // Geometry reserve. Two published variants remain because they are not simple classifier
+        // duplicates and can be compared for relative-depth consistency on the offline benchmark.
+        .init(
+            resourceName: "DepthAnythingV2SmallF16P6",
+            capability: .depthGeometry,
+            pixelRole: .depthGeometry,
+            residency: .coldOnly,
+            priority: 0,
+            preferredInputEdge: 518
+        ),
+        .init(
+            resourceName: "DepthAnythingV2SmallF16",
+            capability: .depthGeometry,
+            pixelRole: .depthGeometry,
+            residency: .coldOnly,
+            priority: 1,
+            preferredInputEdge: 518
+        )
     ]
 
     static func descriptors(
@@ -71,6 +148,15 @@ enum PhoenixCapabilityModelBank {
             .filter {
                 $0.capability == capability && allowedResidencies.contains($0.residency)
             }
+            .sorted { lhs, rhs in
+                if lhs.priority != rhs.priority { return lhs.priority < rhs.priority }
+                return lhs.resourceName < rhs.resourceName
+            }
+    }
+
+    static func offlineDescriptors(for capability: PhoenixVisionCapability) -> [PhoenixCapabilityModelDescriptor] {
+        descriptors
+            .filter { $0.capability == capability }
             .sorted { lhs, rhs in
                 if lhs.priority != rhs.priority { return lhs.priority < rhs.priority }
                 return lhs.resourceName < rhs.resourceName
