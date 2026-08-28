@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,8 +23,8 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Natural-scene visible-person pixel-floor benchmark")
     p.add_argument("--dataset", required=True)
     p.add_argument("--output", required=True)
-    p.add_argument("--models", nargs="+", default=["yolo11n.pt", "yolo11s.pt"])
-    p.add_argument("--imgsz", nargs="+", type=int, default=[640, 960])
+    p.add_argument("--models", nargs="+", default=["yolo11n.pt"])
+    p.add_argument("--imgsz", nargs="+", type=int, default=[640, 768, 832, 896, 960])
     p.add_argument("--reference-imgsz", type=int, default=640)
     p.add_argument("--confidence", type=float, default=0.05)
     p.add_argument("--iou-threshold", type=float, default=0.30)
@@ -106,6 +107,49 @@ def bucket(px: float) -> str:
     return "ge96"
 
 
+def greedy_prediction_stats(
+    gts: list[PersonGT],
+    preds: list[tuple[tuple[float, float, float, float], float]],
+    hit_iou: float,
+) -> tuple[int, int]:
+    unmatched = set(range(len(gts)))
+    tp = 0
+    fp = 0
+    for pred, score in sorted(preds, key=lambda item: item[1], reverse=True):
+        best_idx = None
+        best_iou = 0.0
+        for idx in unmatched:
+            ov = iou(gts[idx].box, pred)
+            if ov > best_iou:
+                best_iou = ov
+                best_idx = idx
+        if best_idx is not None and best_iou >= hit_iou:
+            unmatched.remove(best_idx)
+            tp += 1
+        else:
+            fp += 1
+    return tp, fp
+
+
+def predict_persons(model: YOLO, image: np.ndarray, imgsz: int, confidence: float):
+    result = model.predict(
+        source=image,
+        imgsz=imgsz,
+        conf=confidence,
+        iou=0.50,
+        classes=[0],
+        device="cpu",
+        verbose=False,
+        max_det=100,
+    )[0]
+    preds = []
+    if result.boxes is not None and len(result.boxes):
+        boxes = result.boxes.xyxy.cpu().numpy()
+        scores = result.boxes.conf.cpu().numpy()
+        preds = [(tuple(float(v) for v in b), float(s)) for b, s in zip(boxes, scores)]
+    return preds
+
+
 def run_config(
     model_name: str,
     imgsz: int,
@@ -119,26 +163,32 @@ def run_config(
     for gt in people:
         by_image.setdefault(gt.image_path, []).append(gt)
 
+    image_items = list(by_image.items())
+    if image_items:
+        warmup_image = cv2.imread(str(image_items[0][0]))
+        if warmup_image is not None:
+            predict_persons(model, warmup_image, imgsz, confidence)
+
     rows = []
-    for image_path, gts in by_image.items():
+    predict_ms = []
+    total_predictions = 0
+    true_positive_predictions = 0
+    false_positive_predictions = 0
+
+    for image_path, gts in image_items:
         image = cv2.imread(str(image_path))
         if image is None:
             continue
-        result = model.predict(
-            source=image,
-            imgsz=imgsz,
-            conf=confidence,
-            iou=0.50,
-            classes=[0],
-            device="cpu",
-            verbose=False,
-            max_det=100,
-        )[0]
-        preds = []
-        if result.boxes is not None and len(result.boxes):
-            boxes = result.boxes.xyxy.cpu().numpy()
-            scores = result.boxes.conf.cpu().numpy()
-            preds = [(tuple(float(v) for v in b), float(s)) for b, s in zip(boxes, scores)]
+
+        started = time.perf_counter()
+        preds = predict_persons(model, image, imgsz, confidence)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        predict_ms.append(elapsed_ms)
+
+        tp, fp = greedy_prediction_stats(gts, preds, hit_iou)
+        total_predictions += len(preds)
+        true_positive_predictions += tp
+        false_positive_predictions += fp
 
         for gt in gts:
             actual_px = projected_height(image.shape, gt.box, imgsz)
@@ -174,10 +224,32 @@ def run_config(
             "median_best_iou": float(np.median([r["best_iou"] for r in subset])) if subset else None,
             "median_best_confidence": float(np.median([r["best_confidence"] for r in subset])) if subset else None,
         }
+
+    tiny = [r for r in rows if r["reference_person_height_px"] < 32.0]
+    overall_recall = (sum(r["hit_iou30"] for r in rows) / len(rows)) if rows else None
+    tiny_recall = (sum(r["hit_iou30"] for r in tiny) / len(tiny)) if tiny else None
+    precision = (
+        true_positive_predictions / max(true_positive_predictions + false_positive_predictions, 1)
+    )
+
+    timing = {
+        "images": len(predict_ms),
+        "median_predict_ms_per_image": float(np.median(predict_ms)) if predict_ms else None,
+        "p90_predict_ms_per_image": float(np.percentile(predict_ms, 90)) if predict_ms else None,
+        "mean_predict_ms_per_image": float(np.mean(predict_ms)) if predict_ms else None,
+    }
+
     return rows, {
         "model": model_name,
         "imgsz": imgsz,
         "reference_imgsz": reference_imgsz,
+        "overall_recall_iou30": overall_recall,
+        "under32_recall_iou30": tiny_recall,
+        "predictions": total_predictions,
+        "true_positive_predictions": true_positive_predictions,
+        "false_positive_predictions": false_positive_predictions,
+        "precision_iou30": precision,
+        "timing": timing,
         "by_reference_height": grouped,
     }
 
@@ -211,39 +283,48 @@ def main() -> int:
         writer.writerows(all_rows)
 
     report = {
-        "benchmark": "Natural-scene visible-person pixel-floor v2 fixed-reference buckets",
+        "benchmark": "Natural-scene visible-person pixel-floor v3 latency-precision sweep",
         "dataset": "COCO128 original full scenes and person annotations",
         "person_annotations": len(people),
         "reference_imgsz": a.reference_imgsz,
         "confidence": a.confidence,
         "iou_hit_threshold": a.iou_threshold,
+        "timing_note": "Per-image wall time around model.predict after one unmeasured warm-up inference for each model/input configuration. All benchmark inference runs on the same macOS arm64 GitHub runner CPU class.",
         "configs": configs,
-        "interpretation_limit": "Original full-scene generic visible-person benchmark. Every model/input configuration is grouped by the same reference 640px projected-person buckets so comparisons use the same people. It does not evaluate gameplay, team identity, hidden-person inference, or live assistance.",
+        "interpretation_limit": "Original full-scene generic visible-person benchmark. Every input configuration uses the same 640-reference person buckets. It does not evaluate gameplay, team identity, hidden-person inference, live coordinates, or anti-cheat behavior.",
     }
     (out / "natural_person_pixel_floor.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    order = ["lt16", "16_23", "24_31", "32_47", "48_63", "64_95", "ge96"]
     lines = [
-        "## Natural-scene visible-person pixel-floor v2",
+        "## Natural-scene visible-person pixel-floor v3",
         "",
         f"- Person annotations: **{len(people)}**",
         "- Source: **COCO128 original full scenes**",
         f"- Fixed reference buckets: **projected height at {a.reference_imgsz}px input**",
         f"- Hit rule: **IoU >= {a.iou_threshold:.2f}**",
+        "- Timing: **model.predict wall time after one warm-up inference per configuration**",
         "",
-        "| model | input | <16 | 16-23 | 24-31 | 32-47 | 48-63 | 64-95 | >=96 |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| model | input | <16 | 16-23 | 24-31 | <32 combined | overall recall | precision | median ms | p90 ms |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for cfg in configs:
-        cells = []
-        for b in order:
-            d = cfg["by_reference_height"][b]
-            if not d["samples"]:
-                cells.append("n/a")
-            else:
-                cells.append(f"{100*d['recall_iou30']:.1f}% (n={d['samples']})")
-        lines.append(f"| {Path(cfg['model']).stem} | {cfg['imgsz']} | " + " | ".join(cells) + " |")
-    lines += ["", "All rows use identical 640-reference person buckets, so 640 vs 960 is a same-person comparison."]
+        b = cfg["by_reference_height"]
+        t = cfg["timing"]
+        lines.append(
+            f"| {Path(cfg['model']).stem} | {cfg['imgsz']} | "
+            f"{100*b['lt16']['recall_iou30']:.1f}% | "
+            f"{100*b['16_23']['recall_iou30']:.1f}% | "
+            f"{100*b['24_31']['recall_iou30']:.1f}% | "
+            f"{100*cfg['under32_recall_iou30']:.1f}% | "
+            f"{100*cfg['overall_recall_iou30']:.1f}% | "
+            f"{100*cfg['precision_iou30']:.1f}% | "
+            f"{t['median_predict_ms_per_image']:.1f} | "
+            f"{t['p90_predict_ms_per_image']:.1f} |"
+        )
+    lines += [
+        "",
+        "All rows use identical 640-reference person buckets, so the recall comparison uses the same annotated people.",
+    ]
     text = "\n".join(lines) + "\n"
     (out / "summary_natural_person_pixel_floor.md").write_text(text, encoding="utf-8")
     print(text)

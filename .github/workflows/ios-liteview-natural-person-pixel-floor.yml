@@ -44,7 +44,7 @@ jobs:
           echo "work=$WORK" >> "$GITHUB_OUTPUT"
           echo "dataset=$WORK/data/coco128" >> "$GITHUB_OUTPUT"
 
-      - name: Sweep nano input sizes on natural small persons
+      - name: Sweep nano input size recall precision and latency
         shell: bash
         env:
           WORK: ${{ steps.data.outputs.work }}
@@ -63,10 +63,10 @@ jobs:
           echo '--- natural_person_pixel_floor.json ---'
           cat "$WORK/results/natural_person_pixel_floor.json"
 
-      - name: Upload nano input-size sweep evidence
+      - name: Upload nano input-size decision evidence
         uses: actions/upload-artifact@v4
         with:
-          name: natural-person-pixel-floor-nano-sweep-v3
+          name: natural-person-pixel-floor-nano-sweep-v4
           path: |
             ${{ steps.data.outputs.work }}/results/natural_person_pixel_floor.json
             ${{ steps.data.outputs.work }}/results/natural_person_pixel_floor.csv
