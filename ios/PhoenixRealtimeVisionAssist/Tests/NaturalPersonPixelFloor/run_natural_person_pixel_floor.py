@@ -24,6 +24,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output", required=True)
     p.add_argument("--models", nargs="+", default=["yolo11n.pt", "yolo11s.pt"])
     p.add_argument("--imgsz", nargs="+", type=int, default=[640, 960])
+    p.add_argument("--reference-imgsz", type=int, default=640)
     p.add_argument("--confidence", type=float, default=0.05)
     p.add_argument("--iou-threshold", type=float, default=0.30)
     return p.parse_args()
@@ -105,7 +106,14 @@ def bucket(px: float) -> str:
     return "ge96"
 
 
-def run_config(model_name: str, imgsz: int, people: list[PersonGT], confidence: float, hit_iou: float):
+def run_config(
+    model_name: str,
+    imgsz: int,
+    reference_imgsz: int,
+    people: list[PersonGT],
+    confidence: float,
+    hit_iou: float,
+):
     model = YOLO(model_name)
     by_image: dict[Path, list[PersonGT]] = {}
     for gt in people:
@@ -133,7 +141,8 @@ def run_config(model_name: str, imgsz: int, people: list[PersonGT], confidence: 
             preds = [(tuple(float(v) for v in b), float(s)) for b, s in zip(boxes, scores)]
 
         for gt in gts:
-            px = projected_height(image.shape, gt.box, imgsz)
+            actual_px = projected_height(image.shape, gt.box, imgsz)
+            reference_px = projected_height(image.shape, gt.box, reference_imgsz)
             best_iou = 0.0
             best_conf = 0.0
             for pred, score in preds:
@@ -145,8 +154,10 @@ def run_config(model_name: str, imgsz: int, people: list[PersonGT], confidence: 
                 "model": model_name,
                 "imgsz": imgsz,
                 "image": image_path.name,
-                "projected_person_height_px": round(px, 3),
-                "bucket": bucket(px),
+                "reference_imgsz": reference_imgsz,
+                "reference_person_height_px": round(reference_px, 3),
+                "actual_person_height_px": round(actual_px, 3),
+                "reference_bucket": bucket(reference_px),
                 "best_iou": round(best_iou, 5),
                 "best_confidence": round(best_conf, 5),
                 "hit_iou30": int(best_iou >= hit_iou),
@@ -155,7 +166,7 @@ def run_config(model_name: str, imgsz: int, people: list[PersonGT], confidence: 
     order = ["lt16", "16_23", "24_31", "32_47", "48_63", "64_95", "ge96"]
     grouped = {}
     for name in order:
-        subset = [r for r in rows if r["bucket"] == name]
+        subset = [r for r in rows if r["reference_bucket"] == name]
         n = len(subset)
         grouped[name] = {
             "samples": n,
@@ -163,7 +174,12 @@ def run_config(model_name: str, imgsz: int, people: list[PersonGT], confidence: 
             "median_best_iou": float(np.median([r["best_iou"] for r in subset])) if subset else None,
             "median_best_confidence": float(np.median([r["best_confidence"] for r in subset])) if subset else None,
         }
-    return rows, {"model": model_name, "imgsz": imgsz, "by_projected_height": grouped}
+    return rows, {
+        "model": model_name,
+        "imgsz": imgsz,
+        "reference_imgsz": reference_imgsz,
+        "by_reference_height": grouped,
+    }
 
 
 def main() -> int:
@@ -178,7 +194,14 @@ def main() -> int:
     configs = []
     for model_name in a.models:
         for imgsz in a.imgsz:
-            rows, summary = run_config(model_name, imgsz, people, a.confidence, a.iou_threshold)
+            rows, summary = run_config(
+                model_name,
+                imgsz,
+                a.reference_imgsz,
+                people,
+                a.confidence,
+                a.iou_threshold,
+            )
             all_rows.extend(rows)
             configs.append(summary)
 
@@ -188,22 +211,24 @@ def main() -> int:
         writer.writerows(all_rows)
 
     report = {
-        "benchmark": "Natural-scene visible-person pixel-floor v1",
+        "benchmark": "Natural-scene visible-person pixel-floor v2 fixed-reference buckets",
         "dataset": "COCO128 original full scenes and person annotations",
         "person_annotations": len(people),
+        "reference_imgsz": a.reference_imgsz,
         "confidence": a.confidence,
         "iou_hit_threshold": a.iou_threshold,
         "configs": configs,
-        "interpretation_limit": "Original full-scene generic visible-person benchmark. It does not evaluate gameplay, team identity, hidden-person inference, or live assistance.",
+        "interpretation_limit": "Original full-scene generic visible-person benchmark. Every model/input configuration is grouped by the same reference 640px projected-person buckets so comparisons use the same people. It does not evaluate gameplay, team identity, hidden-person inference, or live assistance.",
     }
     (out / "natural_person_pixel_floor.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
     order = ["lt16", "16_23", "24_31", "32_47", "48_63", "64_95", "ge96"]
     lines = [
-        "## Natural-scene visible-person pixel-floor v1",
+        "## Natural-scene visible-person pixel-floor v2",
         "",
         f"- Person annotations: **{len(people)}**",
         "- Source: **COCO128 original full scenes**",
+        f"- Fixed reference buckets: **projected height at {a.reference_imgsz}px input**",
         f"- Hit rule: **IoU >= {a.iou_threshold:.2f}**",
         "",
         "| model | input | <16 | 16-23 | 24-31 | 32-47 | 48-63 | 64-95 | >=96 |",
@@ -212,13 +237,13 @@ def main() -> int:
     for cfg in configs:
         cells = []
         for b in order:
-            d = cfg["by_projected_height"][b]
+            d = cfg["by_reference_height"][b]
             if not d["samples"]:
                 cells.append("n/a")
             else:
                 cells.append(f"{100*d['recall_iou30']:.1f}% (n={d['samples']})")
         lines.append(f"| {Path(cfg['model']).stem} | {cfg['imgsz']} | " + " | ".join(cells) + " |")
-    lines += ["", "These are natural-scene pixel buckets, not synthetic pasted-scene results."]
+    lines += ["", "All rows use identical 640-reference person buckets, so 640 vs 960 is a same-person comparison."]
     text = "\n".join(lines) + "\n"
     (out / "summary_natural_person_pixel_floor.md").write_text(text, encoding="utf-8")
     print(text)
