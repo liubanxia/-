@@ -48,10 +48,10 @@ targets:
       - path: Sources/Broadcast
       - path: Sources/ExtensionSupport/BroadcastNanoPersonDetector.swift
       - path: Sources/Core/SharedRealtimeStateStore.swift
-    resources:
       - path: Resources/BroadcastModels
-        optional: true
         type: folder
+        buildPhase: resources
+        optional: true
     info:
       path: Sources/Broadcast/Info.plist
       properties:
