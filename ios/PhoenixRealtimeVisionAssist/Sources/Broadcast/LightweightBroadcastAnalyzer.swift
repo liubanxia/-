@@ -23,10 +23,12 @@ struct LightweightVisionAnalysis {
 
 /// ReplayKit-aware visible-object analysis with one resident tiny Core ML detector.
 ///
-/// VNTrackObjectRequest handles lightweight inter-frame tracking. Sparse reacquisition uses one
-/// resident Core ML model whose high-resolution preprocessing is performed by reusable vImage
-/// buffers, not VNCoreMLRequest. When tracking is lost between global refreshes, only one
-/// overlapping 60% ROI is scanned per eligible analysis frame. No frame content is persisted.
+/// VNTrackObjectRequest handles lightweight inter-frame tracking. Each tracking request uses a
+/// short-lived VNSequenceRequestHandler so Vision's sequence caches cannot accumulate across a
+/// long ReplayKit session. Sparse reacquisition uses one resident Core ML model whose
+/// high-resolution preprocessing is performed by reusable vImage buffers, not VNCoreMLRequest.
+/// When tracking is lost between global refreshes, only one overlapping 60% ROI is scanned per
+/// eligible analysis frame. No frame content is persisted.
 final class LightweightBroadcastAnalyzer {
     private struct TargetObservation {
         let point: LightweightTargetPoint
@@ -36,7 +38,6 @@ final class LightweightBroadcastAnalyzer {
 
     private let nanoDetector = BroadcastNanoPersonDetector()
     private let telemetry = LiteViewInferenceTelemetryPublisher()
-    private var sequenceHandler = VNSequenceRequestHandler()
     private var trackedObservation: VNDetectedObjectObservation?
     private var lastFullScanUptime: TimeInterval = 0
     private var lastHeavyTargetCount = 0
@@ -51,7 +52,6 @@ final class LightweightBroadcastAnalyzer {
     func reset() {
         nanoDetector.reset()
         telemetry.reset()
-        sequenceHandler = VNSequenceRequestHandler()
         trackedObservation = nil
         lastFullScanUptime = 0
         lastHeavyTargetCount = 0
@@ -67,7 +67,6 @@ final class LightweightBroadcastAnalyzer {
     func releaseResources() {
         nanoDetector.releaseResources()
         trackedObservation = nil
-        sequenceHandler = VNSequenceRequestHandler()
         lastFullScanUptime = 0
         lastHeavyTargetCount = 0
         roiPhase = 0
@@ -123,7 +122,6 @@ final class LightweightBroadcastAnalyzer {
             )
             nanoResult = result
             lastFullScanUptime = now
-            sequenceHandler = VNSequenceRequestHandler()
             applyDetectorResult(
                 result,
                 currentObservation: &currentObservation,
@@ -142,7 +140,6 @@ final class LightweightBroadcastAnalyzer {
             )
             nanoResult = result
             roiPhase = (roiPhase + 1) & 1
-            sequenceHandler = VNSequenceRequestHandler()
             applyDetectorResult(
                 result,
                 currentObservation: &currentObservation,
@@ -260,8 +257,9 @@ final class LightweightBroadcastAnalyzer {
         autoreleasepool {
             let request = VNTrackObjectRequest(detectedObjectObservation: observation)
             request.trackingLevel = .fast
+            let handler = VNSequenceRequestHandler()
             do {
-                try sequenceHandler.perform([request], on: pixelBuffer, orientation: orientation)
+                try handler.perform([request], on: pixelBuffer, orientation: orientation)
                 guard let result = request.results?.first as? VNDetectedObjectObservation,
                       result.confidence >= 0.20 else { return nil }
                 let box = result.boundingBox
