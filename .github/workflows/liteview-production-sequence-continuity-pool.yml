@@ -1,0 +1,403 @@
+name: LiteView Production Sequence Continuity Pooled
+
+on:
+  push:
+    branches:
+      - feature/ios-realtime-vision-runtime-candidate
+    paths:
+      - '.github/workflows/liteview-production-sequence-continuity-pool.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pooled-sequence-continuity:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare Xcode and ffmpeg
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          if ! command -v ffmpeg >/dev/null 2>&1; then brew install ffmpeg; fi
+          xcodebuild -version
+          ffmpeg -version | head -1
+
+      - name: Stage model and raw pedestrian frames
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build/sequence-pool
+          mkdir -p build/sequence-pool/model
+
+          ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
+          UNZIP="$RUNNER_TEMP/liteview-yolo11n-coreml"
+          curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 \
+            -o "$ZIP" \
+            'https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
+          rm -rf "$UNZIP" && mkdir -p "$UNZIP"
+          unzip -q "$ZIP" -d "$UNZIP"
+          PACKAGE="$(find "$UNZIP" -type d -name 'yolo11n.mlpackage' -print -quit)"
+          test -n "$PACKAGE"
+          xcrun coremlc compile "$PACKAGE" build/sequence-pool/model
+          test -n "$(find build/sequence-pool/model -type d -name 'yolo11n.mlmodelc' -print -quit)"
+
+          VIDEO='build/sequence-pool/vtest.avi'
+          curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 \
+            -o "$VIDEO" \
+            'https://github.com/opencv/opencv/raw/4.x/samples/data/vtest.avi'
+          ffprobe -v error -select_streams v:0 \
+            -show_entries stream=width,height,r_frame_rate,duration \
+            -of default=noprint_wrappers=1 "$VIDEO" | tee build/sequence-pool/source_probe.txt
+
+          RAW='build/sequence-pool/frames_768x576_bgra.raw'
+          ffmpeg -hide_banner -loglevel error -y -i "$VIDEO" \
+            -vf 'fps=8' -frames:v 160 -pix_fmt bgra -f rawvideo "$RAW"
+          python3 - <<'PY'
+          from pathlib import Path
+          raw = Path('build/sequence-pool/frames_768x576_bgra.raw')
+          expected = 768 * 576 * 4 * 160
+          actual = raw.stat().st_size
+          print('RAW_BYTES', actual, 'EXPECTED', expected)
+          assert actual == expected, (actual, expected)
+          PY
+
+      - name: Build production analyzer probe with three-buffer source pool
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          APP="$RUNNER_TEMP/LiteViewPooledSequenceProbe.app"
+          MACOS="$APP/Contents/MacOS"
+          RES="$APP/Contents/Resources"
+          MODEL="$(find build/sequence-pool/model -type d -name 'yolo11n.mlmodelc' -print -quit)"
+          rm -rf "$APP"
+          mkdir -p "$MACOS" "$RES/BroadcastModels"
+          cp -R "$MODEL" "$RES/BroadcastModels/yolo11n.mlmodelc"
+          cat > "$APP/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key><string>LiteViewPooledSequenceProbe</string>
+            <key>CFBundleIdentifier</key><string>com.phoenix.liteview.pooled-sequence-probe</string>
+            <key>CFBundleName</key><string>LiteViewPooledSequenceProbe</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleVersion</key><string>1</string>
+          </dict></plist>
+          PLIST
+
+          cat > "$RUNNER_TEMP/main.swift" <<'SWIFT'
+          import CoreGraphics
+          import CoreVideo
+          import Darwin
+          import Foundation
+
+          final class RawFrameReader {
+              let width: Int
+              let height: Int
+              let frameBytes: Int
+              private let fd: Int32
+              private let scratch: UnsafeMutableRawPointer
+
+              init(path: String, width: Int, height: Int) {
+                  self.width = width
+                  self.height = height
+                  self.frameBytes = width * height * 4
+                  fd = Darwin.open(path, O_RDONLY)
+                  guard fd >= 0 else { fatalError("open raw failed") }
+                  scratch = UnsafeMutableRawPointer.allocate(byteCount: frameBytes, alignment: 64)
+              }
+
+              deinit {
+                  Darwin.close(fd)
+                  scratch.deallocate()
+              }
+
+              func rewind() {
+                  guard lseek(fd, 0, SEEK_SET) == 0 else { fatalError("lseek failed") }
+              }
+
+              func readFrame(into pixelBuffer: CVPixelBuffer) {
+                  var remaining = frameBytes
+                  var dst = scratch
+                  while remaining > 0 {
+                      let n = Darwin.read(fd, dst, remaining)
+                      guard n > 0 else { fatalError("short raw frame") }
+                      remaining -= n
+                      dst = dst.advanced(by: n)
+                  }
+
+                  CVPixelBufferLockBaseAddress(pixelBuffer, [])
+                  defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+                  guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+                      fatalError("pooled base missing")
+                  }
+                  let dstRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+                  let srcRow = width * 4
+                  for y in 0..<height {
+                      memcpy(
+                          base.advanced(by: y * dstRow),
+                          scratch.advanced(by: y * srcRow),
+                          srcRow
+                      )
+                  }
+              }
+          }
+
+          func makeSourceBuffer(width: Int, height: Int) -> CVPixelBuffer {
+              var buffer: CVPixelBuffer?
+              let attrs: [CFString: Any] = [
+                  kCVPixelBufferCGImageCompatibilityKey: true,
+                  kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+                  kCVPixelBufferMetalCompatibilityKey: true,
+                  kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+              ]
+              let status = CVPixelBufferCreate(
+                  kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
+                  attrs as CFDictionary, &buffer
+              )
+              guard status == kCVReturnSuccess, let buffer else {
+                  fatalError("source buffer failed \(status)")
+              }
+              return buffer
+          }
+
+          guard CommandLine.arguments.count == 3 else {
+              fatalError("usage: probe <reference|sequence> <raw-file>")
+          }
+          let mode = CommandLine.arguments[1]
+          let rawPath = CommandLine.arguments[2]
+          let width = 768, height = 576, frames = 160
+          let reader = RawFrameReader(path: rawPath, width: width, height: height)
+          let pool = (0..<3).map { _ in makeSourceBuffer(width: width, height: height) }
+
+          if mode == "reference" {
+              let detector = BroadcastNanoPersonDetector()
+              reader.rewind()
+              for index in 0..<frames {
+                  autoreleasepool {
+                      let buffer = pool[index % pool.count]
+                      reader.readFrame(into: buffer)
+                      let result = detector.detect(
+                          in: buffer, orientation: .up,
+                          minimumConfidence: 0.12,
+                          regionOfInterest: CGRect(x: 0, y: 0, width: 1, height: 1)
+                      )
+                      guard result.succeeded else { fatalError("reference failed \(index)") }
+                      let points = result.detections.prefix(8).map {
+                          String(format: "%.5f,%.5f", $0.point.x, $0.point.y)
+                      }.joined(separator: ";")
+                      print("REF\t\(index)\t\(result.detections.count)\t\(points)")
+                  }
+              }
+              print("REFERENCE_DONE")
+              exit(0)
+          }
+
+          guard mode == "sequence" else { fatalError("bad mode") }
+          let analyzer = LightweightBroadcastAnalyzer()
+          let resetFrames = Set([0, 50, 100, 150])
+          reader.rewind()
+          for index in 0..<frames {
+              autoreleasepool {
+                  if resetFrames.contains(index) {
+                      analyzer.reset()
+                      print("RESET\t\(index)")
+                  }
+                  let buffer = pool[index % pool.count]
+                  reader.readFrame(into: buffer)
+                  let result = analyzer.detectVisibleHumans(in: buffer, orientation: .up)
+                  if let p = result.primaryTarget {
+                      print(String(
+                          format: "SEQ\t%d\t1\t%.5f\t%.5f\t%d\t%.3f\t%d\t%d",
+                          index, p.x, p.y, result.targetCount, result.latencyMilliseconds,
+                          result.attemptedLaneCount, result.successfulLaneCount
+                      ))
+                  } else {
+                      print(String(
+                          format: "SEQ\t%d\t0\t0\t0\t%d\t%.3f\t%d\t%d",
+                          index, result.targetCount, result.latencyMilliseconds,
+                          result.attemptedLaneCount, result.successfulLaneCount
+                      ))
+                  }
+              }
+              Thread.sleep(forTimeInterval: 0.125)
+          }
+          analyzer.releaseResources()
+          print("SEQUENCE_DONE")
+          SWIFT
+
+          xcrun swiftc -O \
+            "$ROOT/Sources/Broadcast/TrueInferenceTelemetry.swift" \
+            "$ROOT/Sources/Broadcast/LightweightBroadcastAnalyzer.swift" \
+            "$ROOT/Sources/ExtensionSupport/BroadcastFramePreprocessor.swift" \
+            "$ROOT/Sources/ExtensionSupport/BroadcastNanoPersonDetector.swift" \
+            "$RUNNER_TEMP/main.swift" \
+            -o "$MACOS/LiteViewPooledSequenceProbe"
+
+      - name: Generate same-detector full-frame reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE="$RUNNER_TEMP/LiteViewPooledSequenceProbe.app/Contents/MacOS/LiteViewPooledSequenceProbe"
+          RAW="$(pwd)/build/sequence-pool/frames_768x576_bgra.raw"
+          "$EXE" reference "$RAW" > build/sequence-pool/reference.tsv
+          grep -q 'REFERENCE_DONE' build/sequence-pool/reference.tsv
+
+      - name: Run pooled production analyzer and sample RSS
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE="$RUNNER_TEMP/LiteViewPooledSequenceProbe.app/Contents/MacOS/LiteViewPooledSequenceProbe"
+          RAW="$(pwd)/build/sequence-pool/frames_768x576_bgra.raw"
+          OUT='build/sequence-pool/sequence.tsv'
+          ERR='build/sequence-pool/sequence.stderr'
+          RSS='build/sequence-pool/rss_kib.txt'
+          : > "$RSS"
+          "$EXE" sequence "$RAW" >"$OUT" 2>"$ERR" &
+          PID=$!
+          SAMPLE=0
+          while kill -0 "$PID" 2>/dev/null; do
+            VALUE="$(ps -o rss= -p "$PID" 2>/dev/null | awk '{print $1}' || true)"
+            if [ -n "$VALUE" ]; then
+              printf '%d %s\n' "$SAMPLE" "$VALUE" >> "$RSS"
+              SAMPLE=$((SAMPLE + 1))
+            fi
+            sleep 0.15
+          done
+          wait "$PID"
+          cat "$ERR"
+          grep -q 'SEQUENCE_DONE' "$OUT"
+
+      - name: Analyze pooled sequence evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, math, statistics
+
+          refs = {}
+          for line in Path('build/sequence-pool/reference.tsv').read_text().splitlines():
+              if not line.startswith('REF\t'): continue
+              p = line.split('\t')
+              pts = []
+              if len(p) >= 4 and p[3]:
+                  pts = [tuple(map(float, q.split(','))) for q in p[3].split(';')]
+              refs[int(p[1])] = (int(p[2]), pts)
+
+          seq = {}
+          resets = []
+          latencies = []
+          for line in Path('build/sequence-pool/sequence.tsv').read_text().splitlines():
+              if line.startswith('RESET\t'):
+                  resets.append(int(line.split('\t')[1])); continue
+              if not line.startswith('SEQ\t'): continue
+              p = line.split('\t')
+              present = p[2] == '1'
+              point = (float(p[3]), float(p[4])) if present else None
+              latency = float(p[6])
+              seq[int(p[1])] = (present, point, int(p[5]), latency, int(p[7]), int(p[8]))
+              latencies.append(latency)
+
+          assert len(refs) == 160 and len(seq) == 160
+          assert resets == [0,50,100,150]
+          ref_positive = matched = present_on_ref = 0
+          match = {}
+          for i in range(160):
+              count, pts = refs[i]
+              present, point, *_ = seq[i]
+              if count > 0 and pts:
+                  ref_positive += 1
+                  if present:
+                      present_on_ref += 1
+                      d = min(math.hypot(point[0]-q[0], point[1]-q[1]) for q in pts)
+                      match[i] = d <= 0.20
+                      matched += int(match[i])
+                  else:
+                      match[i] = False
+
+          delays = []
+          for reset in resets:
+              found = None
+              for i in range(reset, min(reset+16, 160)):
+                  if refs[i][0] > 0 and match.get(i, False):
+                      found = i-reset; break
+              if found is not None: delays.append(found)
+
+          longest = current = 0
+          for i in range(160):
+              if refs[i][0] > 0 and match.get(i, False):
+                  current += 1; longest = max(longest, current)
+              elif refs[i][0] > 0:
+                  current = 0
+
+          rss = []
+          for line in Path('build/sequence-pool/rss_kib.txt').read_text().splitlines():
+              p = line.split()
+              if len(p) == 2: rss.append(int(p[1])/1024.0)
+          assert len(rss) >= 40, len(rss)
+          n=len(rss); q2=rss[n//4:n//2]; q4=rss[3*n//4:]
+          q2m=statistics.median(q2); q4m=statistics.median(q4)
+          report = {
+              'frames': 160,
+              'reference_positive_frames': ref_positive,
+              'presence_rate_on_reference_positive': round(present_on_ref/ref_positive,4),
+              'point_match_rate_on_reference_positive': round(matched/ref_positive,4),
+              'longest_matched_streak': longest,
+              'reacquisition_delays_frames': delays,
+              'median_latency_ms': round(statistics.median(latencies),3),
+              'p90_latency_ms': round(sorted(latencies)[int((len(latencies)-1)*0.9)],3),
+              'rss_q2_median_mib': round(q2m,3),
+              'rss_q4_median_mib': round(q4m,3),
+              'rss_growth_mib': round(q4m-q2m,3),
+              'rss_peak_mib': round(max(rss),3),
+          }
+          Path('build/sequence-pool/report.json').write_text(json.dumps(report,indent=2))
+          print(json.dumps(report,indent=2))
+          assert ref_positive >= 20, report
+          assert report['point_match_rate_on_reference_positive'] >= 0.80, report
+          assert len(delays) == 4 and max(delays) <= 4, report
+          assert report['rss_growth_mib'] <= 4.0, report
+          print('POOLED_PRODUCTION_SEQUENCE_PASS')
+          PY
+
+      - name: Publish pooled sequence evidence
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## LiteView pooled production sequence continuity'
+            echo
+            echo 'Neutral OpenCV pedestrian sample. The video is predecoded once to raw BGRA. The measured production analyzer receives frames through a three-CVPixelBuffer ring so per-frame ImageIO/IOSurface allocation cannot masquerade as analyzer memory growth.'
+            echo
+            if [ -f build/sequence-pool/source_probe.txt ]; then
+              echo '```text'; cat build/sequence-pool/source_probe.txt; echo '```'
+            fi
+            if [ -f build/sequence-pool/report.json ]; then
+              echo '```json'; cat build/sequence-pool/report.json; echo '```'
+            fi
+            echo
+            echo 'The full-frame reference uses the same production detector and is a continuity reference, not human ground truth.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload pooled evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-production-sequence-continuity-pooled
+          path: |
+            build/sequence-pool/source_probe.txt
+            build/sequence-pool/reference.tsv
+            build/sequence-pool/sequence.tsv
+            build/sequence-pool/sequence.stderr
+            build/sequence-pool/rss_kib.txt
+            build/sequence-pool/report.json
+          retention-days: 7
+          if-no-files-found: warn
