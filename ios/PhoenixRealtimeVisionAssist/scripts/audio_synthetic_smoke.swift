@@ -1,19 +1,6 @@
 import AudioToolbox
 import CoreMedia
-import Darwin
 import Foundation
-
-@_silgen_name("notify_register_check")
-private func test_notify_register_check(
-    _ name: UnsafePointer<CChar>,
-    _ token: UnsafeMutablePointer<Int32>
-) -> UInt32
-
-@_silgen_name("notify_get_state")
-private func test_notify_get_state(_ token: Int32, _ state: UnsafeMutablePointer<UInt64>) -> UInt32
-
-@_silgen_name("notify_cancel")
-private func test_notify_cancel(_ token: Int32) -> UInt32
 
 private func makeStereoFloat32SampleBuffer(
     sampleRate: Double = 48_000,
@@ -91,6 +78,7 @@ private func makeStereoFloat32SampleBuffer(
         presentationTimeStamp: .zero,
         decodeTimeStamp: .invalid
     )
+    var sampleSize = MemoryLayout<Float>.size * 2
     var sampleBuffer: CMSampleBuffer?
     let sampleStatus = CMSampleBufferCreateReady(
         allocator: kCFAllocatorDefault,
@@ -100,7 +88,7 @@ private func makeStereoFloat32SampleBuffer(
         sampleTimingEntryCount: 1,
         sampleTimingArray: &timing,
         sampleSizeEntryCount: 1,
-        sampleSizeArray: [MemoryLayout<Float>.size * 2],
+        sampleSizeArray: &sampleSize,
         sampleBufferOut: &sampleBuffer
     )
     guard sampleStatus == noErr, let sampleBuffer else {
@@ -126,49 +114,50 @@ private func decode(_ state: UInt64) -> (count: UInt64, left: UInt64, right: UIn
 @main
 struct AudioSyntheticSmoke {
     static func main() throws {
-        var token: Int32 = -1
-        let registerStatus = BroadcastAudioTelemetryAnalyzer.notificationName.withCString {
-            test_notify_register_check($0, &token)
-        }
-        guard registerStatus == 0, token >= 0 else {
-            fatalError("FAIL: notify registration status=\(registerStatus)")
-        }
-        defer { _ = test_notify_cancel(token) }
-
         let analyzer = BroadcastAudioTelemetryAnalyzer()
         analyzer.reset()
         let sampleBuffer = try makeStereoFloat32SampleBuffer()
         analyzer.consume(sampleBuffer)
 
-        var rawState: UInt64 = 0
-        guard test_notify_get_state(token, &rawState) == 0 else {
-            fatalError("FAIL: notify state unavailable")
+        guard let snapshot = analyzer.snapshotForTesting() else {
+            fatalError("FAIL: CMSampleBuffer was not parsed into telemetry")
         }
-
-        let telemetry = decode(rawState)
-        guard telemetry.ready, telemetry.active else {
-            fatalError("FAIL: telemetry not active/ready raw=\(rawState)")
-        }
-        guard telemetry.count >= 1 else {
+        guard snapshot.analysisCount >= 1 else {
             fatalError("FAIL: analysis count did not advance")
         }
-        guard telemetry.left > telemetry.right else {
-            fatalError("FAIL: stereo balance wrong L=\(telemetry.left) R=\(telemetry.right)")
+        guard snapshot.leftLevel > snapshot.rightLevel else {
+            fatalError("FAIL: stereo balance wrong L=\(snapshot.leftLevel) R=\(snapshot.rightLevel)")
         }
-        guard telemetry.peak > 0 else {
+        guard snapshot.peakLevel > 0 else {
             fatalError("FAIL: peak remained zero")
         }
-        guard telemetry.sampleRateKHz == 48 else {
-            fatalError("FAIL: sample rate code=\(telemetry.sampleRateKHz)")
+        guard Int(snapshot.sampleRate.rounded()) == 48_000 else {
+            fatalError("FAIL: sample rate=\(snapshot.sampleRate)")
         }
-        guard telemetry.channels == 2 else {
-            fatalError("FAIL: channel code=\(telemetry.channels)")
+        guard snapshot.channels == 2 else {
+            fatalError("FAIL: channels=\(snapshot.channels)")
         }
-        guard telemetry.band == 2 else {
-            fatalError("FAIL: dominant band expected 400 Hz probe (2), got \(telemetry.band)")
+        guard snapshot.dominantBand == 2 else {
+            fatalError("FAIL: dominant band expected 400 Hz probe (2), got \(snapshot.dominantBand)")
         }
 
-        print("PASS: synthetic ReplayKit-style PCM -> CMSampleBuffer -> analyzer -> Darwin telemetry")
+        guard let rawState = analyzer.publishedStateForTesting(), rawState != 0 else {
+            fatalError("FAIL: analyzer did not publish Darwin telemetry state")
+        }
+        let telemetry = decode(rawState)
+        guard telemetry.ready, telemetry.active else {
+            fatalError("FAIL: packed telemetry not active/ready raw=\(rawState)")
+        }
+        guard telemetry.count >= 1,
+              telemetry.left > telemetry.right,
+              telemetry.peak > 0,
+              telemetry.band == 2,
+              telemetry.sampleRateKHz == 48,
+              telemetry.channels == 2 else {
+            fatalError("FAIL: packed telemetry mismatch raw=\(rawState) decoded=\(telemetry)")
+        }
+
+        print("PASS: synthetic PCM -> CMSampleBuffer -> parser -> aggregate snapshot -> Darwin packed telemetry")
         print("count=\(telemetry.count) L=\(telemetry.left) R=\(telemetry.right) peak=\(telemetry.peak) band=\(telemetry.band) rate=\(telemetry.sampleRateKHz)kHz channels=\(telemetry.channels)")
     }
 }
