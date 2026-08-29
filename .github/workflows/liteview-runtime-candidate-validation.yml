@@ -92,7 +92,7 @@ jobs:
           grep -q 'unsupportedPixelFormat' "$PRE"
 
           # Sparse cadence and one-ROI-per-frame contract remain unchanged.
-          grep -q 'let coverage = 0.68' "$ANA"
+          grep -q 'let coverage = 0.60' "$ANA"
           grep -q 'minimumConfidence: 0.09' "$ANA"
           grep -q 'minimumConfidence: 0.12' "$ANA"
           grep -q 'roiPhase = (roiPhase + 1) & 1' "$ANA"
@@ -227,7 +227,7 @@ jobs:
             echo '- One resident YOLO11n-384 Core ML model.'
             echo '- High-resolution model preprocessing uses reusable vImage buffers followed by direct MLModel.prediction.'
             echo '- Production preprocessor supports BGRA, NV12 420f and NV12 420v; the separate contract job validates all eight EXIF orientations.'
-            echo '- Tracker-loss reacquisition runs one 68% ROI per eligible frame and alternates phases.'
+            echo '- Tracker-loss reacquisition runs one 60% ROI per eligible frame and alternates phases.'
             echo '- No high-resolution VNCoreMLRequest or generic human-detector fallback is allowed in the candidate detector path.'
             echo '- Entitlement-free frame diagnostics expose ReplayKit pixel format/orientation and preprocessing/Core ML/decode stage without persisting frames.'
             echo '- ReplayKit analysis keeps the narrow retained-frame ownership bridge; no full-frame copy is introduced.'
