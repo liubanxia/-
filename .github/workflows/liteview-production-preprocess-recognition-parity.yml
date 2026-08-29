@@ -1,0 +1,379 @@
+name: LiteView Production Preprocess Recognition Parity
+
+on:
+  push:
+    branches:
+      - feature/ios-realtime-vision-runtime-candidate
+    paths:
+      - '.github/workflows/liteview-production-preprocess-recognition-parity.yml'
+      - 'ios/PhoenixRealtimeVisionAssist/Sources/ExtensionSupport/BroadcastFramePreprocessor.swift'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recognition-parity:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Stage model and real person images
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/preprocess-parity/data build/preprocess-parity/model
+
+          MODEL_ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
+          MODEL_UNZIP="$RUNNER_TEMP/liteview-yolo11n-coreml"
+          curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 \
+            -o "$MODEL_ZIP" \
+            'https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
+          rm -rf "$MODEL_UNZIP"
+          mkdir -p "$MODEL_UNZIP"
+          unzip -q "$MODEL_ZIP" -d "$MODEL_UNZIP"
+          PACKAGE="$(find "$MODEL_UNZIP" -type d -name 'yolo11n.mlpackage' -print -quit)"
+          test -n "$PACKAGE"
+          xcrun coremlc compile "$PACKAGE" build/preprocess-parity/model
+          MODEL="$(find build/preprocess-parity/model -type d -name 'yolo11n.mlmodelc' -print -quit)"
+          test -n "$MODEL"
+          echo "$MODEL" > build/preprocess-parity/model_path.txt
+
+          curl -fL --retry 6 --retry-delay 2 \
+            'https://github.com/ultralytics/assets/releases/download/v0.0.0/coco128.zip' \
+            -o "$RUNNER_TEMP/coco128.zip"
+          unzip -q "$RUNNER_TEMP/coco128.zip" -d build/preprocess-parity/data
+
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path('build/preprocess-parity/data/coco128')
+          selected = []
+          for label in sorted((root / 'labels').rglob('*.txt')):
+              try:
+                  lines = label.read_text().splitlines()
+              except UnicodeDecodeError:
+                  continue
+              if not any(line.split() and line.split()[0] == '0' for line in lines):
+                  continue
+              matches = list((root / 'images').rglob(label.stem + '.jpg'))
+              if not matches:
+                  matches = list((root / 'images').rglob(label.stem + '.jpeg'))
+              if matches:
+                  selected.append(matches[0].resolve())
+              if len(selected) >= 12:
+                  break
+          assert len(selected) == 12, len(selected)
+          Path('build/preprocess-parity/images.txt').write_text('\n'.join(map(str, selected)) + '\n')
+          print('\n'.join(map(str, selected)))
+          PY
+
+      - name: Build Vision versus production-preprocessor parity probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          cat > "$RUNNER_TEMP/main.swift" <<'SWIFT'
+          import CoreFoundation
+          import CoreGraphics
+          import CoreML
+          import CoreVideo
+          import Foundation
+          import ImageIO
+          import Vision
+
+          final class PixelBufferProvider: NSObject, MLFeatureProvider {
+              let featureNames: Set<String>
+              private let inputName: String
+              private let value: MLFeatureValue
+
+              init(inputName: String, pixelBuffer: CVPixelBuffer) {
+                  self.inputName = inputName
+                  featureNames = [inputName]
+                  value = MLFeatureValue(pixelBuffer: pixelBuffer)
+              }
+
+              func featureValue(for featureName: String) -> MLFeatureValue? {
+                  featureName == inputName ? value : nil
+              }
+          }
+
+          struct Box {
+              let x: Double
+              let y: Double
+              let w: Double
+              let h: Double
+              let score: Double
+          }
+
+          func makeSourceBuffer(from url: URL) -> CVPixelBuffer {
+              guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+                    let image = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
+                  fatalError("cannot load \(url.path)")
+              }
+              let width = 1920
+              let height = 1080
+              var buffer: CVPixelBuffer?
+              let attrs: [CFString: Any] = [
+                  kCVPixelBufferCGImageCompatibilityKey: true,
+                  kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+                  kCVPixelBufferMetalCompatibilityKey: true,
+                  kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+              ]
+              let status = CVPixelBufferCreate(
+                  kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
+                  attrs as CFDictionary, &buffer
+              )
+              guard status == kCVReturnSuccess, let buffer else {
+                  fatalError("pixel buffer create failed \(status)")
+              }
+              CVPixelBufferLockBaseAddress(buffer, [])
+              defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+              guard let base = CVPixelBufferGetBaseAddress(buffer),
+                    let context = CGContext(
+                      data: base,
+                      width: width,
+                      height: height,
+                      bitsPerComponent: 8,
+                      bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+                      space: CGColorSpaceCreateDeviceRGB(),
+                      bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue |
+                        CGImageAlphaInfo.premultipliedFirst.rawValue
+                    ) else {
+                  fatalError("CGContext failed")
+              }
+              context.setFillColor(CGColor(gray: 0, alpha: 1))
+              context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+              context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+              return buffer
+          }
+
+          func value(_ a: MLMultiArray, feature: Int, index: Int, channelsFirst: Bool) -> Double {
+              let idx: [NSNumber] = channelsFirst
+                  ? [0, NSNumber(value: feature), NSNumber(value: index)]
+                  : [0, NSNumber(value: index), NSNumber(value: feature)]
+              return a[idx].doubleValue
+          }
+
+          func decodePerson(_ a: MLMultiArray, confidence: Double = 0.05) -> [Box] {
+              let shape = a.shape.map(\.intValue)
+              guard shape.count == 3 else { return [] }
+              let channelsFirst = shape[1] >= 5 && shape[1] < shape[2]
+              let count = channelsFirst ? shape[2] : shape[1]
+              let features = channelsFirst ? shape[1] : shape[2]
+              guard features >= 5 else { return [] }
+              var boxes: [Box] = []
+              boxes.reserveCapacity(32)
+              for i in 0..<count {
+                  let score = value(a, feature: 4, index: i, channelsFirst: channelsFirst)
+                  guard score.isFinite, score >= confidence else { continue }
+                  let rx = value(a, feature: 0, index: i, channelsFirst: channelsFirst)
+                  let ry = value(a, feature: 1, index: i, channelsFirst: channelsFirst)
+                  let rw = value(a, feature: 2, index: i, channelsFirst: channelsFirst)
+                  let rh = value(a, feature: 3, index: i, channelsFirst: channelsFirst)
+                  guard rx.isFinite, ry.isFinite, rw.isFinite, rh.isFinite else { continue }
+                  let pixel = max(abs(rx), abs(ry), abs(rw), abs(rh)) > 2
+                  let scale = pixel ? 384.0 : 1.0
+                  let b = Box(x: rx / scale, y: ry / scale, w: rw / scale, h: rh / scale, score: score)
+                  guard b.w > 0.004, b.h > 0.008, b.w <= 1.2, b.h <= 1.2 else { continue }
+                  boxes.append(b)
+              }
+              return nms(boxes, threshold: 0.45)
+          }
+
+          func iou(_ a: Box, _ b: Box) -> Double {
+              let aminx = a.x - a.w / 2, amaxx = a.x + a.w / 2
+              let aminy = a.y - a.h / 2, amaxy = a.y + a.h / 2
+              let bminx = b.x - b.w / 2, bmaxx = b.x + b.w / 2
+              let bminy = b.y - b.h / 2, bmaxy = b.y + b.h / 2
+              let iw = max(0, min(amaxx, bmaxx) - max(aminx, bminx))
+              let ih = max(0, min(amaxy, bmaxy) - max(aminy, bminy))
+              let inter = iw * ih
+              let union = a.w * a.h + b.w * b.h - inter
+              return union > 0 ? inter / union : 0
+          }
+
+          func nms(_ input: [Box], threshold: Double) -> [Box] {
+              var remaining = input.sorted { $0.score > $1.score }
+              var kept: [Box] = []
+              while let best = remaining.first, kept.count < 8 {
+                  kept.append(best)
+                  remaining.removeFirst()
+                  remaining.removeAll { iou(best, $0) >= threshold }
+              }
+              return kept
+          }
+
+          func firstArray(from output: MLFeatureProvider) -> MLMultiArray? {
+              output.featureNames.compactMap { output.featureValue(for: $0)?.multiArrayValue }.first
+          }
+
+          guard CommandLine.arguments.count == 3 else {
+              fatalError("usage: parity <model.mlmodelc> <images.txt>")
+          }
+          let modelURL = URL(fileURLWithPath: CommandLine.arguments[1])
+          let listURL = URL(fileURLWithPath: CommandLine.arguments[2])
+          let imagePaths = try String(contentsOf: listURL, encoding: .utf8)
+              .split(separator: "\n").map(String.init)
+          guard imagePaths.count >= 12 else { fatalError("need 12 images") }
+
+          let config = MLModelConfiguration()
+          config.computeUnits = .cpuAndNeuralEngine
+          let model = try MLModel(contentsOf: modelURL, configuration: config)
+          let visionModel = try VNCoreMLModel(for: model)
+          guard let input = model.modelDescription.inputDescriptionsByName.first(where: { $0.value.type == .image }),
+                input.value.imageConstraint?.pixelsWide == 384,
+                input.value.imageConstraint?.pixelsHigh == 384 else {
+              fatalError("expected one 384 image input")
+          }
+          let preprocessor = try BroadcastFramePreprocessor(side: 384)
+          let provider = PixelBufferProvider(inputName: input.key, pixelBuffer: preprocessor.modelInput)
+
+          let full = CGRect(x: 0, y: 0, width: 1, height: 1)
+          let left = CGRect(x: 0, y: 0, width: 0.68, height: 1)
+          let right = CGRect(x: 0.32, y: 0, width: 0.68, height: 1)
+          let top = CGRect(x: 0, y: 0.32, width: 1, height: 0.68)
+          let bottom = CGRect(x: 0, y: 0, width: 1, height: 0.68)
+
+          var totalCases = 0
+          var referenceBoxes = 0
+          var directBoxes = 0
+          var matchedBoxes = 0
+          var fullReferenceBoxes = 0
+          var bestIoUs: [Double] = []
+          var bothEmpty = 0
+
+          func runCase(source: CVPixelBuffer, orientation: CGImagePropertyOrientation, roi: CGRect, name: String) throws {
+              autoreleasepool {
+                  let request = VNCoreMLRequest(model: visionModel)
+                  request.imageCropAndScaleOption = .scaleFit
+                  request.regionOfInterest = roi
+                  let handler = VNImageRequestHandler(cvPixelBuffer: source, orientation: orientation, options: [:])
+                  try! handler.perform([request])
+                  guard let refArray = (request.results ?? [])
+                      .compactMap({ $0 as? VNCoreMLFeatureValueObservation })
+                      .compactMap({ $0.featureValue.multiArrayValue }).first else {
+                      fatalError("missing Vision output \(name)")
+                  }
+                  _ = try! preprocessor.preprocess(source: source, orientation: orientation, visionROI: roi)
+                  let directOutput = try! model.prediction(from: provider)
+                  guard let directArray = firstArray(from: directOutput),
+                        directArray.shape.map(\.intValue) == refArray.shape.map(\.intValue) else {
+                      fatalError("direct output shape mismatch \(name)")
+                  }
+
+                  let refs = decodePerson(refArray)
+                  let directs = decodePerson(directArray)
+                  totalCases += 1
+                  referenceBoxes += refs.count
+                  directBoxes += directs.count
+                  if roi == full { fullReferenceBoxes += refs.count }
+                  if refs.isEmpty && directs.isEmpty { bothEmpty += 1 }
+
+                  var used = Set<Int>()
+                  for ref in refs {
+                      var bestIndex: Int? = nil
+                      var best = 0.0
+                      for (i, direct) in directs.enumerated() where !used.contains(i) {
+                          let overlap = iou(ref, direct)
+                          if overlap > best {
+                              best = overlap
+                              bestIndex = i
+                          }
+                      }
+                      if let bestIndex, best >= 0.65 {
+                          used.insert(bestIndex)
+                          matchedBoxes += 1
+                          bestIoUs.append(best)
+                      }
+                  }
+                  print(String(format: "PARITY_CASE %@ ref=%d direct=%d", name, refs.count, directs.count))
+              }
+          }
+
+          for (index, path) in imagePaths.prefix(12).enumerated() {
+              let source = makeSourceBuffer(from: URL(fileURLWithPath: path))
+              try runCase(source: source, orientation: .up, roi: full, name: "\(index)-up-full")
+              try runCase(source: source, orientation: .up, roi: index % 2 == 0 ? left : right, name: "\(index)-up-roi")
+              try runCase(source: source, orientation: .right, roi: full, name: "\(index)-right-full")
+              try runCase(source: source, orientation: .right, roi: index % 2 == 0 ? top : bottom, name: "\(index)-right-roi")
+          }
+
+          let agreement = referenceBoxes > 0 ? Double(matchedBoxes) / Double(referenceBoxes) : 0
+          let sorted = bestIoUs.sorted()
+          let medianIoU = sorted.isEmpty ? 0 : sorted[sorted.count / 2]
+          let countDelta = referenceBoxes > 0
+              ? abs(Double(directBoxes - referenceBoxes)) / Double(referenceBoxes)
+              : 1
+
+          print("PARITY_TOTAL_CASES=\(totalCases)")
+          print("PARITY_REFERENCE_BOXES=\(referenceBoxes)")
+          print("PARITY_DIRECT_BOXES=\(directBoxes)")
+          print("PARITY_MATCHED_BOXES=\(matchedBoxes)")
+          print("PARITY_BOTH_EMPTY=\(bothEmpty)")
+          print(String(format: "PARITY_AGREEMENT=%.4f", agreement))
+          print(String(format: "PARITY_MEDIAN_IOU=%.4f", medianIoU))
+          print(String(format: "PARITY_COUNT_DELTA=%.4f", countDelta))
+
+          guard totalCases == 48,
+                fullReferenceBoxes >= 8,
+                referenceBoxes >= 12,
+                agreement >= 0.70,
+                medianIoU >= 0.75,
+                countDelta <= 0.30 else {
+              fatalError("production preprocessing detection parity failed")
+          }
+          print("PRODUCTION_PREPROCESS_RECOGNITION_PARITY_PASS")
+          SWIFT
+
+          xcrun swiftc -O \
+            "$ROOT/Sources/ExtensionSupport/BroadcastFramePreprocessor.swift" \
+            "$RUNNER_TEMP/main.swift" \
+            -o "$RUNNER_TEMP/liteview-preprocess-parity"
+
+      - name: Run real-image recognition parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          MODEL="$(cat build/preprocess-parity/model_path.txt)"
+          "$RUNNER_TEMP/liteview-preprocess-parity" \
+            "$MODEL" \
+            build/preprocess-parity/images.txt \
+            | tee build/preprocess-parity/parity.log
+          grep -q 'PRODUCTION_PREPROCESS_RECOGNITION_PARITY_PASS' build/preprocess-parity/parity.log
+
+      - name: Publish parity evidence
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## LiteView production preprocessing recognition parity'
+            echo
+            echo 'Same YOLO11n-384 model and same real-person source buffers are compared through Vision scaleFit versus the production BroadcastFramePreprocessor + direct Core ML path.'
+            echo
+            if [ -f build/preprocess-parity/parity.log ]; then
+              echo '```text'
+              grep -E 'PARITY_(TOTAL|REFERENCE|DIRECT|MATCHED|BOTH|AGREEMENT|MEDIAN|COUNT)|PRODUCTION_PREPROCESS' build/preprocess-parity/parity.log || true
+              echo '```'
+            fi
+            echo
+            echo 'This is generic visible-person preprocessing parity, not game-specific recognition validation.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload parity evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-production-preprocess-recognition-parity
+          path: |
+            build/preprocess-parity/parity.log
+            build/preprocess-parity/images.txt
+          retention-days: 7
+          if-no-files-found: warn
