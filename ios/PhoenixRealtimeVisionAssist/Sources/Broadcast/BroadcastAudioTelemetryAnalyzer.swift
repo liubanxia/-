@@ -21,6 +21,8 @@ private func liteview_audio_notify_post(_ name: UnsafePointer<CChar>) -> UInt32
 @_silgen_name("notify_cancel")
 private func liteview_audio_notify_cancel(_ token: Int32) -> UInt32
 
+/// Privacy-preserving aggregate diagnostics for ReplayKit `.audioApp` PCM.
+/// No PCM history or audio files are retained.
 final class BroadcastAudioTelemetryAnalyzer {
     struct Snapshot: Equatable {
         let analysisCount: UInt64
@@ -47,15 +49,11 @@ final class BroadcastAudioTelemetryAnalyzer {
         let status = Self.notificationName.withCString {
             liteview_audio_notify_register_check($0, &newToken)
         }
-        if status == 0 {
-            token = newToken
-        }
+        if status == 0 { token = newToken }
     }
 
     deinit {
-        if token >= 0 {
-            _ = liteview_audio_notify_cancel(token)
-        }
+        if token >= 0 { _ = liteview_audio_notify_cancel(token) }
     }
 
     func reset() {
@@ -74,7 +72,6 @@ final class BroadcastAudioTelemetryAnalyzer {
 
     func consume(_ sampleBuffer: CMSampleBuffer) {
         let now = ProcessInfo.processInfo.systemUptime
-
         lock.lock()
         guard now - lastAnalysisUptime >= 0.18 else {
             lock.unlock()
@@ -87,6 +84,7 @@ final class BroadcastAudioTelemetryAnalyzer {
               let asbdPointer = CMAudioFormatDescriptionGetStreamBasicDescription(format) else {
             return
         }
+
         let asbd = asbdPointer.pointee
         guard asbd.mFormatID == kAudioFormatLinearPCM,
               asbd.mChannelsPerFrame > 0,
@@ -94,23 +92,44 @@ final class BroadcastAudioTelemetryAnalyzer {
             return
         }
 
-        let listCapacity = 8
-        let listSize = MemoryLayout<AudioBufferList>.size
-            + MemoryLayout<AudioBuffer>.stride * (listCapacity - 1)
-        let rawList = UnsafeMutableRawPointer.allocate(
-            byteCount: listSize,
-            alignment: 16
+        let channels = max(1, Int(asbd.mChannelsPerFrame))
+        let nonInterleaved = (asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0
+        let isFloat32 = (asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0 && asbd.mBitsPerChannel == 32
+        let isSigned16 = (asbd.mFormatFlags & kAudioFormatFlagIsSignedInteger) != 0 && asbd.mBitsPerChannel == 16
+        guard isFloat32 || isSigned16 else { return }
+
+        // CoreMedia decides the required AudioBufferList size. Do not infer it from Swift
+        // MemoryLayout; stereo/non-interleaved layouts can otherwise return -12737
+        // (kCMSampleBufferError_ArrayTooSmall).
+        var requiredSize = 0
+        var sizingBlockBuffer: CMBlockBuffer?
+        let sizingStatus = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sampleBuffer,
+            bufferListSizeNeededOut: &requiredSize,
+            bufferListOut: nil,
+            bufferListSize: 0,
+            blockBufferAllocator: kCFAllocatorDefault,
+            blockBufferMemoryAllocator: kCFAllocatorDefault,
+            flags: UInt32(kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment),
+            blockBufferOut: &sizingBlockBuffer
         )
+        guard sizingStatus == noErr || sizingStatus == kCMSampleBufferError_ArrayTooSmall,
+              requiredSize >= MemoryLayout<AudioBufferList>.size else {
+            return
+        }
+
+        let rawList = UnsafeMutableRawPointer.allocate(byteCount: requiredSize, alignment: 16)
+        rawList.initializeMemory(as: UInt8.self, repeating: 0, count: requiredSize)
         defer { rawList.deallocate() }
         let audioBufferList = rawList.bindMemory(to: AudioBufferList.self, capacity: 1)
 
-        var neededSize = 0
+        var confirmedSize = requiredSize
         var retainedBlockBuffer: CMBlockBuffer?
         let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
             sampleBuffer,
-            bufferListSizeNeededOut: &neededSize,
+            bufferListSizeNeededOut: &confirmedSize,
             bufferListOut: audioBufferList,
-            bufferListSize: listSize,
+            bufferListSize: requiredSize,
             blockBufferAllocator: kCFAllocatorDefault,
             blockBufferMemoryAllocator: kCFAllocatorDefault,
             flags: UInt32(kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment),
@@ -119,13 +138,7 @@ final class BroadcastAudioTelemetryAnalyzer {
         guard status == noErr else { return }
 
         let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
-        let channels = max(1, Int(asbd.mChannelsPerFrame))
-        let nonInterleaved = (asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0
-        let isFloat32 = (asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0
-            && asbd.mBitsPerChannel == 32
-        let isSigned16 = (asbd.mFormatFlags & kAudioFormatFlagIsSignedInteger) != 0
-            && asbd.mBitsPerChannel == 16
-        guard isFloat32 || isSigned16 else { return }
+        guard !buffers.isEmpty else { return }
 
         let maxFrames = 512
         var leftSamples: [Double] = []
@@ -141,7 +154,6 @@ final class BroadcastAudioTelemetryAnalyzer {
 
             let rightBuffer = buffers.count > 1 ? buffers[1] : first
             guard let rightData = rightBuffer.mData else { return }
-
             for frame in 0..<frameCount {
                 leftSamples.append(readSample(firstData, index: frame, isFloat32: isFloat32))
                 rightSamples.append(readSample(rightData, index: frame, isFloat32: isFloat32))
@@ -149,8 +161,8 @@ final class BroadcastAudioTelemetryAnalyzer {
         } else {
             guard let first = buffers.first, let data = first.mData else { return }
             let bytesPerSample = isFloat32 ? MemoryLayout<Float>.size : MemoryLayout<Int16>.size
-            let frameBytes = max(bytesPerSample, bytesPerSample * channels)
-            let frameCount = min(maxFrames, Int(first.mDataByteSize) / frameBytes)
+            let frameBytes = bytesPerSample * channels
+            let frameCount = min(maxFrames, Int(first.mDataByteSize) / max(frameBytes, bytesPerSample))
             guard frameCount > 0 else { return }
 
             for frame in 0..<frameCount {
@@ -170,23 +182,18 @@ final class BroadcastAudioTelemetryAnalyzer {
         let peak = max(peakMagnitude(leftSamples), peakMagnitude(rightSamples))
         let mono = zip(leftSamples, rightSamples).map { ($0 + $1) * 0.5 }
         let dominantBand = coarseDominantBand(samples: mono, sampleRate: asbd.mSampleRate)
-        let leftLevel = normalizedLevel(leftRMS)
-        let rightLevel = normalizedLevel(rightRMS)
-        let peakLevel = normalizedLevel(peak)
 
         lock.lock()
         analysisCount &+= 1
         let priorPeak = smoothedPeak
         smoothedPeak = priorPeak * 0.84 + peak * 0.16
-        let transient = peak >= 0.035 && peak > max(0.045, priorPeak * 1.75)
-        let count = analysisCount
         let snapshot = Snapshot(
-            analysisCount: count,
-            leftLevel: leftLevel,
-            rightLevel: rightLevel,
-            peakLevel: peakLevel,
+            analysisCount: analysisCount,
+            leftLevel: normalizedLevel(leftRMS),
+            rightLevel: normalizedLevel(rightRMS),
+            peakLevel: normalizedLevel(peak),
             dominantBand: dominantBand,
-            transient: transient,
+            transient: peak >= 0.035 && peak > max(0.045, priorPeak * 1.75),
             sampleRate: asbd.mSampleRate,
             channels: channels
         )
@@ -209,17 +216,12 @@ final class BroadcastAudioTelemetryAnalyzer {
         return state
     }
 
-    private func readSample(
-        _ data: UnsafeMutableRawPointer,
-        index: Int,
-        isFloat32: Bool
-    ) -> Double {
+    private func readSample(_ data: UnsafeMutableRawPointer, index: Int, isFloat32: Bool) -> Double {
         if isFloat32 {
             let value = data.bindMemory(to: Float.self, capacity: index + 1)[index]
             return value.isFinite ? Double(value) : 0
         }
-        let value = data.bindMemory(to: Int16.self, capacity: index + 1)[index]
-        return Double(value) / Double(Int16.max)
+        return Double(data.bindMemory(to: Int16.self, capacity: index + 1)[index]) / Double(Int16.max)
     }
 
     private func rms(_ samples: [Double]) -> Double {
@@ -246,17 +248,14 @@ final class BroadcastAudioTelemetryAnalyzer {
         let frequencies: [Double] = [160, 400, 900, 1_800, 3_500, 7_000]
         var bestBand = 0
         var bestEnergy = -Double.infinity
-
-        for (index, frequency) in frequencies.enumerated() {
-            guard frequency < sampleRate * 0.46 else { continue }
+        for (index, frequency) in frequencies.enumerated() where frequency < sampleRate * 0.46 {
+            let omega = 2 * Double.pi * frequency / sampleRate
             var real = 0.0
             var imaginary = 0.0
-            let omega = 2 * Double.pi * frequency / sampleRate
             for sampleIndex in samples.indices {
                 let angle = omega * Double(sampleIndex)
-                let value = samples[sampleIndex]
-                real += value * cos(angle)
-                imaginary -= value * sin(angle)
+                real += samples[sampleIndex] * cos(angle)
+                imaginary -= samples[sampleIndex] * sin(angle)
             }
             let energy = real * real + imaginary * imaginary
             if energy > bestEnergy {
