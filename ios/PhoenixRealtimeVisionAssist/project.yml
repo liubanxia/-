@@ -17,6 +17,9 @@ targets:
     platform: iOS
     sources:
       - path: Sources/App
+        excludes:
+          - RadarPiPController.swift
+          - RadarBootstrapLoader.m
       - path: Sources/Core
       - path: Sources/Vision
       - path: Sources/Audio
