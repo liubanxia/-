@@ -1,0 +1,434 @@
+name: LiteView Production Sequence Continuity
+
+on:
+  push:
+    branches:
+      - feature/ios-realtime-vision-runtime-candidate
+    paths:
+      - '.github/workflows/liteview-production-sequence-continuity.yml'
+      - 'ios/PhoenixRealtimeVisionAssist/Sources/Broadcast/LightweightBroadcastAnalyzer.swift'
+      - 'ios/PhoenixRealtimeVisionAssist/Sources/Broadcast/TrueInferenceTelemetry.swift'
+      - 'ios/PhoenixRealtimeVisionAssist/Sources/ExtensionSupport/BroadcastFramePreprocessor.swift'
+      - 'ios/PhoenixRealtimeVisionAssist/Sources/ExtensionSupport/BroadcastNanoPersonDetector.swift'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sequence-continuity:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode and video tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            brew install ffmpeg
+          fi
+          ffmpeg -version | head -1
+
+      - name: Stage production model and neutral pedestrian video
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build/sequence-continuity
+          mkdir -p build/sequence-continuity/frames build/sequence-continuity/model
+
+          ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
+          UNZIP="$RUNNER_TEMP/liteview-yolo11n-coreml"
+          curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 \
+            -o "$ZIP" \
+            'https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
+          rm -rf "$UNZIP"
+          mkdir -p "$UNZIP"
+          unzip -q "$ZIP" -d "$UNZIP"
+          PACKAGE="$(find "$UNZIP" -type d -name 'yolo11n.mlpackage' -print -quit)"
+          test -n "$PACKAGE"
+          xcrun coremlc compile "$PACKAGE" build/sequence-continuity/model
+          MODEL="$(find build/sequence-continuity/model -type d -name 'yolo11n.mlmodelc' -print -quit)"
+          test -n "$MODEL"
+
+          VIDEO='build/sequence-continuity/vtest.avi'
+          curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 \
+            -o "$VIDEO" \
+            'https://github.com/opencv/opencv/raw/4.x/samples/data/vtest.avi'
+          test -s "$VIDEO"
+
+          ffprobe -v error -select_streams v:0 \
+            -show_entries stream=width,height,r_frame_rate,duration \
+            -of default=noprint_wrappers=1 "$VIDEO" \
+            | tee build/sequence-continuity/source_probe.txt
+
+          ffmpeg -hide_banner -loglevel error -y -i "$VIDEO" \
+            -vf 'fps=8' -frames:v 160 \
+            -q:v 3 build/sequence-continuity/frames/frame_%04d.jpg
+          COUNT="$(find build/sequence-continuity/frames -type f -name 'frame_*.jpg' | wc -l | tr -d ' ')"
+          echo "FRAME_COUNT=$COUNT"
+          test "$COUNT" = '160'
+
+      - name: Build actual production sequence probe bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          APP="$RUNNER_TEMP/LiteViewProductionSequenceProbe.app"
+          MACOS="$APP/Contents/MacOS"
+          RES="$APP/Contents/Resources"
+          MODEL="$(find build/sequence-continuity/model -type d -name 'yolo11n.mlmodelc' -print -quit)"
+          rm -rf "$APP"
+          mkdir -p "$MACOS" "$RES/BroadcastModels"
+          cp -R "$MODEL" "$RES/BroadcastModels/yolo11n.mlmodelc"
+
+          cat > "$APP/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key><string>LiteViewProductionSequenceProbe</string>
+            <key>CFBundleIdentifier</key><string>com.phoenix.liteview.production-sequence-probe</string>
+            <key>CFBundleName</key><string>LiteViewProductionSequenceProbe</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleVersion</key><string>1</string>
+          </dict></plist>
+          PLIST
+
+          cat > "$RUNNER_TEMP/main.swift" <<'SWIFT'
+          import CoreGraphics
+          import CoreVideo
+          import Foundation
+          import ImageIO
+
+          func makePixelBuffer(from url: URL) -> CVPixelBuffer {
+              guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+                    let image = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
+                  fatalError("cannot load \(url.path)")
+              }
+              let width = image.width
+              let height = image.height
+              var buffer: CVPixelBuffer?
+              let attrs: [CFString: Any] = [
+                  kCVPixelBufferCGImageCompatibilityKey: true,
+                  kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+                  kCVPixelBufferMetalCompatibilityKey: true,
+                  kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+              ]
+              let status = CVPixelBufferCreate(
+                  kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
+                  attrs as CFDictionary, &buffer
+              )
+              guard status == kCVReturnSuccess, let buffer else {
+                  fatalError("pixel buffer create failed \(status)")
+              }
+              CVPixelBufferLockBaseAddress(buffer, [])
+              defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+              guard let base = CVPixelBufferGetBaseAddress(buffer),
+                    let ctx = CGContext(
+                      data: base,
+                      width: width,
+                      height: height,
+                      bitsPerComponent: 8,
+                      bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+                      space: CGColorSpaceCreateDeviceRGB(),
+                      bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue |
+                        CGImageAlphaInfo.premultipliedFirst.rawValue
+                    ) else { fatalError("CGContext failed") }
+              ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+              return buffer
+          }
+
+          func distance(_ a: LightweightTargetPoint, _ b: LightweightTargetPoint) -> Double {
+              let dx = a.x - b.x
+              let dy = a.y - b.y
+              return (dx * dx + dy * dy).squareRoot()
+          }
+
+          guard CommandLine.arguments.count == 3 else {
+              fatalError("usage: probe <reference|sequence> <frames-dir>")
+          }
+          let mode = CommandLine.arguments[1]
+          let framesDir = URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)
+          let frames = try FileManager.default.contentsOfDirectory(
+              at: framesDir,
+              includingPropertiesForKeys: nil,
+              options: [.skipsHiddenFiles]
+          ).filter { $0.lastPathComponent.hasPrefix("frame_") && $0.pathExtension.lowercased() == "jpg" }
+           .sorted { $0.lastPathComponent < $1.lastPathComponent }
+          guard frames.count == 160 else { fatalError("expected 160 frames, got \(frames.count)") }
+
+          if mode == "reference" {
+              let detector = BroadcastNanoPersonDetector()
+              for (index, frame) in frames.enumerated() {
+                  autoreleasepool {
+                      let buffer = makePixelBuffer(from: frame)
+                      let result = detector.detect(
+                          in: buffer,
+                          orientation: .up,
+                          minimumConfidence: 0.12,
+                          regionOfInterest: CGRect(x: 0, y: 0, width: 1, height: 1)
+                      )
+                      guard result.succeeded else { fatalError("reference detector failed at \(index)") }
+                      let points = result.detections.prefix(8).map {
+                          String(format: "%.5f,%.5f", $0.point.x, $0.point.y)
+                      }.joined(separator: ";")
+                      print("REF\t\(index)\t\(result.detections.count)\t\(points)")
+                  }
+              }
+              print("REFERENCE_DONE")
+              exit(0)
+          }
+
+          guard mode == "sequence" else { fatalError("bad mode") }
+          let analyzer = LightweightBroadcastAnalyzer()
+          let resetFrames = Set([0, 50, 100, 150])
+          for (index, frame) in frames.enumerated() {
+              autoreleasepool {
+                  if resetFrames.contains(index) {
+                      analyzer.reset()
+                      print("RESET\t\(index)")
+                  }
+                  let buffer = makePixelBuffer(from: frame)
+                  let result = analyzer.detectVisibleHumans(in: buffer, orientation: .up)
+                  if let point = result.primaryTarget {
+                      print(String(
+                          format: "SEQ\t%d\t1\t%.5f\t%.5f\t%d\t%.3f\t%d\t%d",
+                          index, point.x, point.y, result.targetCount,
+                          result.latencyMilliseconds,
+                          result.attemptedLaneCount,
+                          result.successfulLaneCount
+                      ))
+                  } else {
+                      print(String(
+                          format: "SEQ\t%d\t0\t0\t0\t%d\t%.3f\t%d\t%d",
+                          index, result.targetCount,
+                          result.latencyMilliseconds,
+                          result.attemptedLaneCount,
+                          result.successfulLaneCount
+                      ))
+                  }
+              }
+              // Emulate a low-rate analysis lane rather than hammering Vision tracking back-to-back.
+              Thread.sleep(forTimeInterval: 0.125)
+          }
+          analyzer.releaseResources()
+          print("SEQUENCE_DONE")
+          SWIFT
+
+          xcrun swiftc -O \
+            "$ROOT/Sources/Broadcast/TrueInferenceTelemetry.swift" \
+            "$ROOT/Sources/Broadcast/LightweightBroadcastAnalyzer.swift" \
+            "$ROOT/Sources/ExtensionSupport/BroadcastFramePreprocessor.swift" \
+            "$ROOT/Sources/ExtensionSupport/BroadcastNanoPersonDetector.swift" \
+            "$RUNNER_TEMP/main.swift" \
+            -o "$MACOS/LiteViewProductionSequenceProbe"
+          test -x "$MACOS/LiteViewProductionSequenceProbe"
+
+      - name: Generate full-frame production detector reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/LiteViewProductionSequenceProbe.app"
+          EXE="$APP/Contents/MacOS/LiteViewProductionSequenceProbe"
+          "$EXE" reference "$(pwd)/build/sequence-continuity/frames" \
+            > build/sequence-continuity/reference.tsv
+          grep -q 'REFERENCE_DONE' build/sequence-continuity/reference.tsv
+
+      - name: Run real production analyzer sequence and sample RSS
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/LiteViewProductionSequenceProbe.app"
+          EXE="$APP/Contents/MacOS/LiteViewProductionSequenceProbe"
+          OUT='build/sequence-continuity/sequence.tsv'
+          ERR='build/sequence-continuity/sequence.stderr'
+          RSS='build/sequence-continuity/sequence_rss_kib.txt'
+          : > "$RSS"
+
+          "$EXE" sequence "$(pwd)/build/sequence-continuity/frames" >"$OUT" 2>"$ERR" &
+          PID=$!
+          SAMPLE=0
+          while kill -0 "$PID" 2>/dev/null; do
+            VALUE="$(ps -o rss= -p "$PID" 2>/dev/null | awk '{print $1}' || true)"
+            if [ -n "$VALUE" ]; then
+              printf '%d %s\n' "$SAMPLE" "$VALUE" >> "$RSS"
+              SAMPLE=$((SAMPLE + 1))
+            fi
+            sleep 0.15
+          done
+          wait "$PID"
+          cat "$ERR"
+          grep -q 'SEQUENCE_DONE' "$OUT"
+          echo "RSS_SAMPLES=$(wc -l < "$RSS" | tr -d ' ')"
+
+      - name: Analyze continuity and reacquisition evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, math, statistics
+
+          refs = {}
+          for line in Path('build/sequence-continuity/reference.tsv').read_text().splitlines():
+              if not line.startswith('REF\t'):
+                  continue
+              p = line.split('\t')
+              idx = int(p[1]); count = int(p[2])
+              points = []
+              if len(p) >= 4 and p[3]:
+                  for item in p[3].split(';'):
+                      x, y = map(float, item.split(','))
+                      points.append((x, y))
+              refs[idx] = (count, points)
+
+          seq = {}
+          reset_frames = []
+          latencies = []
+          for line in Path('build/sequence-continuity/sequence.tsv').read_text().splitlines():
+              if line.startswith('RESET\t'):
+                  reset_frames.append(int(line.split('\t')[1]))
+                  continue
+              if not line.startswith('SEQ\t'):
+                  continue
+              p = line.split('\t')
+              idx = int(p[1]); present = p[2] == '1'
+              point = (float(p[3]), float(p[4])) if present else None
+              target_count = int(p[5]); latency = float(p[6])
+              attempted = int(p[7]); successful = int(p[8])
+              seq[idx] = (present, point, target_count, latency, attempted, successful)
+              latencies.append(latency)
+
+          assert len(refs) == 160, len(refs)
+          assert len(seq) == 160, len(seq)
+          assert reset_frames == [0, 50, 100, 150], reset_frames
+
+          ref_positive = 0
+          seq_present_on_ref = 0
+          matched = 0
+          ref_empty = 0
+          seq_present_on_empty = 0
+          match_by_frame = {}
+          for idx in range(160):
+              count, points = refs[idx]
+              present, point, *_ = seq[idx]
+              if count > 0 and points:
+                  ref_positive += 1
+                  if present:
+                      seq_present_on_ref += 1
+                      d = min(math.hypot(point[0]-q[0], point[1]-q[1]) for q in points)
+                      if d <= 0.20:
+                          matched += 1
+                          match_by_frame[idx] = True
+                      else:
+                          match_by_frame[idx] = False
+                  else:
+                      match_by_frame[idx] = False
+              else:
+                  ref_empty += 1
+                  if present:
+                      seq_present_on_empty += 1
+
+          reacquire_delays = []
+          for reset in reset_frames:
+              found = None
+              for idx in range(reset, min(reset + 16, 160)):
+                  if refs[idx][0] > 0 and match_by_frame.get(idx, False):
+                      found = idx - reset
+                      break
+              if found is not None:
+                  reacquire_delays.append(found)
+
+          # Tracking continuity: longest matched streak on frames where the full detector is positive.
+          longest = 0; current = 0
+          for idx in range(160):
+              if refs[idx][0] > 0 and match_by_frame.get(idx, False):
+                  current += 1
+                  longest = max(longest, current)
+              elif refs[idx][0] > 0:
+                  current = 0
+
+          rss = []
+          for line in Path('build/sequence-continuity/sequence_rss_kib.txt').read_text().splitlines():
+              p = line.split()
+              if len(p) == 2:
+                  rss.append(int(p[1]) / 1024.0)
+          assert len(rss) >= 40, len(rss)
+          n = len(rss)
+          q2 = rss[n//4:n//2]
+          q4 = rss[3*n//4:]
+
+          report = {
+              'frames': 160,
+              'reference_positive_frames': ref_positive,
+              'sequence_present_on_reference_positive': seq_present_on_ref,
+              'matched_reference_positive_frames': matched,
+              'presence_rate_on_reference_positive': round(seq_present_on_ref / ref_positive, 4) if ref_positive else 0,
+              'point_match_rate_on_reference_positive': round(matched / ref_positive, 4) if ref_positive else 0,
+              'reference_empty_frames': ref_empty,
+              'sequence_present_on_reference_empty': seq_present_on_empty,
+              'longest_matched_streak': longest,
+              'reset_frames': reset_frames,
+              'reacquisition_delays_frames': reacquire_delays,
+              'median_latency_ms': round(statistics.median(latencies), 3),
+              'p90_latency_ms': round(sorted(latencies)[int((len(latencies)-1)*0.90)], 3),
+              'rss_q2_median_mib': round(statistics.median(q2), 3),
+              'rss_q4_median_mib': round(statistics.median(q4), 3),
+              'rss_growth_mib': round(statistics.median(q4) - statistics.median(q2), 3),
+              'rss_peak_mib': round(max(rss), 3),
+          }
+          Path('build/sequence-continuity/report.json').write_text(json.dumps(report, indent=2))
+          print(json.dumps(report, indent=2))
+
+          # Execution sanity only. Quality metrics are evidence for the next tuning decision,
+          # not a claim that generic tracking is ready for any particular application domain.
+          assert ref_positive >= 20, report
+          assert len(reacquire_delays) >= 2, report
+          assert report['rss_growth_mib'] <= 8.0, report
+          print('PRODUCTION_SEQUENCE_EVIDENCE_PASS')
+          PY
+
+      - name: Publish sequence evidence
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## LiteView production sequence continuity'
+            echo
+            echo 'Neutral OpenCV pedestrian sample, 160 frames at 8 fps. A separate pass of the same production detector supplies a full-frame reference; the measured pass is the actual production LightweightBroadcastAnalyzer with tracker, sparse 60% ROI reacquisition, and forced resets every 50 frames.'
+            echo
+            if [ -f build/sequence-continuity/source_probe.txt ]; then
+              echo '### Source'
+              echo '```text'
+              cat build/sequence-continuity/source_probe.txt
+              echo '```'
+            fi
+            if [ -f build/sequence-continuity/report.json ]; then
+              echo '### Metrics'
+              echo '```json'
+              cat build/sequence-continuity/report.json
+              echo '```'
+            fi
+            echo
+            echo 'The reference is not human ground truth. It measures continuity relative to the same detector full-frame baseline and must not be interpreted as application-specific accuracy.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sequence evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-production-sequence-continuity
+          path: |
+            build/sequence-continuity/source_probe.txt
+            build/sequence-continuity/reference.tsv
+            build/sequence-continuity/sequence.tsv
+            build/sequence-continuity/sequence.stderr
+            build/sequence-continuity/sequence_rss_kib.txt
+            build/sequence-continuity/report.json
+          retention-days: 7
+          if-no-files-found: warn
