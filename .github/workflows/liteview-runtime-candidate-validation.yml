@@ -100,6 +100,13 @@ jobs:
           ! grep -q 'runHumanRectangleFallback' "$ANA"
           ! grep -q 'preferBackgroundProcessing' "$ANA"
 
+          # Vision tracker sequence state must be request-scoped. Reusing a VNSequenceRequestHandler
+          # across tracker frames caused measurable long-session RSS growth in the pooled A/B gate.
+          grep -q 'let handler = VNSequenceRequestHandler()' "$ANA"
+          ! grep -q 'private var sequenceHandler' "$ANA"
+          ! grep -q 'private let sequenceHandler' "$ANA"
+          test "$(grep -c 'VNSequenceRequestHandler()' "$ANA")" = '1'
+
           # Entitlement-free detector diagnostics must expose the actual input/preprocess/ML/decode chain.
           grep -q 'frameDiagnosticsNotificationName = "com.phoenix.realtimevisionassist.broadcast.frame-diagnostics.v1"' "$TEL"
           grep -q 'preprocessAttempted' "$TEL"
@@ -131,12 +138,16 @@ jobs:
           assert 'CGRect(x: offset, y: 0, width: coverage, height: 1)' in ana
           assert 'CGRect(x: 0, y: offset, width: 1, height: coverage)' in ana
           assert 'CGRect(x: 0, y: 0, width: 1, height: coverage)' in ana
+          assert 'let handler = VNSequenceRequestHandler()' in ana
+          assert 'private var sequenceHandler' not in ana
+          assert 'private let sequenceHandler' not in ana
           assert 'case .right:' in pre and 'case .left:' in pre
           assert 'case .leftMirrored:' in pre and 'case .rightMirrored:' in pre
           assert 'detectorSequence' in tel and 'latestPreprocessSucceeded' in tel
           assert '最近链：预处理' in overlay
           assert '- path: Sources/ExtensionSupport' in project
           print('ALLOCATION_STABLE_RUNTIME_CONTRACT_PASS')
+          print('BOUNDED_VISION_TRACKER_HANDLER_PASS')
           print('FRAME_DIAGNOSTICS_CONTRACT_PASS')
           PY
 
@@ -228,6 +239,7 @@ jobs:
             echo '- High-resolution model preprocessing uses reusable vImage buffers followed by direct MLModel.prediction.'
             echo '- Production preprocessor supports BGRA, NV12 420f and NV12 420v; the separate contract job validates all eight EXIF orientations.'
             echo '- Tracker-loss reacquisition runs one 60% ROI per eligible frame and alternates phases.'
+            echo '- VNTrackObjectRequest uses a request-scoped VNSequenceRequestHandler; long-lived Vision sequence handlers are forbidden.'
             echo '- No high-resolution VNCoreMLRequest or generic human-detector fallback is allowed in the candidate detector path.'
             echo '- Entitlement-free frame diagnostics expose ReplayKit pixel format/orientation and preprocessing/Core ML/decode stage without persisting frames.'
             echo '- ReplayKit analysis keeps the narrow retained-frame ownership bridge; no full-frame copy is introduced.'
