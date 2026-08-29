@@ -9,8 +9,8 @@ settings:
     IPHONEOS_DEPLOYMENT_TARGET: 17.0
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: ""
-    CURRENT_PROJECT_VERSION: 17
-    MARKETING_VERSION: 0.9.1
+    CURRENT_PROJECT_VERSION: 20
+    MARKETING_VERSION: 0.9.3
 targets:
   PhoenixRealtimeVisionAssist:
     type: application
@@ -58,7 +58,7 @@ targets:
         CFBundleDisplayName: LiteView Broadcast
         NSExtension:
           NSExtensionPointIdentifier: com.apple.broadcast-services-upload
-          NSExtensionPrincipalClass: PhoenixBroadcastExtension.BroadcastSampleHandler
+          NSExtensionPrincipalClass: PhoenixBroadcastExtension.EnhancedBroadcastSampleHandler
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.phoenix.realtimevisionassist.broadcast
