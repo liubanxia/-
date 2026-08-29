@@ -74,7 +74,7 @@ jobs:
           </plist>
           PLIST
 
-          cat > "$RUNNER_TEMP/production_detector_probe.swift" <<'SWIFT'
+          cat > "$RUNNER_TEMP/main.swift" <<'SWIFT'
           import CoreFoundation
           import CoreGraphics
           import CoreVideo
@@ -251,7 +251,7 @@ jobs:
           xcrun swiftc -O \
             "$ROOT/Sources/ExtensionSupport/BroadcastFramePreprocessor.swift" \
             "$ROOT/Sources/ExtensionSupport/BroadcastNanoPersonDetector.swift" \
-            "$RUNNER_TEMP/production_detector_probe.swift" \
+            "$RUNNER_TEMP/main.swift" \
             -o "$MACOS/LiteViewProductionDetectorProbe"
 
           test -x "$MACOS/LiteViewProductionDetectorProbe"
