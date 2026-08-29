@@ -73,26 +73,18 @@ private func makeStereoFloat32SampleBuffer(
         throw NSError(domain: "AudioSyntheticSmoke", code: Int(replaceStatus), userInfo: [NSLocalizedDescriptionKey: "copy PCM failed"])
     }
 
-    var timing = CMSampleTimingInfo(
-        duration: CMTime(value: 1, timescale: CMTimeScale(sampleRate)),
-        presentationTimeStamp: .zero,
-        decodeTimeStamp: .invalid
-    )
-    var sampleSize = MemoryLayout<Float>.size * 2
     var sampleBuffer: CMSampleBuffer?
-    let sampleStatus = CMSampleBufferCreateReady(
+    let sampleStatus = CMAudioSampleBufferCreateReadyWithPacketDescriptions(
         allocator: kCFAllocatorDefault,
         dataBuffer: blockBuffer,
         formatDescription: formatDescription,
         sampleCount: frames,
-        sampleTimingEntryCount: 1,
-        sampleTimingArray: &timing,
-        sampleSizeEntryCount: 1,
-        sampleSizeArray: &sampleSize,
+        presentationTimeStamp: .zero,
+        packetDescriptions: nil,
         sampleBufferOut: &sampleBuffer
     )
     guard sampleStatus == noErr, let sampleBuffer else {
-        throw NSError(domain: "AudioSyntheticSmoke", code: Int(sampleStatus), userInfo: [NSLocalizedDescriptionKey: "sample buffer failed"])
+        throw NSError(domain: "AudioSyntheticSmoke", code: Int(sampleStatus), userInfo: [NSLocalizedDescriptionKey: "audio sample buffer failed"])
     }
     return sampleBuffer
 }
@@ -157,7 +149,7 @@ struct AudioSyntheticSmoke {
             fatalError("FAIL: packed telemetry mismatch raw=\(rawState) decoded=\(telemetry)")
         }
 
-        print("PASS: synthetic PCM -> CMSampleBuffer -> parser -> aggregate snapshot -> Darwin packed telemetry")
+        print("PASS: synthetic PCM -> audio CMSampleBuffer -> parser -> aggregate snapshot -> Darwin packed telemetry")
         print("count=\(telemetry.count) L=\(telemetry.left) R=\(telemetry.right) peak=\(telemetry.peak) band=\(telemetry.band) rate=\(telemetry.sampleRateKHz)kHz channels=\(telemetry.channels)")
     }
 }
