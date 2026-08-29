@@ -1,0 +1,544 @@
+name: LiteView Vision Tracker Memory A-B
+
+on:
+  push:
+    branches:
+      - feature/ios-realtime-vision-runtime-candidate
+    paths:
+      - '.github/workflows/liteview-vision-tracker-memory-ab.yml'
+      - 'ios/PhoenixRealtimeVisionAssist/Sources/Broadcast/LightweightBroadcastAnalyzer.swift'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tracker-memory-ab:
+    runs-on: macos-15
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare Xcode and ffmpeg
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          if ! command -v ffmpeg >/dev/null 2>&1; then brew install ffmpeg; fi
+          xcodebuild -version
+          ffmpeg -version | head -1
+
+      - name: Stage production model and pooled pedestrian frames
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build/tracker-memory-ab
+          mkdir -p build/tracker-memory-ab/model
+
+          ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
+          UNZIP="$RUNNER_TEMP/liteview-yolo11n-coreml"
+          curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 \
+            -o "$ZIP" \
+            'https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
+          rm -rf "$UNZIP" && mkdir -p "$UNZIP"
+          unzip -q "$ZIP" -d "$UNZIP"
+          PACKAGE="$(find "$UNZIP" -type d -name 'yolo11n.mlpackage' -print -quit)"
+          test -n "$PACKAGE"
+          xcrun coremlc compile "$PACKAGE" build/tracker-memory-ab/model
+          test -n "$(find build/tracker-memory-ab/model -type d -name 'yolo11n.mlmodelc' -print -quit)"
+
+          VIDEO='build/tracker-memory-ab/vtest.avi'
+          curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 \
+            -o "$VIDEO" \
+            'https://github.com/opencv/opencv/raw/4.x/samples/data/vtest.avi'
+          test -s "$VIDEO"
+
+          RAW='build/tracker-memory-ab/frames_768x576_bgra.raw'
+          ffmpeg -hide_banner -loglevel error -y -i "$VIDEO" \
+            -vf 'fps=8' -frames:v 160 -pix_fmt bgra -f rawvideo "$RAW"
+          python3 - <<'PY'
+          from pathlib import Path
+          raw = Path('build/tracker-memory-ab/frames_768x576_bgra.raw')
+          expected = 768 * 576 * 4 * 160
+          actual = raw.stat().st_size
+          print('RAW_BYTES', actual, 'EXPECTED', expected)
+          assert actual == expected, (actual, expected)
+          PY
+
+      - name: Build isolated tracker A-B probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          APP="$RUNNER_TEMP/LiteViewTrackerMemoryAB.app"
+          MACOS="$APP/Contents/MacOS"
+          RES="$APP/Contents/Resources"
+          MODEL="$(find build/tracker-memory-ab/model -type d -name 'yolo11n.mlmodelc' -print -quit)"
+          rm -rf "$APP"
+          mkdir -p "$MACOS" "$RES/BroadcastModels"
+          cp -R "$MODEL" "$RES/BroadcastModels/yolo11n.mlmodelc"
+
+          cat > "$APP/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key><string>LiteViewTrackerMemoryAB</string>
+            <key>CFBundleIdentifier</key><string>com.phoenix.liteview.tracker-memory-ab</string>
+            <key>CFBundleName</key><string>LiteViewTrackerMemoryAB</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleVersion</key><string>1</string>
+          </dict></plist>
+          PLIST
+
+          cat > "$RUNNER_TEMP/main.swift" <<'SWIFT'
+          import CoreGraphics
+          import CoreVideo
+          import Darwin
+          import Foundation
+          import ImageIO
+          import Vision
+
+          struct LightweightTargetPoint: Sendable, Equatable {
+              let x: Double
+              let y: Double
+          }
+
+          enum LiteViewTelemetryDecoder: UInt64, Sendable {
+              case none = 0
+              case recognizedObject = 1
+              case coordinateConfidence = 2
+              case ultralyticsRaw = 3
+              case emptyOutput = 4
+              case unsupported = 5
+          }
+
+          enum LiteViewTelemetryPixelFormat: UInt64, Sendable {
+              case unknown = 0
+              case bgra = 1
+              case nv12FullRange = 2
+              case nv12VideoRange = 3
+          }
+
+          final class RawFrameReader {
+              let width: Int
+              let height: Int
+              let frameBytes: Int
+              private let fd: Int32
+              private let scratch: UnsafeMutableRawPointer
+
+              init(path: String, width: Int, height: Int) {
+                  self.width = width
+                  self.height = height
+                  frameBytes = width * height * 4
+                  fd = Darwin.open(path, O_RDONLY)
+                  guard fd >= 0 else { fatalError("open raw failed") }
+                  scratch = UnsafeMutableRawPointer.allocate(byteCount: frameBytes, alignment: 64)
+              }
+
+              deinit {
+                  Darwin.close(fd)
+                  scratch.deallocate()
+              }
+
+              func rewind() {
+                  guard lseek(fd, 0, SEEK_SET) == 0 else { fatalError("lseek failed") }
+              }
+
+              func readFrame(into pixelBuffer: CVPixelBuffer) {
+                  var remaining = frameBytes
+                  var dst = scratch
+                  while remaining > 0 {
+                      let n = Darwin.read(fd, dst, remaining)
+                      guard n > 0 else { fatalError("short raw frame") }
+                      remaining -= n
+                      dst = dst.advanced(by: n)
+                  }
+
+                  CVPixelBufferLockBaseAddress(pixelBuffer, [])
+                  defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+                  guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+                      fatalError("pooled base missing")
+                  }
+                  let dstRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+                  let srcRow = width * 4
+                  for y in 0..<height {
+                      memcpy(
+                          base.advanced(by: y * dstRow),
+                          scratch.advanced(by: y * srcRow),
+                          srcRow
+                      )
+                  }
+              }
+          }
+
+          func makeSourceBuffer(width: Int, height: Int) -> CVPixelBuffer {
+              var buffer: CVPixelBuffer?
+              let attrs: [CFString: Any] = [
+                  kCVPixelBufferCGImageCompatibilityKey: true,
+                  kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+                  kCVPixelBufferMetalCompatibilityKey: true,
+                  kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+              ]
+              let status = CVPixelBufferCreate(
+                  kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
+                  attrs as CFDictionary, &buffer
+              )
+              guard status == kCVReturnSuccess, let buffer else {
+                  fatalError("source buffer failed \(status)")
+              }
+              return buffer
+          }
+
+          func centerDistance(_ a: CGRect, _ b: CGRect) -> Double {
+              let dx = Double(a.midX - b.midX)
+              let dy = Double(a.midY - b.midY)
+              return (dx * dx + dy * dy).squareRoot()
+          }
+
+          func parseReferences(_ path: String) throws -> [[CGRect]] {
+              var result = Array(repeating: [CGRect](), count: 160)
+              for line in try String(contentsOfFile: path, encoding: .utf8).split(separator: "\n") {
+                  let p = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+                  guard p.count >= 3, p[0] == "REF", let index = Int(p[1]), index >= 0, index < 160 else {
+                      continue
+                  }
+                  if p[2].isEmpty { continue }
+                  result[index] = p[2].split(separator: ";").compactMap { item in
+                      let v = item.split(separator: ",").compactMap { Double($0) }
+                      guard v.count == 4 else { return nil }
+                      return CGRect(x: v[0], y: v[1], width: v[2], height: v[3])
+                  }
+              }
+              return result
+          }
+
+          guard CommandLine.arguments.count >= 3 else {
+              fatalError("usage: probe <reference|baseline|reuse|rotate8|fresh> <raw-file> [refs.tsv]")
+          }
+          let mode = CommandLine.arguments[1]
+          let rawPath = CommandLine.arguments[2]
+          let width = 768, height = 576, sourceFrames = 160
+          let reader = RawFrameReader(path: rawPath, width: width, height: height)
+          let pool = (0..<3).map { _ in makeSourceBuffer(width: width, height: height) }
+
+          if mode == "reference" {
+              let detector = BroadcastNanoPersonDetector()
+              reader.rewind()
+              for index in 0..<sourceFrames {
+                  autoreleasepool {
+                      let buffer = pool[index % pool.count]
+                      reader.readFrame(into: buffer)
+                      let result = detector.detect(
+                          in: buffer,
+                          orientation: .up,
+                          minimumConfidence: 0.12,
+                          regionOfInterest: CGRect(x: 0, y: 0, width: 1, height: 1)
+                      )
+                      guard result.succeeded else { fatalError("reference failed \(index)") }
+                      let boxes = result.detections
+                          .sorted { $0.confidence > $1.confidence }
+                          .prefix(8)
+                          .map { box in
+                              String(
+                                  format: "%.6f,%.6f,%.6f,%.6f",
+                                  box.boundingBox.origin.x,
+                                  box.boundingBox.origin.y,
+                                  box.boundingBox.size.width,
+                                  box.boundingBox.size.height
+                              )
+                          }
+                          .joined(separator: ";")
+                      print("REF\t\(index)\t\(boxes)")
+                  }
+              }
+              print("REFERENCE_DONE")
+              exit(0)
+          }
+
+          guard CommandLine.arguments.count == 4 else { fatalError("tracker mode requires refs.tsv") }
+          let refs = try parseReferences(CommandLine.arguments[3])
+          let positiveReferenceFrames = refs.filter { !$0.isEmpty }.count
+          guard positiveReferenceFrames >= 120 else {
+              fatalError("too few positive reference frames: \(positiveReferenceFrames)")
+          }
+
+          let totalFrames = 640
+          var observation: VNDetectedObjectObservation?
+          var reusableHandler = VNSequenceRequestHandler()
+          var attempts = 0
+          var successes = 0
+          var matched = 0
+          var matchedReferenceFrames = 0
+          var reseeds = 0
+          var trackerLatencyMs: [Double] = []
+
+          func seed(at sourceIndex: Int) {
+              guard let box = refs[sourceIndex].first else {
+                  observation = nil
+                  return
+              }
+              observation = VNDetectedObjectObservation(boundingBox: box)
+              reseeds += 1
+          }
+
+          for globalIndex in 0..<totalFrames {
+              autoreleasepool {
+                  let sourceIndex = globalIndex % sourceFrames
+                  if sourceIndex == 0 { reader.rewind() }
+                  let buffer = pool[globalIndex % pool.count]
+                  reader.readFrame(into: buffer)
+
+                  if mode == "baseline" {
+                      if !refs[sourceIndex].isEmpty { matchedReferenceFrames += 1 }
+                      Thread.sleep(forTimeInterval: 0.05)
+                      return
+                  }
+
+                  let segmentStart = globalIndex % 32 == 0 || sourceIndex == 0
+                  if segmentStart || observation == nil {
+                      reusableHandler = VNSequenceRequestHandler()
+                      seed(at: sourceIndex)
+                      if let current = observation, !refs[sourceIndex].isEmpty {
+                          matchedReferenceFrames += 1
+                          if refs[sourceIndex].contains(where: { centerDistance(current.boundingBox, $0) <= 0.20 }) {
+                              matched += 1
+                          }
+                      }
+                      Thread.sleep(forTimeInterval: 0.05)
+                      return
+                  }
+
+                  guard let current = observation else {
+                      Thread.sleep(forTimeInterval: 0.05)
+                      return
+                  }
+
+                  if mode == "rotate8" && globalIndex % 8 == 0 {
+                      reusableHandler = VNSequenceRequestHandler()
+                  }
+
+                  let request = VNTrackObjectRequest(detectedObjectObservation: current)
+                  request.trackingLevel = .fast
+                  let started = ProcessInfo.processInfo.systemUptime
+                  attempts += 1
+                  do {
+                      if mode == "fresh" {
+                          let handler = VNSequenceRequestHandler()
+                          try handler.perform([request], on: buffer, orientation: .up)
+                      } else {
+                          try reusableHandler.perform([request], on: buffer, orientation: .up)
+                      }
+                      trackerLatencyMs.append((ProcessInfo.processInfo.systemUptime - started) * 1000)
+                      if let result = request.results?.first as? VNDetectedObjectObservation,
+                         result.confidence >= 0.10 {
+                          successes += 1
+                          observation = VNDetectedObjectObservation(boundingBox: result.boundingBox)
+                          if !refs[sourceIndex].isEmpty {
+                              matchedReferenceFrames += 1
+                              if refs[sourceIndex].contains(where: { centerDistance(result.boundingBox, $0) <= 0.20 }) {
+                                  matched += 1
+                              }
+                          }
+                      } else {
+                          observation = nil
+                      }
+                  } catch {
+                      trackerLatencyMs.append((ProcessInfo.processInfo.systemUptime - started) * 1000)
+                      observation = nil
+                  }
+                  Thread.sleep(forTimeInterval: 0.05)
+              }
+          }
+
+          if mode == "baseline" {
+              print("MODE_METRICS mode=baseline reference_frames=\(matchedReferenceFrames)")
+              print("MODE_DONE baseline")
+              exit(0)
+          }
+
+          let successRate = attempts > 0 ? Double(successes) / Double(attempts) : 0
+          let matchRate = matchedReferenceFrames > 0 ? Double(matched) / Double(matchedReferenceFrames) : 0
+          let medianLatency: Double
+          if trackerLatencyMs.isEmpty {
+              medianLatency = 0
+          } else {
+              let sorted = trackerLatencyMs.sorted()
+              medianLatency = sorted[sorted.count / 2]
+          }
+          print(String(
+              format: "MODE_METRICS mode=%@ attempts=%d successes=%d success_rate=%.4f matched=%d reference_frames=%d match_rate=%.4f reseeds=%d median_tracker_ms=%.3f",
+              mode, attempts, successes, successRate, matched, matchedReferenceFrames, matchRate, reseeds, medianLatency
+          ))
+          print("MODE_DONE \(mode)")
+          SWIFT
+
+          xcrun swiftc -O \
+            "$ROOT/Sources/ExtensionSupport/BroadcastFramePreprocessor.swift" \
+            "$ROOT/Sources/ExtensionSupport/BroadcastNanoPersonDetector.swift" \
+            "$RUNNER_TEMP/main.swift" \
+            -o "$MACOS/LiteViewTrackerMemoryAB"
+          test -x "$MACOS/LiteViewTrackerMemoryAB"
+
+      - name: Generate production-detector reference boxes outside measured loops
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE="$RUNNER_TEMP/LiteViewTrackerMemoryAB.app/Contents/MacOS/LiteViewTrackerMemoryAB"
+          RAW="$(pwd)/build/tracker-memory-ab/frames_768x576_bgra.raw"
+          "$EXE" reference "$RAW" > build/tracker-memory-ab/reference.tsv
+          grep -q 'REFERENCE_DONE' build/tracker-memory-ab/reference.tsv
+          POS="$(grep '^REF' build/tracker-memory-ab/reference.tsv | awk -F '\t' '$3 != "" {n++} END {print n+0}')"
+          echo "POSITIVE_REFERENCE_FRAMES=$POS"
+          test "$POS" -ge 120
+
+      - name: Run isolated memory modes
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE="$RUNNER_TEMP/LiteViewTrackerMemoryAB.app/Contents/MacOS/LiteViewTrackerMemoryAB"
+          RAW="$(pwd)/build/tracker-memory-ab/frames_768x576_bgra.raw"
+          REFS="$(pwd)/build/tracker-memory-ab/reference.tsv"
+
+          run_mode() {
+            MODE="$1"
+            OUT="build/tracker-memory-ab/${MODE}.stdout"
+            ERR="build/tracker-memory-ab/${MODE}.stderr"
+            RSS="build/tracker-memory-ab/${MODE}.rss_kib"
+            : > "$RSS"
+            "$EXE" "$MODE" "$RAW" "$REFS" >"$OUT" 2>"$ERR" &
+            PID=$!
+            SAMPLE=0
+            while kill -0 "$PID" 2>/dev/null; do
+              VALUE="$(ps -o rss= -p "$PID" 2>/dev/null | awk '{print $1}' || true)"
+              if [ -n "$VALUE" ]; then
+                printf '%d %s\n' "$SAMPLE" "$VALUE" >> "$RSS"
+                SAMPLE=$((SAMPLE + 1))
+              fi
+              sleep 0.10
+            done
+            wait "$PID"
+            cat "$ERR"
+            cat "$OUT"
+            grep -q "MODE_DONE $MODE" "$OUT"
+            echo "${MODE}_RSS_SAMPLES=$(wc -l < "$RSS" | tr -d ' ')"
+          }
+
+          run_mode baseline
+          run_mode reuse
+          run_mode rotate8
+          run_mode fresh
+
+      - name: Analyze handler reuse versus tracker intrinsic growth
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, re, statistics
+
+          modes = ['baseline', 'reuse', 'rotate8', 'fresh']
+          report = {}
+          for mode in modes:
+              rss = []
+              for line in Path(f'build/tracker-memory-ab/{mode}.rss_kib').read_text().splitlines():
+                  p = line.split()
+                  if len(p) == 2:
+                      rss.append(int(p[1]) / 1024.0)
+              assert len(rss) >= 120, (mode, len(rss))
+              n = len(rss)
+              q2 = rss[n//4:n//2]
+              q4 = rss[3*n//4:]
+              late = rss[n//2:]
+              q2m = statistics.median(q2)
+              q4m = statistics.median(q4)
+              xs = list(range(len(late)))
+              xb = statistics.mean(xs)
+              yb = statistics.mean(late)
+              den = sum((x-xb)**2 for x in xs)
+              slope = sum((x-xb)*(y-yb) for x,y in zip(xs,late))/den if den else 0.0
+              text = Path(f'build/tracker-memory-ab/{mode}.stdout').read_text()
+              metrics = {'success_rate': None, 'match_rate': None, 'median_tracker_ms': None}
+              m = re.search(r'MODE_METRICS mode=\w+.*', text)
+              if m:
+                  for key in ['success_rate', 'match_rate', 'median_tracker_ms']:
+                      mm = re.search(rf'{key}=([0-9.]+)', m.group(0))
+                      if mm:
+                          metrics[key] = float(mm.group(1))
+              report[mode] = {
+                  'samples': n,
+                  'q2_median_mib': round(q2m, 3),
+                  'q4_median_mib': round(q4m, 3),
+                  'growth_mib': round(q4m - q2m, 3),
+                  'late_slope_mib_per_sample': round(slope, 6),
+                  'peak_mib': round(max(rss), 3),
+                  **metrics,
+              }
+
+          baseline_growth = report['baseline']['growth_mib']
+          for mode in ['reuse', 'rotate8', 'fresh']:
+              report[mode]['net_growth_over_baseline_mib'] = round(
+                  report[mode]['growth_mib'] - baseline_growth, 3
+              )
+
+          valid = [
+              mode for mode in ['reuse', 'rotate8', 'fresh']
+              if (report[mode]['match_rate'] or 0) >= 0.80
+              and (report[mode]['success_rate'] or 0) >= 0.80
+          ]
+          best = min(valid, key=lambda m: report[m]['net_growth_over_baseline_mib']) if valid else None
+
+          reuse_net = report['reuse']['net_growth_over_baseline_mib']
+          fresh_net = report['fresh']['net_growth_over_baseline_mib']
+          rotate_net = report['rotate8']['net_growth_over_baseline_mib']
+          if best is None:
+              verdict = 'NO_TRACKER_MODE_PRESERVED_CONTINUITY'
+          elif fresh_net <= reuse_net - 4.0:
+              verdict = 'HANDLER_REUSE_IS_MAJOR_GROWTH_SOURCE'
+          elif rotate_net <= reuse_net - 4.0:
+              verdict = 'PERIODIC_HANDLER_ROTATION_REDUCES_GROWTH'
+          elif min(reuse_net, rotate_net, fresh_net) > 4.0:
+              verdict = 'VNTRACKOBJECTREQUEST_ITSELF_REMAINS_GROWTH_SOURCE'
+          else:
+              verdict = 'NO_CLEAR_TRACKER_GROWTH_DIFFERENCE'
+
+          final = {'verdict': verdict, 'best_valid_mode': best, 'modes': report}
+          Path('build/tracker-memory-ab/report.json').write_text(json.dumps(final, indent=2))
+          print(json.dumps(final, indent=2))
+
+          assert report['baseline']['samples'] >= 120
+          assert report['reuse']['success_rate'] is not None
+          assert report['fresh']['success_rate'] is not None
+          print('VISION_TRACKER_MEMORY_AB_COMPLETE')
+          PY
+
+      - name: Publish tracker A-B evidence
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## LiteView Vision tracker memory A/B'
+            echo
+            echo 'Measured loops use the same three-CVPixelBuffer raw BGRA ring. Core ML runs only before measurement to generate per-frame reference boxes.'
+            echo
+            echo '- baseline: frame ring only, no Vision tracking'
+            echo '- reuse: one VNSequenceRequestHandler reused inside each 32-frame segment'
+            echo '- rotate8: handler rotated every 8 frames while carrying the latest observation'
+            echo '- fresh: new VNSequenceRequestHandler for every VNTrackObjectRequest'
+            echo
+            if [ -f build/tracker-memory-ab/report.json ]; then
+              echo '```json'; cat build/tracker-memory-ab/report.json; echo '```'
+            fi
+            echo
+            echo 'This is a neutral visible-person tracking/memory diagnostic. It does not validate live game assistance or on-device ReplayKit jetsam limits.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload A-B evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-vision-tracker-memory-ab
+          path: build/tracker-memory-ab/
+          retention-days: 7
+          if-no-files-found: warn
