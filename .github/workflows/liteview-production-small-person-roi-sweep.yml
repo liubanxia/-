@@ -1,0 +1,396 @@
+name: LiteView Production Small-Person ROI Sweep
+
+on:
+  push:
+    branches:
+      - feature/ios-realtime-vision-runtime-candidate
+    paths:
+      - '.github/workflows/liteview-production-small-person-roi-sweep.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  roi-sweep:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Stage production model and COCO128 cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build/production-roi-sweep
+          mkdir -p build/production-roi-sweep/data build/production-roi-sweep/model
+
+          ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
+          UNZIP="$RUNNER_TEMP/liteview-yolo11n-coreml"
+          curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 \
+            -o "$ZIP" \
+            'https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
+          rm -rf "$UNZIP"
+          mkdir -p "$UNZIP"
+          unzip -q "$ZIP" -d "$UNZIP"
+          PACKAGE="$(find "$UNZIP" -type d -name 'yolo11n.mlpackage' -print -quit)"
+          test -n "$PACKAGE"
+          xcrun coremlc compile "$PACKAGE" build/production-roi-sweep/model
+          MODEL="$(find build/production-roi-sweep/model -type d -name 'yolo11n.mlmodelc' -print -quit)"
+          test -n "$MODEL"
+
+          curl -fL --retry 6 --retry-delay 2 \
+            'https://github.com/ultralytics/assets/releases/download/v0.0.0/coco128.zip' \
+            -o "$RUNNER_TEMP/coco128.zip"
+          unzip -q "$RUNNER_TEMP/coco128.zip" -d build/production-roi-sweep/data
+
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path('build/production-roi-sweep/data/coco128').resolve()
+          rows = []
+          for label in sorted((root / 'labels').rglob('*.txt')):
+              persons = []
+              for line in label.read_text().splitlines():
+                  p = line.split()
+                  if len(p) >= 5 and p[0] == '0':
+                      persons.append(tuple(map(float, p[1:5])))
+              if not persons:
+                  continue
+              image = next(iter((root / 'images').rglob(label.stem + '.jpg')), None)
+              if image is None:
+                  continue
+              encoded = ';'.join(','.join(f'{v:.8f}' for v in box) for box in persons)
+              rows.append(f'{image.resolve()}\t{encoded}')
+              if len(rows) >= 48:
+                  break
+          assert len(rows) == 48, len(rows)
+          Path('build/production-roi-sweep/cases.tsv').write_text('\n'.join(rows) + '\n')
+          print('CASES', len(rows))
+          PY
+
+      - name: Build production detector ROI sweep probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          APP="$RUNNER_TEMP/LiteViewProductionROISweep.app"
+          MACOS="$APP/Contents/MacOS"
+          RES="$APP/Contents/Resources"
+          MODEL="$(find build/production-roi-sweep/model -type d -name 'yolo11n.mlmodelc' -print -quit)"
+          rm -rf "$APP"
+          mkdir -p "$MACOS" "$RES/BroadcastModels"
+          cp -R "$MODEL" "$RES/BroadcastModels/yolo11n.mlmodelc"
+
+          cat > "$APP/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key><string>LiteViewProductionROISweep</string>
+            <key>CFBundleIdentifier</key><string>com.phoenix.liteview.production-roi-sweep</string>
+            <key>CFBundleName</key><string>LiteViewProductionROISweep</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleVersion</key><string>1</string>
+          </dict></plist>
+          PLIST
+
+          cat > "$RUNNER_TEMP/main.swift" <<'SWIFT'
+          import CoreGraphics
+          import CoreVideo
+          import Foundation
+          import ImageIO
+
+          struct LightweightTargetPoint: Sendable, Equatable {
+              let x: Double
+              let y: Double
+          }
+
+          enum LiteViewTelemetryDecoder: UInt64, Sendable {
+              case none = 0
+              case recognizedObject = 1
+              case coordinateConfidence = 2
+              case ultralyticsRaw = 3
+              case emptyOutput = 4
+              case unsupported = 5
+          }
+
+          enum LiteViewTelemetryPixelFormat: UInt64, Sendable {
+              case unknown = 0
+              case bgra = 1
+              case nv12FullRange = 2
+              case nv12VideoRange = 3
+          }
+
+          struct GTBox {
+              let rect: CGRect
+              let effectiveHeight: Double
+          }
+
+          struct Metrics {
+              var gt = 0
+              var predictions = 0
+              var matches = 0
+              var lt16GT = 0
+              var lt16Matches = 0
+              var px16to23GT = 0
+              var px16to23Matches = 0
+              var px24to31GT = 0
+              var px24to31Matches = 0
+              var px32to63GT = 0
+              var px32to63Matches = 0
+              var px64plusGT = 0
+              var px64plusMatches = 0
+          }
+
+          struct ConfigResult {
+              let cover: Double
+              let confidence: Double
+              let metrics: Metrics
+          }
+
+          func makeSourceBuffer(from url: URL) -> CVPixelBuffer {
+              guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+                    let image = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
+                  fatalError("cannot load \(url.path)")
+              }
+              let width = 1920, height = 1080
+              var buffer: CVPixelBuffer?
+              let attrs: [CFString: Any] = [
+                  kCVPixelBufferCGImageCompatibilityKey: true,
+                  kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+                  kCVPixelBufferMetalCompatibilityKey: true,
+                  kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+              ]
+              let status = CVPixelBufferCreate(
+                  kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
+                  attrs as CFDictionary, &buffer
+              )
+              guard status == kCVReturnSuccess, let buffer else { fatalError("buffer create \(status)") }
+              CVPixelBufferLockBaseAddress(buffer, [])
+              defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+              guard let base = CVPixelBufferGetBaseAddress(buffer),
+                    let ctx = CGContext(
+                      data: base, width: width, height: height, bitsPerComponent: 8,
+                      bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+                      space: CGColorSpaceCreateDeviceRGB(),
+                      bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue |
+                        CGImageAlphaInfo.premultipliedFirst.rawValue
+                    ) else { fatalError("context") }
+              ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+              return buffer
+          }
+
+          func parseGT(_ encoded: String) -> [GTBox] {
+              encoded.split(separator: ";").compactMap { item in
+                  let p = item.split(separator: ",").compactMap { Double($0) }
+                  guard p.count == 4 else { return nil }
+                  let xc = p[0], yc = p[1], w = p[2], h = p[3]
+                  let x = max(0, xc - w / 2)
+                  let y = max(0, 1 - (yc + h / 2))
+                  let rect = CGRect(x: x, y: y, width: min(w, 1 - x), height: min(h, 1 - y))
+                  return GTBox(rect: rect, effectiveHeight: h * 216.0)
+              }
+          }
+
+          func iou(_ a: CGRect, _ b: CGRect) -> Double {
+              let inter = a.intersection(b)
+              if inter.isNull || inter.isEmpty { return 0 }
+              let ia = Double(inter.width * inter.height)
+              let ua = Double(a.width * a.height + b.width * b.height - inter.width * inter.height)
+              return ua > 0 ? ia / ua : 0
+          }
+
+          func nms(_ detections: [BroadcastNanoDetection], threshold: Double = 0.45) -> [BroadcastNanoDetection] {
+              var remaining = detections.sorted { $0.confidence > $1.confidence }
+              var kept: [BroadcastNanoDetection] = []
+              while let best = remaining.first, kept.count < 20 {
+                  kept.append(best)
+                  remaining.removeFirst()
+                  remaining.removeAll { iou(best.boundingBox, $0.boundingBox) >= threshold }
+              }
+              return kept
+          }
+
+          func update(_ m: inout Metrics, gt: [GTBox], predictions: [BroadcastNanoDetection]) {
+              m.gt += gt.count
+              m.predictions += predictions.count
+              var used = Set<Int>()
+              for target in gt {
+                  let h = target.effectiveHeight
+                  if h < 16 { m.lt16GT += 1 }
+                  else if h < 24 { m.px16to23GT += 1 }
+                  else if h < 32 { m.px24to31GT += 1 }
+                  else if h < 64 { m.px32to63GT += 1 }
+                  else { m.px64plusGT += 1 }
+
+                  var bestIndex: Int? = nil
+                  var best = 0.0
+                  for (i, pred) in predictions.enumerated() where !used.contains(i) {
+                      let overlap = iou(target.rect, pred.boundingBox)
+                      if overlap > best { best = overlap; bestIndex = i }
+                  }
+                  if let bestIndex, best >= 0.30 {
+                      used.insert(bestIndex)
+                      m.matches += 1
+                      if h < 16 { m.lt16Matches += 1 }
+                      else if h < 24 { m.px16to23Matches += 1 }
+                      else if h < 32 { m.px24to31Matches += 1 }
+                      else if h < 64 { m.px32to63Matches += 1 }
+                      else { m.px64plusMatches += 1 }
+                  }
+              }
+          }
+
+          func ratio(_ a: Int, _ b: Int) -> Double { b > 0 ? Double(a) / Double(b) : 0 }
+
+          func printMetrics(prefix: String, metrics m: Metrics) {
+              print("\(prefix)_GT=\(m.gt)")
+              print("\(prefix)_PRED=\(m.predictions)")
+              print(String(format: "\(prefix)_RECALL=%.4f", ratio(m.matches, m.gt)))
+              print(String(format: "\(prefix)_PRECISION=%.4f", ratio(m.matches, m.predictions)))
+              print("\(prefix)_LT16_GT=\(m.lt16GT)")
+              print(String(format: "\(prefix)_LT16_RECALL=%.4f", ratio(m.lt16Matches, m.lt16GT)))
+              print("\(prefix)_PX16_23_GT=\(m.px16to23GT)")
+              print(String(format: "\(prefix)_PX16_23_RECALL=%.4f", ratio(m.px16to23Matches, m.px16to23GT)))
+              print("\(prefix)_PX24_31_GT=\(m.px24to31GT)")
+              print(String(format: "\(prefix)_PX24_31_RECALL=%.4f", ratio(m.px24to31Matches, m.px24to31GT)))
+              print(String(format: "\(prefix)_PX32_63_RECALL=%.4f", ratio(m.px32to63Matches, m.px32to63GT)))
+              print(String(format: "\(prefix)_PX64PLUS_RECALL=%.4f", ratio(m.px64plusMatches, m.px64plusGT)))
+          }
+
+          guard CommandLine.arguments.count == 2 else { fatalError("usage: sweep <cases.tsv>") }
+          let rows = try String(contentsOfFile: CommandLine.arguments[1], encoding: .utf8)
+              .split(separator: "\n")
+          guard rows.count == 48 else { fatalError("expected 48 cases") }
+
+          let detector = BroadcastNanoPersonDetector()
+          let fullROI = CGRect(x: 0, y: 0, width: 1, height: 1)
+          let covers = [0.60, 0.68, 0.75]
+          let thresholds = [0.07, 0.09, 0.12, 0.15]
+          var fullMetrics = Metrics()
+          var sweep: [String: Metrics] = [:]
+
+          for row in rows {
+              let fields = row.split(separator: "\t", maxSplits: 1).map(String.init)
+              guard fields.count == 2 else { continue }
+              let gt = parseGT(fields[1])
+              let source = makeSourceBuffer(from: URL(fileURLWithPath: fields[0]))
+
+              let full = detector.detect(
+                  in: source, orientation: .up,
+                  minimumConfidence: 0.12, regionOfInterest: fullROI
+              )
+              guard full.succeeded else { fatalError("full detector failed") }
+              update(&fullMetrics, gt: gt, predictions: full.detections)
+
+              for cover in covers {
+                  let left = CGRect(x: 0, y: 0, width: cover, height: 1)
+                  let right = CGRect(x: 1 - cover, y: 0, width: cover, height: 1)
+                  for threshold in thresholds {
+                      let a = detector.detect(
+                          in: source, orientation: .up,
+                          minimumConfidence: threshold, regionOfInterest: left
+                      )
+                      let b = detector.detect(
+                          in: source, orientation: .up,
+                          minimumConfidence: threshold, regionOfInterest: right
+                      )
+                      guard a.succeeded, b.succeeded else { fatalError("ROI detector failed") }
+                      let combined = nms(full.detections + a.detections + b.detections)
+                      let key = String(format: "C%02d_T%02d", Int((cover * 100).rounded()), Int((threshold * 100).rounded()))
+                      var metrics = sweep[key] ?? Metrics()
+                      update(&metrics, gt: gt, predictions: combined)
+                      sweep[key] = metrics
+                  }
+              }
+          }
+
+          printMetrics(prefix: "BASE", metrics: fullMetrics)
+          print("SWEEP_TABLE_BEGIN")
+          print("config,recall,precision,lt16,px16_23,px24_31,px32_63,px64plus,predictions")
+
+          var bestKey = ""
+          var bestScore = -1.0
+          var bestMetrics = Metrics()
+          for key in sweep.keys.sorted() {
+              guard let m = sweep[key] else { continue }
+              let precision = ratio(m.matches, m.predictions)
+              let lt16 = ratio(m.lt16Matches, m.lt16GT)
+              let p16 = ratio(m.px16to23Matches, m.px16to23GT)
+              let p24 = ratio(m.px24to31Matches, m.px24to31GT)
+              let smallWeighted = lt16 * 0.45 + p16 * 0.35 + p24 * 0.20
+              print(String(format: "%@,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d",
+                           key,
+                           ratio(m.matches, m.gt), precision,
+                           lt16, p16, p24,
+                           ratio(m.px32to63Matches, m.px32to63GT),
+                           ratio(m.px64plusMatches, m.px64plusGT),
+                           m.predictions))
+              // Require useful precision before rewarding distant-person recall.
+              if precision >= 0.58 && smallWeighted > bestScore {
+                  bestScore = smallWeighted
+                  bestKey = key
+                  bestMetrics = m
+              }
+          }
+          print("SWEEP_TABLE_END")
+          guard !bestKey.isEmpty else { fatalError("no ROI configuration retained precision >= 0.58") }
+          print("BEST_CONFIG=\(bestKey)")
+          print(String(format: "BEST_RECALL=%.4f", ratio(bestMetrics.matches, bestMetrics.gt)))
+          print(String(format: "BEST_PRECISION=%.4f", ratio(bestMetrics.matches, bestMetrics.predictions)))
+          print(String(format: "BEST_LT16_RECALL=%.4f", ratio(bestMetrics.lt16Matches, bestMetrics.lt16GT)))
+          print(String(format: "BEST_PX16_23_RECALL=%.4f", ratio(bestMetrics.px16to23Matches, bestMetrics.px16to23GT)))
+          print(String(format: "BEST_PX24_31_RECALL=%.4f", ratio(bestMetrics.px24to31Matches, bestMetrics.px24to31GT)))
+          print("PRODUCTION_SMALL_PERSON_ROI_SWEEP_PASS")
+          SWIFT
+
+          xcrun swiftc -O \
+            "$ROOT/Sources/ExtensionSupport/BroadcastFramePreprocessor.swift" \
+            "$ROOT/Sources/ExtensionSupport/BroadcastNanoPersonDetector.swift" \
+            "$RUNNER_TEMP/main.swift" \
+            -o "$MACOS/LiteViewProductionROISweep"
+
+      - name: Run ROI sweep
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/LiteViewProductionROISweep.app"
+          "$APP/Contents/MacOS/LiteViewProductionROISweep" build/production-roi-sweep/cases.tsv \
+            | tee build/production-roi-sweep/results.log
+          grep -q 'PRODUCTION_SMALL_PERSON_ROI_SWEEP_PASS' build/production-roi-sweep/results.log
+
+      - name: Publish sweep summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## LiteView production small-person ROI sweep'
+            echo
+            echo 'Same production YOLO11n-384 detector. Full-frame confidence stays fixed at 0.12. Only two-phase ROI coverage and ROI confidence vary.'
+            echo
+            if [ -f build/production-roi-sweep/results.log ]; then
+              echo '```text'
+              sed -n '/SWEEP_TABLE_BEGIN/,/SWEEP_TABLE_END/p' build/production-roi-sweep/results.log
+              grep -E '^(BASE_|BEST_|PRODUCTION_SMALL)' build/production-roi-sweep/results.log || true
+              echo '```'
+            fi
+            echo
+            echo 'Pixel bins are referenced to a 1920x1080 full frame scaleFit into the 384 detector. This is generic visible-person benchmarking only.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sweep evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-production-small-person-roi-sweep
+          path: |
+            build/production-roi-sweep/results.log
+            build/production-roi-sweep/cases.tsv
+          retention-days: 7
+          if-no-files-found: warn
