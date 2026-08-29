@@ -1,0 +1,361 @@
+name: LiteView Production Detector Long-Run
+
+on:
+  push:
+    branches:
+      - feature/ios-realtime-vision-runtime-candidate
+    paths:
+      - '.github/workflows/liteview-production-detector-longrun.yml'
+      - 'ios/PhoenixRealtimeVisionAssist/Sources/ExtensionSupport/BroadcastFramePreprocessor.swift'
+      - 'ios/PhoenixRealtimeVisionAssist/Sources/ExtensionSupport/BroadcastNanoPersonDetector.swift'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  production-detector-longrun:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Stage production YOLO11n 384 model
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
+          UNZIP_DIR="$RUNNER_TEMP/liteview-yolo11n-coreml"
+          COMPILE_DIR="$RUNNER_TEMP/liteview-yolo11n-compiled"
+          URL='https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
+
+          rm -rf "$UNZIP_DIR" "$COMPILE_DIR" build/production-detector
+          mkdir -p "$UNZIP_DIR" "$COMPILE_DIR" build/production-detector
+          curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 -o "$ZIP" "$URL"
+          unzip -q "$ZIP" -d "$UNZIP_DIR"
+          SRC="$(find "$UNZIP_DIR" -type d -name 'yolo11n.mlpackage' -print -quit)"
+          test -n "$SRC"
+          xcrun coremlc compile "$SRC" "$COMPILE_DIR"
+          MODEL="$(find "$COMPILE_DIR" -type d -name 'yolo11n.mlmodelc' -print -quit)"
+          test -n "$MODEL"
+          echo "$MODEL" > build/production-detector/model_path.txt
+
+      - name: Build actual production detector probe bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          APP="$RUNNER_TEMP/LiteViewProductionDetectorProbe.app"
+          MACOS="$APP/Contents/MacOS"
+          RES="$APP/Contents/Resources"
+          MODEL="$(cat build/production-detector/model_path.txt)"
+          rm -rf "$APP"
+          mkdir -p "$MACOS" "$RES/BroadcastModels"
+          cp -R "$MODEL" "$RES/BroadcastModels/yolo11n.mlmodelc"
+
+          cat > "$APP/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>LiteViewProductionDetectorProbe</string>
+            <key>CFBundleIdentifier</key><string>com.phoenix.liteview.production-detector-probe</string>
+            <key>CFBundleName</key><string>LiteViewProductionDetectorProbe</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleVersion</key><string>1</string>
+          </dict>
+          </plist>
+          PLIST
+
+          cat > "$RUNNER_TEMP/production_detector_probe.swift" <<'SWIFT'
+          import CoreFoundation
+          import CoreGraphics
+          import CoreVideo
+          import Foundation
+          import ImageIO
+
+          struct LightweightTargetPoint: Sendable, Equatable {
+              let x: Double
+              let y: Double
+          }
+
+          enum LiteViewTelemetryDecoder: UInt64, Sendable {
+              case none = 0
+              case recognizedObject = 1
+              case coordinateConfidence = 2
+              case ultralyticsRaw = 3
+              case emptyOutput = 4
+              case unsupported = 5
+          }
+
+          func makeBGRA(width: Int, height: Int) -> CVPixelBuffer {
+              var buffer: CVPixelBuffer?
+              let attrs: [CFString: Any] = [
+                  kCVPixelBufferCGImageCompatibilityKey: true,
+                  kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+                  kCVPixelBufferMetalCompatibilityKey: true,
+                  kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+              ]
+              let status = CVPixelBufferCreate(
+                  kCFAllocatorDefault,
+                  width,
+                  height,
+                  kCVPixelFormatType_32BGRA,
+                  attrs as CFDictionary,
+                  &buffer
+              )
+              guard status == kCVReturnSuccess, let buffer else {
+                  fatalError("BGRA create failed: \(status)")
+              }
+              CVPixelBufferLockBaseAddress(buffer, [])
+              if let base = CVPixelBufferGetBaseAddress(buffer) {
+                  let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
+                  for y in 0..<height {
+                      let row = base.advanced(by: y * rowBytes).assumingMemoryBound(to: UInt8.self)
+                      for x in 0..<width {
+                          let p = x * 4
+                          row[p + 0] = UInt8((x + y) & 0xff)
+                          row[p + 1] = UInt8((x >> 2) & 0xff)
+                          row[p + 2] = UInt8((y >> 1) & 0xff)
+                          row[p + 3] = 255
+                      }
+                  }
+              }
+              CVPixelBufferUnlockBaseAddress(buffer, [])
+              return buffer
+          }
+
+          func makeNV12(width: Int, height: Int, format: OSType) -> CVPixelBuffer {
+              var buffer: CVPixelBuffer?
+              let attrs: [CFString: Any] = [
+                  kCVPixelBufferMetalCompatibilityKey: true,
+                  kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+              ]
+              let status = CVPixelBufferCreate(
+                  kCFAllocatorDefault,
+                  width,
+                  height,
+                  format,
+                  attrs as CFDictionary,
+                  &buffer
+              )
+              guard status == kCVReturnSuccess,
+                    let buffer,
+                    CVPixelBufferIsPlanar(buffer),
+                    CVPixelBufferGetPlaneCount(buffer) == 2 else {
+                  fatalError("NV12 create failed: \(status)")
+              }
+              CVPixelBufferLockBaseAddress(buffer, [])
+              defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+              guard let yBase = CVPixelBufferGetBaseAddressOfPlane(buffer, 0),
+                    let uvBase = CVPixelBufferGetBaseAddressOfPlane(buffer, 1) else {
+                  fatalError("NV12 planes missing")
+              }
+              let yWidth = CVPixelBufferGetWidthOfPlane(buffer, 0)
+              let yHeight = CVPixelBufferGetHeightOfPlane(buffer, 0)
+              let yRow = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+              for row in 0..<yHeight {
+                  memset(yBase.advanced(by: row * yRow), 96, yWidth)
+              }
+              let uvWidth = CVPixelBufferGetWidthOfPlane(buffer, 1)
+              let uvHeight = CVPixelBufferGetHeightOfPlane(buffer, 1)
+              let uvRow = CVPixelBufferGetBytesPerRowOfPlane(buffer, 1)
+              for row in 0..<uvHeight {
+                  let p = uvBase.advanced(by: row * uvRow).assumingMemoryBound(to: UInt8.self)
+                  for x in 0..<uvWidth {
+                      p[x * 2] = 112
+                      p[x * 2 + 1] = 144
+                  }
+              }
+              return buffer
+          }
+
+          let orientations: [CGImagePropertyOrientation] = [
+              .up, .right, .down, .left,
+              .upMirrored, .rightMirrored, .downMirrored, .leftMirrored,
+          ]
+          let full = CGRect(x: 0, y: 0, width: 1, height: 1)
+          let left = CGRect(x: 0, y: 0, width: 0.68, height: 1)
+          let right = CGRect(x: 0.32, y: 0, width: 0.68, height: 1)
+          let top = CGRect(x: 0, y: 0.32, width: 1, height: 0.68)
+          let bottom = CGRect(x: 0, y: 0, width: 1, height: 0.68)
+
+          let bgra = makeBGRA(width: 1920, height: 1080)
+          let nv12Full = makeNV12(
+              width: 1920,
+              height: 1080,
+              format: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+          )
+          let nv12Video = makeNV12(
+              width: 1920,
+              height: 1080,
+              format: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+          )
+          let sources = [bgra, nv12Full, nv12Video]
+
+          let detector = BroadcastNanoPersonDetector()
+
+          func run(index: Int) {
+              let source = sources[index % sources.count]
+              let orientation = orientations[index % orientations.count]
+              let roi: CGRect
+              if index % 12 == 0 {
+                  roi = full
+              } else if orientation == .left || orientation == .leftMirrored ||
+                        orientation == .right || orientation == .rightMirrored {
+                  roi = index % 2 == 0 ? top : bottom
+              } else {
+                  roi = index % 2 == 0 ? left : right
+              }
+              let result = detector.detect(
+                  in: source,
+                  orientation: orientation,
+                  minimumConfidence: index % 12 == 0 ? 0.12 : 0.09,
+                  regionOfInterest: roi
+              )
+              guard result.succeeded,
+                    result.coreMLInvoked,
+                    result.decodeSucceeded,
+                    !result.inferenceFailed,
+                    result.modelName?.lowercased().contains("yolo11n") == true else {
+                  fatalError("production detector failed at index=\(index) result=\(result)")
+              }
+          }
+
+          for i in 0..<72 {
+              autoreleasepool { run(index: i) }
+          }
+          print("PRODUCTION_DETECTOR_READY")
+          fflush(stdout)
+
+          let iterations = 1200
+          let started = CFAbsoluteTimeGetCurrent()
+          for i in 0..<iterations {
+              autoreleasepool { run(index: i) }
+              if i % 100 == 0 {
+                  print("PRODUCTION_DETECTOR_PROGRESS iteration=\(i)")
+                  fflush(stdout)
+              }
+          }
+          let elapsed = CFAbsoluteTimeGetCurrent() - started
+          print(String(format: "PRODUCTION_DETECTOR_DONE iterations=%d elapsed_sec=%.3f", iterations, elapsed))
+          SWIFT
+
+          xcrun swiftc -O \
+            "$ROOT/Sources/ExtensionSupport/BroadcastFramePreprocessor.swift" \
+            "$ROOT/Sources/ExtensionSupport/BroadcastNanoPersonDetector.swift" \
+            "$RUNNER_TEMP/production_detector_probe.swift" \
+            -o "$MACOS/LiteViewProductionDetectorProbe"
+
+          test -x "$MACOS/LiteViewProductionDetectorProbe"
+          test -d "$RES/BroadcastModels/yolo11n.mlmodelc"
+
+      - name: Run production-source 1200-request stress
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/LiteViewProductionDetectorProbe.app"
+          EXE="$APP/Contents/MacOS/LiteViewProductionDetectorProbe"
+          OUT='build/production-detector/probe.stdout'
+          ERR='build/production-detector/probe.stderr'
+          RSS='build/production-detector/rss_kib.txt'
+          : > "$RSS"
+
+          "$EXE" >"$OUT" 2>"$ERR" &
+          PID=$!
+          SAMPLE=0
+          while kill -0 "$PID" 2>/dev/null; do
+            VALUE="$(ps -o rss= -p "$PID" 2>/dev/null | awk '{print $1}' || true)"
+            if [ -n "$VALUE" ]; then
+              printf '%d %s\n' "$SAMPLE" "$VALUE" >> "$RSS"
+              SAMPLE=$((SAMPLE + 1))
+            fi
+            sleep 0.15
+          done
+          wait "$PID"
+          cat "$OUT"
+          cat "$ERR"
+          grep -q 'PRODUCTION_DETECTOR_DONE iterations=1200' "$OUT"
+          echo "RSS_SAMPLES=$(wc -l < "$RSS" | tr -d ' ')"
+
+      - name: Guard production-source memory plateau
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, re, statistics
+
+          vals = []
+          for line in Path('build/production-detector/rss_kib.txt').read_text().splitlines():
+              p = line.split()
+              if len(p) == 2:
+                  vals.append(int(p[1]) / 1024.0)
+          assert len(vals) >= 120, len(vals)
+          n = len(vals)
+          q3 = vals[n//2:(3*n)//4]
+          q4 = vals[(3*n)//4:]
+          late = vals[n//2:]
+          q3m = statistics.median(q3)
+          q4m = statistics.median(q4)
+          xs = list(range(len(late)))
+          xb = statistics.mean(xs)
+          yb = statistics.mean(late)
+          den = sum((x-xb)**2 for x in xs)
+          slope = sum((x-xb)*(y-yb) for x,y in zip(xs,late))/den if den else 0.0
+          stdout = Path('build/production-detector/probe.stdout').read_text()
+          m = re.search(r'elapsed_sec=([0-9.]+)', stdout)
+          report = {
+              'samples': n,
+              'q3_median_mib': round(q3m, 3),
+              'q4_median_mib': round(q4m, 3),
+              'late_growth_mib': round(q4m-q3m, 3),
+              'late_slope_mib_per_sample': round(slope, 6),
+              'peak_mib': round(max(vals), 3),
+              'elapsed_sec': float(m.group(1)) if m else None,
+          }
+          Path('build/production-detector/report.json').write_text(json.dumps(report, indent=2))
+          print(json.dumps(report, indent=2))
+
+          # Host-side trend gate. This validates allocation stability, not the iPhone jetsam limit.
+          assert report['late_growth_mib'] <= 2.0, report
+          assert report['late_slope_mib_per_sample'] <= 0.015, report
+          assert report['peak_mib'] <= 70.0, report
+          print('PRODUCTION_DETECTOR_MEMORY_PLATEAU_PASS')
+          PY
+
+      - name: Publish evidence summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## LiteView production detector long-run'
+            echo
+            echo 'This job compiles the repository production BroadcastFramePreprocessor.swift and BroadcastNanoPersonDetector.swift directly into a macOS probe app. The production detector discovers yolo11n.mlmodelc through Bundle.main/BroadcastModels, matching the app resource contract.'
+            echo
+            echo 'The measured loop mixes BGRA, NV12 full-range, NV12 video-range, all eight EXIF orientations, full-frame refreshes and 68% sparse ROIs for 1200 detector calls after warmup.'
+            echo
+            if [ -f build/production-detector/report.json ]; then
+              echo '```json'
+              cat build/production-detector/report.json
+              echo '```'
+            fi
+            echo
+            echo 'This is a macOS production-source allocation-trend test. It does not establish on-device iPhone ReplayKit jetsam behavior or recognition quality.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload production-source evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-production-detector-longrun
+          path: build/production-detector/
+          retention-days: 7
+          if-no-files-found: warn
