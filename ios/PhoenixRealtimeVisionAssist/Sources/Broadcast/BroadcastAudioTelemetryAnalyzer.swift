@@ -12,19 +12,27 @@ private func liteview_audio_notify_register_check(
 @_silgen_name("notify_set_state")
 private func liteview_audio_notify_set_state(_ token: Int32, _ state: UInt64) -> UInt32
 
+@_silgen_name("notify_get_state")
+private func liteview_audio_notify_get_state(_ token: Int32, _ state: UnsafeMutablePointer<UInt64>) -> UInt32
+
 @_silgen_name("notify_post")
 private func liteview_audio_notify_post(_ name: UnsafePointer<CChar>) -> UInt32
 
 @_silgen_name("notify_cancel")
 private func liteview_audio_notify_cancel(_ token: Int32) -> UInt32
 
-/// Lightweight, privacy-preserving diagnostics for ReplayKit app audio.
-///
-/// The analyzer keeps no PCM history and writes no audio to disk. It publishes only coarse
-/// aggregate telemetry (left/right level, peak, a coarse dominant frequency band, sample rate,
-/// channel count and transient activity) so on-device testing can prove that `.audioApp` is
-/// actually reaching the Broadcast Extension.
 final class BroadcastAudioTelemetryAnalyzer {
+    struct Snapshot: Equatable {
+        let analysisCount: UInt64
+        let leftLevel: Double
+        let rightLevel: Double
+        let peakLevel: Double
+        let dominantBand: Int
+        let transient: Bool
+        let sampleRate: Double
+        let channels: Int
+    }
+
     static let notificationName = "com.phoenix.realtimevisionassist.broadcast.audio-diagnostics.v1"
 
     private let lock = NSLock()
@@ -32,6 +40,7 @@ final class BroadcastAudioTelemetryAnalyzer {
     private var lastAnalysisUptime: TimeInterval = 0
     private var analysisCount: UInt64 = 0
     private var smoothedPeak: Double = 0
+    private var lastSnapshotStorage: Snapshot?
 
     init() {
         var newToken: Int32 = -1
@@ -54,6 +63,7 @@ final class BroadcastAudioTelemetryAnalyzer {
         lastAnalysisUptime = 0
         analysisCount = 0
         smoothedPeak = 0
+        lastSnapshotStorage = nil
         lock.unlock()
         clearPublishedState()
     }
@@ -89,7 +99,7 @@ final class BroadcastAudioTelemetryAnalyzer {
             + MemoryLayout<AudioBuffer>.stride * (listCapacity - 1)
         let rawList = UnsafeMutableRawPointer.allocate(
             byteCount: listSize,
-            alignment: MemoryLayout<AudioBufferList>.alignment
+            alignment: 16
         )
         defer { rawList.deallocate() }
         let audioBufferList = rawList.bindMemory(to: AudioBufferList.self, capacity: 1)
@@ -101,9 +111,9 @@ final class BroadcastAudioTelemetryAnalyzer {
             bufferListSizeNeededOut: &neededSize,
             bufferListOut: audioBufferList,
             bufferListSize: listSize,
-            blockBufferAllocator: nil,
-            blockBufferMemoryAllocator: nil,
-            flags: 0,
+            blockBufferAllocator: kCFAllocatorDefault,
+            blockBufferMemoryAllocator: kCFAllocatorDefault,
+            flags: UInt32(kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment),
             blockBufferOut: &retainedBlockBuffer
         )
         guard status == noErr else { return }
@@ -133,10 +143,8 @@ final class BroadcastAudioTelemetryAnalyzer {
             guard let rightData = rightBuffer.mData else { return }
 
             for frame in 0..<frameCount {
-                let left = readSample(firstData, index: frame, isFloat32: isFloat32)
-                let right = readSample(rightData, index: frame, isFloat32: isFloat32)
-                leftSamples.append(left)
-                rightSamples.append(right)
+                leftSamples.append(readSample(firstData, index: frame, isFloat32: isFloat32))
+                rightSamples.append(readSample(rightData, index: frame, isFloat32: isFloat32))
             }
         } else {
             guard let first = buffers.first, let data = first.mData else { return }
@@ -162,6 +170,9 @@ final class BroadcastAudioTelemetryAnalyzer {
         let peak = max(peakMagnitude(leftSamples), peakMagnitude(rightSamples))
         let mono = zip(leftSamples, rightSamples).map { ($0 + $1) * 0.5 }
         let dominantBand = coarseDominantBand(samples: mono, sampleRate: asbd.mSampleRate)
+        let leftLevel = normalizedLevel(leftRMS)
+        let rightLevel = normalizedLevel(rightRMS)
+        let peakLevel = normalizedLevel(peak)
 
         lock.lock()
         analysisCount &+= 1
@@ -169,18 +180,33 @@ final class BroadcastAudioTelemetryAnalyzer {
         smoothedPeak = priorPeak * 0.84 + peak * 0.16
         let transient = peak >= 0.035 && peak > max(0.045, priorPeak * 1.75)
         let count = analysisCount
-        lock.unlock()
-
-        publish(
+        let snapshot = Snapshot(
             analysisCount: count,
-            leftLevel: normalizedLevel(leftRMS),
-            rightLevel: normalizedLevel(rightRMS),
-            peakLevel: normalizedLevel(peak),
+            leftLevel: leftLevel,
+            rightLevel: rightLevel,
+            peakLevel: peakLevel,
             dominantBand: dominantBand,
             transient: transient,
             sampleRate: asbd.mSampleRate,
             channels: channels
         )
+        lastSnapshotStorage = snapshot
+        lock.unlock()
+
+        publish(snapshot)
+    }
+
+    func snapshotForTesting() -> Snapshot? {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastSnapshotStorage
+    }
+
+    func publishedStateForTesting() -> UInt64? {
+        guard token >= 0 else { return nil }
+        var state: UInt64 = 0
+        guard liteview_audio_notify_get_state(token, &state) == 0 else { return nil }
+        return state
     }
 
     private func readSample(
@@ -215,7 +241,6 @@ final class BroadcastAudioTelemetryAnalyzer {
         return min(max((db + 60) / 60, 0), 1)
     }
 
-    /// Coarse spectral probe for diagnostics only. The result is a band index, not a sound class.
     private func coarseDominantBand(samples: [Double], sampleRate: Double) -> Int {
         guard samples.count >= 32 else { return 0 }
         let frequencies: [Double] = [160, 400, 900, 1_800, 3_500, 7_000]
@@ -242,39 +267,33 @@ final class BroadcastAudioTelemetryAnalyzer {
         return bestBand
     }
 
-    private func publish(
-        analysisCount: UInt64,
-        leftLevel: Double,
-        rightLevel: Double,
-        peakLevel: Double,
-        dominantBand: Int,
-        transient: Bool,
-        sampleRate: Double,
-        channels: Int
-    ) {
+    private func publish(_ snapshot: Snapshot) {
         guard token >= 0 else { return }
+        let state = Self.pack(snapshot)
+        guard liteview_audio_notify_set_state(token, state) == 0 else { return }
+        _ = Self.notificationName.withCString { liteview_audio_notify_post($0) }
+    }
 
-        let countCode = min(analysisCount, 0x0FFF)
-        let leftCode = UInt64((min(max(leftLevel, 0), 1) * 255).rounded())
-        let rightCode = UInt64((min(max(rightLevel, 0), 1) * 255).rounded())
-        let peakCode = UInt64((min(max(peakLevel, 0), 1) * 255).rounded())
-        let bandCode = UInt64(min(max(dominantBand, 0), 7))
-        let sampleRateCode = UInt64(min(max(Int((sampleRate / 1_000).rounded()), 0), 255))
-        let channelCode = UInt64(min(max(channels, 0), 255))
+    static func pack(_ snapshot: Snapshot) -> UInt64 {
+        let countCode = min(snapshot.analysisCount, 0x0FFF)
+        let leftCode = UInt64((min(max(snapshot.leftLevel, 0), 1) * 255).rounded())
+        let rightCode = UInt64((min(max(snapshot.rightLevel, 0), 1) * 255).rounded())
+        let peakCode = UInt64((min(max(snapshot.peakLevel, 0), 1) * 255).rounded())
+        let bandCode = UInt64(min(max(snapshot.dominantBand, 0), 7))
+        let sampleRateCode = UInt64(min(max(Int((snapshot.sampleRate / 1_000).rounded()), 0), 255))
+        let channelCode = UInt64(min(max(snapshot.channels, 0), 255))
 
         var state = countCode
         state |= leftCode << 12
         state |= rightCode << 20
         state |= peakCode << 28
         state |= bandCode << 36
-        if transient { state |= UInt64(1) << 39 }
+        if snapshot.transient { state |= UInt64(1) << 39 }
         state |= sampleRateCode << 40
         state |= channelCode << 48
         state |= UInt64(1) << 62
         state |= UInt64(1) << 63
-
-        guard liteview_audio_notify_set_state(token, state) == 0 else { return }
-        _ = Self.notificationName.withCString { liteview_audio_notify_post($0) }
+        return state
     }
 
     private func clearPublishedState() {
