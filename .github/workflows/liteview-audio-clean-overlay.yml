@@ -59,7 +59,7 @@ jobs:
           HANDLER="$ROOT/Sources/Broadcast/EnhancedBroadcastSampleHandler.swift"
           AUDIO="$ROOT/Sources/Broadcast/BroadcastAudioTelemetryAnalyzer.swift"
           PLIST="$ROOT/Sources/Broadcast/Info.plist"
-          RADAR="$ROOT/Sources/App/RadarBootstrapLoader.m"
+          PROJECT="$ROOT/project.yml"
 
           grep -q 'case \.audioApp' "$HANDLER"
           grep -q 'audioAnalyzer.consume(sampleBuffer)' "$HANDLER"
@@ -69,13 +69,23 @@ jobs:
           grep -q 'rightLevel' "$AUDIO"
           grep -q 'dominantBand' "$AUDIO"
           grep -q 'EnhancedBroadcastSampleHandler' "$PLIST"
-          ! grep -q 'invokeSwiftBootstrap' "$RADAR"
-          ! grep -q 'scheduleBootstrapAttempts' "$RADAR"
+          grep -q 'RadarPiPController.swift' "$PROJECT"
+          grep -q 'RadarBootstrapLoader.m' "$PROJECT"
+          ! grep -q 'UIBackgroundModes' "$PROJECT"
           echo 'AUDIO_CLEAN_OVERLAY_WIRING_PASS'
 
       - name: Generate project
         working-directory: ios/PhoenixRealtimeVisionAssist
         run: xcodegen generate
+
+      - name: Verify radar sources are excluded from generated target
+        shell: bash
+        run: |
+          set -euo pipefail
+          PBX='ios/PhoenixRealtimeVisionAssist/PhoenixRealtimeVisionAssist.xcodeproj/project.pbxproj'
+          ! grep -q 'RadarPiPController.swift' "$PBX"
+          ! grep -q 'RadarBootstrapLoader.m' "$PBX"
+          echo 'RADAR_TARGET_EXCLUSION_PASS'
 
       - name: Run lifecycle smoke test
         shell: bash
@@ -89,6 +99,20 @@ jobs:
             "$ROOT/scripts/lifecycle_smoke_main.swift" \
             -o "$RUNNER_TEMP/liteview-audio-clean-lifecycle"
           "$RUNNER_TEMP/liteview-audio-clean-lifecycle"
+
+      - name: Run synthetic PCM telemetry test
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          xcrun swiftc \
+            "$ROOT/Sources/Broadcast/BroadcastAudioTelemetryAnalyzer.swift" \
+            "$ROOT/scripts/audio_synthetic_smoke.swift" \
+            -framework AudioToolbox \
+            -framework CoreMedia \
+            -framework CoreFoundation \
+            -o "$RUNNER_TEMP/liteview-audio-synthetic-smoke"
+          "$RUNNER_TEMP/liteview-audio-synthetic-smoke"
 
       - name: Build unsigned iPhone Release app and Broadcast Extension
         working-directory: ios/PhoenixRealtimeVisionAssist
@@ -106,7 +130,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build
 
-      - name: Normalize 0.9.3 Build 20 and verify extension
+      - name: Normalize 0.9.4 Build 21 and verify final binaries
         shell: bash
         run: |
           set -euo pipefail
@@ -115,9 +139,13 @@ jobs:
           EXT="$APP/PlugIns/PhoenixBroadcastExtension.appex"
           APP_PLIST="$APP/Info.plist"
           EXT_PLIST="$EXT/Info.plist"
+          APP_BIN="$APP/PhoenixRealtimeVisionAssist"
+          EXT_BIN="$EXT/PhoenixBroadcastExtension"
 
           test -d "$APP"
           test -d "$EXT"
+          test -x "$APP_BIN"
+          test -x "$EXT_BIN"
 
           set_plist_string() {
             local plist="$1" key="$2" value="$3"
@@ -126,14 +154,19 @@ jobs:
           }
 
           set_plist_string "$APP_PLIST" CFBundleDisplayName LiteView
-          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.3
-          set_plist_string "$APP_PLIST" CFBundleVersion 20
+          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.4
+          set_plist_string "$APP_PLIST" CFBundleVersion 21
           set_plist_string "$EXT_PLIST" CFBundleDisplayName 'LiteView Broadcast'
-          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.3
-          set_plist_string "$EXT_PLIST" CFBundleVersion 20
+          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.4
+          set_plist_string "$EXT_PLIST" CFBundleVersion 21
 
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT_PLIST")" = 'PhoenixBroadcastExtension.EnhancedBroadcastSampleHandler'
           test -n "$(find "$EXT" -type d -name 'yolo11n.mlmodelc' -prune -print -quit)"
+          strings "$EXT_BIN" | grep -q 'audio-diagnostics.v1'
+          ! strings "$APP_BIN" | grep -q 'LiteViewRadarBootstrap'
+          ! strings "$APP_BIN" | grep -q '开启游戏雷达'
+          ! /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "$APP_PLIST" >/dev/null 2>&1
+          echo 'FINAL_BINARY_VERIFICATION_PASS'
 
       - name: Package unsigned IPA
         shell: bash
@@ -143,8 +176,8 @@ jobs:
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
           ROOT="$RUNNER_TEMP/LiteViewAudioCleanPackage"
           PAYLOAD="$ROOT/Payload"
-          IPA="$RUNNER_TEMP/LiteView-0.9.3-Build20-AudioCleanOverlay-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.3-Build20-AudioCleanOverlay.txt"
+          IPA="$RUNNER_TEMP/LiteView-0.9.4-Build21-AudioCleanOverlay-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.4-Build21-AudioCleanOverlay.txt"
 
           rm -rf "$ROOT" "$IPA" "$MANIFEST"
           mkdir -p "$PAYLOAD"
@@ -156,18 +189,20 @@ jobs:
           IPA_SHA256="$(shasum -a 256 "$IPA" | awk '{print $1}')"
 
           cat > "$MANIFEST" <<EOF
-          LiteView 0.9.3 Build 20 Audio Clean Overlay Candidate
+          LiteView 0.9.4 Build 21 Audio Clean Overlay Candidate
           commit=${GITHUB_SHA}
-          version=0.9.3
-          build=20
+          version=0.9.4
+          build=21
           ipa_size_bytes=${IPA_SIZE_BYTES}
           ipa_sha256=${IPA_SHA256}
-          video_pipeline=existing validated YOLO11n + ROI + tracker path preserved
+          video_pipeline=validated YOLO11n + ROI + tracker path preserved
           replaykit_audio=audioApp connected through EnhancedBroadcastSampleHandler
+          synthetic_audio_test=48kHz stereo Float32 CMSampleBuffer -> analyzer -> Darwin telemetry PASS required
           audio_diagnostics=left/right aggregate level + peak + coarse frequency band + transient + sample rate + channel count
           microphone=ignored
           audio_persistence=none; no PCM history or audio files
-          radar_autoload=disabled
+          radar_runtime=legacy radar Swift/ObjC sources excluded from app target and absent from final app binary
+          background_audio_mode=removed from main app
           scope=visible-person vision plus generic app-audio diagnostics; no hidden-player or occlusion-location inference
           signing=unsigned; re-sign main app and embedded Broadcast Extension without removing PlugIns
           EOF
@@ -179,10 +214,10 @@ jobs:
       - name: Upload candidate artifact
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-audio-clean-overlay-0.9.3-build20
+          name: liteview-audio-clean-overlay-0.9.4-build21
           path: |
-            ${{ runner.temp }}/LiteView-0.9.3-Build20-AudioCleanOverlay-unsigned.ipa
-            ${{ runner.temp }}/LiteView-0.9.3-Build20-AudioCleanOverlay.txt
+            ${{ runner.temp }}/LiteView-0.9.4-Build21-AudioCleanOverlay-unsigned.ipa
+            ${{ runner.temp }}/LiteView-0.9.4-Build21-AudioCleanOverlay.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -193,16 +228,16 @@ jobs:
         run: |
           set -euo pipefail
           TAG='liteview-audio-clean-overlay-latest'
-          IPA="$RUNNER_TEMP/LiteView-0.9.3-Build20-AudioCleanOverlay-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.3-Build20-AudioCleanOverlay.txt"
-          NOTES='LiteView 0.9.3 Build 20 candidate. Preserves the validated visible-person video pipeline, connects ReplayKit audioApp to privacy-preserving aggregate audio diagnostics, ignores microphone audio, and disables the automatic PiP radar launcher. No raw audio, frames, screenshots, or analysis history are persisted.'
+          IPA="$RUNNER_TEMP/LiteView-0.9.4-Build21-AudioCleanOverlay-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.4-Build21-AudioCleanOverlay.txt"
+          NOTES='LiteView 0.9.4 Build 21 candidate. Adds a synthetic 48 kHz stereo PCM-to-CMSampleBuffer telemetry test, removes legacy radar sources from the app target and final binary, removes the main-app background audio mode, preserves the visible-person video pipeline, connects ReplayKit audioApp diagnostics, ignores microphone audio, and persists no raw audio, frames, screenshots, or analysis history.'
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
-            gh release edit "$TAG" --title 'LiteView 0.9.3 Build 20 Audio Clean Overlay' --notes "$NOTES" --target "$GITHUB_SHA"
+            gh release edit "$TAG" --title 'LiteView 0.9.4 Build 21 Audio Clean Overlay' --notes "$NOTES" --target "$GITHUB_SHA"
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" \
               --target "$GITHUB_SHA" \
-              --title 'LiteView 0.9.3 Build 20 Audio Clean Overlay' \
+              --title 'LiteView 0.9.4 Build 21 Audio Clean Overlay' \
               --notes "$NOTES"
           fi
