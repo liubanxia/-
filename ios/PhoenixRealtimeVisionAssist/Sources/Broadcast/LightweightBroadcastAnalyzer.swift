@@ -3,10 +3,6 @@ import Foundation
 import ImageIO
 import Vision
 
-// Legacy CI compatibility markers only; these expensive paths are intentionally NOT executed:
-// VNDetectHumanBodyPoseRequest
-// upperBodyOnly: true
-
 struct LightweightTargetPoint: Sendable, Equatable {
     let x: Double
     let y: Double
@@ -25,12 +21,12 @@ struct LightweightVisionAnalysis {
     let successfulLaneCount: Int
 }
 
-/// ReplayKit-aware visible-person analysis with one resident tiny Core ML detector.
+/// ReplayKit-aware visible-object analysis with one resident tiny Core ML detector.
 ///
-/// The normal path is VNTrackObjectRequest. Core ML performs a low-frequency full-frame refresh,
-/// and when tracking is lost between full refreshes it scans only one overlapping 68% ROI per
-/// eligible analysis frame. ROI phases alternate so a complete sweep never requires two model
-/// invocations in the same frame. No frame content is persisted.
+/// VNTrackObjectRequest handles lightweight inter-frame tracking. Sparse reacquisition uses one
+/// resident Core ML model whose high-resolution preprocessing is performed by reusable vImage
+/// buffers, not VNCoreMLRequest. When tracking is lost between global refreshes, only one
+/// overlapping 68% ROI is scanned per eligible analysis frame. No frame content is persisted.
 final class LightweightBroadcastAnalyzer {
     private struct TargetObservation {
         let point: LightweightTargetPoint
@@ -97,8 +93,6 @@ final class LightweightBroadcastAnalyzer {
         var resultSource: LiteViewTelemetrySource = .none
         var nanoResult: BroadcastNanoDetectionResult?
 
-        // A full scan is deliberately sparse. With no lock, the alternating ROI phases fill the
-        // gaps between global refreshes; with a lock, the fast tracker handles intermediate frames.
         let fullRefreshInterval: TimeInterval = trackedObservation == nil ? 2.60 : 3.20
         let fullRefreshDue = lastFullScanUptime == 0 || now - lastFullScanUptime >= fullRefreshInterval
 
@@ -125,8 +119,7 @@ final class LightweightBroadcastAnalyzer {
                 in: pixelBuffer,
                 orientation: orientation,
                 minimumConfidence: 0.12,
-                regionOfInterest: CGRect(x: 0, y: 0, width: 1, height: 1),
-                preferBackgroundProcessing: true
+                regionOfInterest: CGRect(x: 0, y: 0, width: 1, height: 1)
             )
             nanoResult = result
             lastFullScanUptime = now
@@ -145,8 +138,7 @@ final class LightweightBroadcastAnalyzer {
                 in: pixelBuffer,
                 orientation: orientation,
                 minimumConfidence: 0.09,
-                regionOfInterest: roi,
-                preferBackgroundProcessing: false
+                regionOfInterest: roi
             )
             nanoResult = result
             roiPhase = (roiPhase + 1) & 1
@@ -160,28 +152,14 @@ final class LightweightBroadcastAnalyzer {
             )
         }
 
+        // A detector/preprocessor failure stays visible as a failed lane. Do not silently route
+        // the same high-resolution frame through a generic Vision full-frame detector because that
+        // path both obscures the real failure and reintroduces the long-run memory growth we removed.
         if nanoResult?.succeeded == false {
-            // Built-in Vision is only a last-resort execution fallback. It does not replace the
-            // tiny model when the model executes successfully but returns no visible person.
-            attemptedLaneCount += 1
-            if let fallback = runHumanRectangleFallback(
-                pixelBuffer: pixelBuffer,
-                orientation: orientation
-            ) {
-                successfulLaneCount += 1
-                targetCount = fallback.count
-                lastHeavyTargetCount = fallback.count
-                currentObservation = fallback.primary
-                trackedObservation = fallback.primary.map {
-                    VNDetectedObjectObservation(boundingBox: $0.boundingBox)
-                }
-                resultSource = fallback.count > 0 ? .visionFallback : .none
-            } else {
-                targetCount = 0
-                lastHeavyTargetCount = 0
-                currentObservation = nil
-                trackedObservation = nil
-            }
+            targetCount = 0
+            lastHeavyTargetCount = 0
+            currentObservation = nil
+            trackedObservation = nil
         }
 
         let stabilized = updateVisibleMotion(with: currentObservation, now: now)
@@ -259,7 +237,7 @@ final class LightweightBroadcastAnalyzer {
         }
 
         let coverage = 0.68
-        let offset = 1.0 - coverage
+        let offset = 1 - coverage
         if width >= height {
             return roiPhase == 0
                 ? CGRect(x: 0, y: 0, width: coverage, height: 1)
@@ -295,39 +273,6 @@ final class LightweightBroadcastAnalyzer {
         }
     }
 
-    private func runHumanRectangleFallback(
-        pixelBuffer: CVPixelBuffer,
-        orientation: CGImagePropertyOrientation
-    ) -> (count: Int, primary: TargetObservation?)? {
-        autoreleasepool {
-            let request = VNDetectHumanRectanglesRequest()
-            request.upperBodyOnly = false
-            request.preferBackgroundProcessing = true
-            let handler = VNImageRequestHandler(
-                cvPixelBuffer: pixelBuffer,
-                orientation: orientation,
-                options: [:]
-            )
-
-            do {
-                try handler.perform([request])
-                let observations = (request.results ?? [])
-                    .filter { $0.confidence >= 0.20 }
-                    .prefix(6)
-                    .map { observation in
-                        TargetObservation(
-                            point: point(forVisionBox: observation.boundingBox),
-                            confidence: Double(observation.confidence),
-                            boundingBox: observation.boundingBox
-                        )
-                    }
-                return (observations.count, selectPrimaryObservation(observations))
-            } catch {
-                return nil
-            }
-        }
-    }
-
     private func selectPrimaryNanoTarget(
         _ detections: [BroadcastNanoDetection]
     ) -> BroadcastNanoDetection? {
@@ -350,18 +295,6 @@ final class LightweightBroadcastAnalyzer {
             return nearest
         }
         return plausible.max(by: { $0.confidence < $1.confidence })
-    }
-
-    private func selectPrimaryObservation(_ observations: [TargetObservation]) -> TargetObservation? {
-        guard !observations.isEmpty else { return nil }
-        if let stabilizedTarget,
-           let nearest = observations.min(by: {
-               distance($0.point, stabilizedTarget) < distance($1.point, stabilizedTarget)
-           }),
-           distance(nearest.point, stabilizedTarget) <= 0.26 {
-            return nearest
-        }
-        return observations.max(by: { $0.confidence < $1.confidence })
     }
 
     private func updateVisibleMotion(
@@ -396,7 +329,7 @@ final class LightweightBroadcastAnalyzer {
 
         if let previousPoint = lastConfirmedPoint, lastConfirmedUptime > 0 {
             let dt = now - lastConfirmedUptime
-            if dt > 0.03, dt < 1.0, distance(previousPoint, observation.point) <= 0.32 {
+            if dt > 0.03, dt < 1, distance(previousPoint, observation.point) <= 0.32 {
                 let rawVX = (observation.point.x - previousPoint.x) / dt
                 let rawVY = (observation.point.y - previousPoint.y) / dt
                 velocityX = velocityX * 0.58 + rawVX * 0.42
@@ -438,7 +371,7 @@ final class LightweightBroadcastAnalyzer {
     private func point(forVisionBox box: CGRect) -> LightweightTargetPoint {
         .init(
             x: min(max(Double(box.midX), 0), 1),
-            y: min(max(1.0 - Double(box.minY + box.height * 0.68), 0), 1)
+            y: min(max(1 - Double(box.minY + box.height * 0.68), 0), 1)
         )
     }
 

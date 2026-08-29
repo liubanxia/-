@@ -52,27 +52,69 @@ jobs:
           cp -R "$SRC_COMPILED" "$MODEL_DIR/yolo11n.mlmodelc"
           test -d "$MODEL_DIR/yolo11n.mlmodelc"
 
-      - name: Guard sparse runtime contract
+      - name: Guard allocation-stable runtime contract
         shell: bash
         run: |
           set -euo pipefail
-          DET='ios/PhoenixRealtimeVisionAssist/Sources/ExtensionSupport/BroadcastNanoPersonDetector.swift'
-          ANA='ios/PhoenixRealtimeVisionAssist/Sources/Broadcast/LightweightBroadcastAnalyzer.swift'
-          HANDLER='ios/PhoenixRealtimeVisionAssist/Sources/Broadcast/BroadcastSampleHandler.swift'
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          PRE="$ROOT/Sources/ExtensionSupport/BroadcastFramePreprocessor.swift"
+          DET="$ROOT/Sources/ExtensionSupport/BroadcastNanoPersonDetector.swift"
+          ANA="$ROOT/Sources/Broadcast/LightweightBroadcastAnalyzer.swift"
+          HANDLER="$ROOT/Sources/Broadcast/BroadcastSampleHandler.swift"
+          PROJECT="$ROOT/project.yml"
 
-          grep -q 'request.regionOfInterest = roi' "$DET"
-          grep -q 'request.preferBackgroundProcessing = preferBackgroundProcessing' "$DET"
-          grep -q 'fullFrameVisionBox(forLocalBox' "$DET"
+          test -f "$PRE"
+          test -f "$DET"
+
+          # High-resolution frames must go through reusable vImage preprocessing and direct Core ML.
+          grep -q 'model.prediction(from: provider)' "$DET"
+          grep -q 'private static let preferredName = "yolo11n"' "$DET"
+          ! grep -q 'VNCoreMLRequest' "$DET"
+          ! grep -q 'VNImageRequestHandler' "$DET"
+          ! grep -q 'YOLOv3TinyInt8LUT' "$DET"
+          test "$(grep -c 'model.prediction(from: provider)' "$DET")" = '1'
+
+          # Production preprocessor must support the ReplayKit formats validated by the contract job.
+          grep -q 'kCVPixelFormatType_32BGRA' "$PRE"
+          grep -q 'kCVPixelFormatType_420YpCbCr8BiPlanarFullRange' "$PRE"
+          grep -q 'kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange' "$PRE"
+          grep -q 'vImageScale_ARGB8888' "$PRE"
+          grep -q 'vImageScale_Planar8' "$PRE"
+          grep -q 'vImageScale_CbCr8' "$PRE"
+          grep -q 'vImageConvert_420Yp8_CbCr8ToARGB8888' "$PRE"
+          grep -q 'vImageRotate90_ARGB8888' "$PRE"
+          grep -q 'vImageHorizontalReflect_ARGB8888' "$PRE"
+          grep -q 'vImageVerticalReflect_ARGB8888' "$PRE"
+          grep -q 'unsupportedPixelFormat' "$PRE"
+
+          # Sparse cadence and one-ROI-per-frame contract remain unchanged.
           grep -q 'let coverage = 0.68' "$ANA"
           grep -q 'minimumConfidence: 0.09' "$ANA"
           grep -q 'minimumConfidence: 0.12' "$ANA"
-          grep -q 'preferBackgroundProcessing: true' "$ANA"
-          grep -q 'preferBackgroundProcessing: false' "$ANA"
           grep -q 'roiPhase = (roiPhase + 1) & 1' "$ANA"
+          ! grep -q 'VNDetectHumanRectanglesRequest' "$ANA"
+          ! grep -q 'runHumanRectangleFallback' "$ANA"
+          ! grep -q 'preferBackgroundProcessing' "$ANA"
 
           # Resource release belongs to session teardown only, not every scan.
           RELEASE_COUNT="$(grep -c 'nanoDetector.releaseResources()' "$ANA")"
           test "$RELEASE_COUNT" = '1'
+
+          python3 - <<'PY'
+          from pathlib import Path
+          ana = Path('ios/PhoenixRealtimeVisionAssist/Sources/Broadcast/LightweightBroadcastAnalyzer.swift').read_text()
+          pre = Path('ios/PhoenixRealtimeVisionAssist/Sources/ExtensionSupport/BroadcastFramePreprocessor.swift').read_text()
+          project = Path('ios/PhoenixRealtimeVisionAssist/project.yml').read_text()
+          assert 'trackedObservation == nil ? 2.60 : 3.20' in ana
+          assert 'CGRect(x: 0, y: 0, width: coverage, height: 1)' in ana
+          assert 'CGRect(x: offset, y: 0, width: coverage, height: 1)' in ana
+          assert 'CGRect(x: 0, y: offset, width: 1, height: coverage)' in ana
+          assert 'CGRect(x: 0, y: 0, width: 1, height: coverage)' in ana
+          assert 'case .right:' in pre and 'case .left:' in pre
+          assert 'case .leftMirrored:' in pre and 'case .rightMirrored:' in pre
+          assert '- path: Sources/ExtensionSupport' in project
+          print('ALLOCATION_STABLE_RUNTIME_CONTRACT_PASS')
+          PY
 
           # The ReplayKit frame ownership bridge must stay narrow: no raw CVPixelBuffer capture in
           # the Dispatch closure and no full-frame copy added just to satisfy Sendable checking.
@@ -80,20 +122,9 @@ jobs:
           grep -q 'let analysisFrame = AnalysisFrame(' "$HANDLER"
           ! grep -Fq '[weak self, pixelBuffer]' "$HANDLER"
 
-          # No second model and no multi-ROI loop in one detector invocation path.
-          test "$(find ios/PhoenixRealtimeVisionAssist/Resources/BroadcastModels -type d -name '*.mlmodelc' -prune -print | wc -l | tr -d ' ')" = '1'
-          test -z "$(find ios/PhoenixRealtimeVisionAssist/Resources/BroadcastModels -type d -name 'YOLOv3TinyInt8LUT.mlmodelc' -prune -print -quit)"
-
-          python - <<'PY'
-          from pathlib import Path
-          text = Path('ios/PhoenixRealtimeVisionAssist/Sources/Broadcast/LightweightBroadcastAnalyzer.swift').read_text()
-          assert 'trackedObservation == nil ? 2.60 : 3.20' in text
-          assert 'CGRect(x: 0, y: 0, width: coverage, height: 1)' in text
-          assert 'CGRect(x: offset, y: 0, width: coverage, height: 1)' in text
-          assert 'CGRect(x: 0, y: offset, width: 1, height: coverage)' in text
-          assert 'CGRect(x: 0, y: 0, width: 1, height: coverage)' in text
-          print('SPARSE_RUNTIME_CONTRACT_PASS')
-          PY
+          # Exactly one packaged model remains in the Broadcast Extension resource bank.
+          test "$(find "$ROOT/Resources/BroadcastModels" -type d -name '*.mlmodelc' -prune -print | wc -l | tr -d ' ')" = '1'
+          test -z "$(find "$ROOT/Resources/BroadcastModels" -type d -name 'YOLOv3TinyInt8LUT.mlmodelc' -prune -print -quit)"
 
       - name: Generate project
         working-directory: ios/PhoenixRealtimeVisionAssist
@@ -145,7 +176,7 @@ jobs:
           fi
           echo 'REPLAYKIT_CONCURRENCY_DIAGNOSTIC_PASS'
 
-      - name: Verify built extension model count
+      - name: Verify built extension model count and size
         shell: bash
         run: |
           set -euo pipefail
@@ -169,11 +200,12 @@ jobs:
           {
             echo '## LiteView runtime candidate'
             echo
-            echo '- One resident 384px Core ML model.'
-            echo '- Sparse global refresh uses Vision background-processing hint.'
+            echo '- One resident YOLO11n-384 Core ML model.'
+            echo '- High-resolution model preprocessing uses reusable vImage buffers followed by direct MLModel.prediction.'
+            echo '- Production preprocessor supports BGRA, NV12 420f and NV12 420v; the separate contract job validates all eight EXIF orientations.'
             echo '- Tracker-loss reacquisition runs one 68% ROI per eligible frame and alternates phases.'
-            echo '- ROI threshold is 0.09; global threshold is 0.12.'
-            echo '- ReplayKit analysis transfers one retained frame through a narrow serial Sendable ownership bridge; no frame copy is introduced.'
+            echo '- No high-resolution VNCoreMLRequest or generic human-detector fallback is allowed in the candidate detector path.'
+            echo '- ReplayKit analysis keeps the narrow retained-frame ownership bridge; no full-frame copy is introduced.'
             echo '- No IPA or GitHub release is created by this workflow.'
-            echo '- This build/CI validation does not establish on-device recognition quality or ReplayKit jetsam safety.'
+            echo '- Build/host validation does not establish on-device recognition quality or the iPhone ReplayKit jetsam ceiling.'
           } >> "$GITHUB_STEP_SUMMARY"

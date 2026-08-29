@@ -2,7 +2,7 @@ import CoreGraphics
 import CoreML
 import CoreVideo
 import Foundation
-import Vision
+import ImageIO
 
 struct BroadcastNanoDetection: Sendable {
     let boundingBox: CGRect
@@ -20,9 +20,12 @@ struct BroadcastNanoDetectionResult: Sendable {
     let inferenceFailed: Bool
 }
 
-/// Tiny Core ML detector for the ReplayKit process.
-/// Multiple compatible detectors can live on disk, but only one model is resident at a time.
-/// The same resident model can run either a full-frame request or a sparse Vision ROI request.
+/// One resident Core ML detector for the ReplayKit process.
+///
+/// High-resolution ReplayKit frames are never handed to VNCoreMLRequest. A reusable vImage
+/// preprocessor converts/crops only the requested ROI into one reusable model-sized BGRA buffer,
+/// then the resident MLModel is invoked directly. This keeps Core ML inference separate from the
+/// high-resolution Vision preprocessing path that showed sustained RSS growth in long-run tests.
 final class BroadcastNanoPersonDetector {
     private struct RawCandidate {
         let x: Double
@@ -47,117 +50,106 @@ final class BroadcastNanoPersonDetector {
         let array: MLMultiArray
     }
 
+    private final class ReusablePixelBufferProvider: NSObject, MLFeatureProvider {
+        let featureNames: Set<String>
+        private let inputName: String
+        private let value: MLFeatureValue
+
+        init(inputName: String, pixelBuffer: CVPixelBuffer) {
+            self.inputName = inputName
+            featureNames = [inputName]
+            value = MLFeatureValue(pixelBuffer: pixelBuffer)
+        }
+
+        func featureValue(for featureName: String) -> MLFeatureValue? {
+            featureName == inputName ? value : nil
+        }
+    }
+
     private enum DecodeResult {
         case detections([BroadcastNanoDetection], LiteViewTelemetryDecoder)
         case unsupported
     }
 
-    private static let preferredNames = ["yolo11n", "YOLOv3TinyInt8LUT"]
+    private static let preferredName = "yolo11n"
     private static let unitROI = CGRect(x: 0, y: 0, width: 1, height: 1)
 
-    private var candidateURLs: [URL]?
     private var activeURL: URL?
+    private var activeModel: MLModel?
     private var activeModelInputSize: ModelInputSize?
-    private var visionModel: VNCoreMLModel?
+    private var preprocessor: BroadcastFramePreprocessor?
+    private var provider: ReusablePixelBufferProvider?
     private var blockedPaths: Set<String> = []
-    private var preferredIndex = 0
-    private var independentVisibleMissCount = 0
 
     func reset() {
         activeURL = nil
+        activeModel = nil
         activeModelInputSize = nil
-        visionModel = nil
-        candidateURLs = nil
+        preprocessor = nil
+        provider = nil
         blockedPaths.removeAll(keepingCapacity: false)
-        preferredIndex = 0
-        independentVisibleMissCount = 0
     }
 
     func releaseResources() {
-        visionModel = nil
         activeURL = nil
+        activeModel = nil
         activeModelInputSize = nil
-        independentVisibleMissCount = 0
-    }
-
-    @discardableResult
-    func reportIndependentVisibleMiss() -> Bool {
-        independentVisibleMissCount += 1
-        guard independentVisibleMissCount >= 2,
-              let urls = candidateURLs,
-              urls.count > 1 else { return false }
-        independentVisibleMissCount = 0
-        preferredIndex = (preferredIndex + 1) % urls.count
-        visionModel = nil
-        activeURL = nil
-        activeModelInputSize = nil
-        return true
-    }
-
-    func reportVisibleDetection() {
-        independentVisibleMissCount = 0
+        preprocessor = nil
+        provider = nil
     }
 
     func detect(
         in pixelBuffer: CVPixelBuffer,
         orientation: CGImagePropertyOrientation,
         minimumConfidence: Double = 0.22,
-        regionOfInterest requestedROI: CGRect = unitROI,
-        preferBackgroundProcessing: Bool = false
+        regionOfInterest requestedROI: CGRect = unitROI
     ) -> BroadcastNanoDetectionResult {
         guard let roi = Self.validatedROI(requestedROI),
-              let model = ensureModel() else {
-            return .init(
-                detections: [],
-                succeeded: false,
-                modelName: nil,
-                coreMLInvoked: false,
-                decoder: .none,
-                decodeSucceeded: false,
-                inferenceFailed: true
+              let model = ensureModel(),
+              let preprocessor,
+              let provider else {
+            return failure(
+                modelName: activeURL?.deletingPathExtension().lastPathComponent,
+                coreMLInvoked: false
             )
         }
 
-        let request = VNCoreMLRequest(model: model)
-        request.imageCropAndScaleOption = .scaleFit
-        request.regionOfInterest = roi
-        request.preferBackgroundProcessing = preferBackgroundProcessing
-        let handler = VNImageRequestHandler(
-            cvPixelBuffer: pixelBuffer,
-            orientation: orientation,
-            options: [:]
-        )
         let modelName = activeURL?.deletingPathExtension().lastPathComponent
-
+        let frame: BroadcastPreprocessedFrame
         do {
-            try handler.perform([request])
+            frame = try preprocessor.preprocess(
+                source: pixelBuffer,
+                orientation: orientation,
+                visionROI: roi
+            )
+        } catch {
+            // Do not silently route an unsupported/high-resolution source format back through
+            // VNCoreMLRequest. The caller gets a truthful failed lane and telemetry instead.
+            return failure(modelName: modelName, coreMLInvoked: false)
+        }
+
+        let output: MLFeatureProvider
+        do {
+            output = try model.prediction(from: provider)
         } catch {
             blockCurrentModel()
-            return .init(
-                detections: [],
-                succeeded: false,
-                modelName: modelName,
-                coreMLInvoked: true,
-                decoder: .none,
-                decodeSucceeded: false,
-                inferenceFailed: true
-            )
+            return failure(modelName: modelName, coreMLInvoked: true)
         }
 
-        let fullGeometry = Self.sourceGeometry(pixelBuffer: pixelBuffer, orientation: orientation)
-        let roiGeometry = SourceGeometry(
-            width: fullGeometry.width * Double(roi.width),
-            height: fullGeometry.height * Double(roi.height)
-        )
-        switch decodeResults(
-            request.results ?? [],
+        let features = output.featureNames.compactMap { name -> FeatureArray? in
+            guard let array = output.featureValue(for: name)?.multiArrayValue else { return nil }
+            return .init(name: name.lowercased(), array: array)
+        }
+        let geometry = SourceGeometry(width: frame.geometryWidth, height: frame.geometryHeight)
+
+        switch decodeFeatures(
+            features,
             minimumConfidence: minimumConfidence,
-            geometry: roiGeometry,
+            geometry: geometry,
             inputSize: activeModelInputSize,
-            regionOfInterest: roi
+            regionOfInterest: frame.visionROI
         ) {
         case let .detections(detections, decoder):
-            if !detections.isEmpty { reportVisibleDetection() }
             return .init(
                 detections: detections,
                 succeeded: true,
@@ -181,88 +173,81 @@ final class BroadcastNanoPersonDetector {
         }
     }
 
-    private func ensureModel() -> VNCoreMLModel? {
-        if let visionModel { return visionModel }
-        let urls = candidateURLs ?? Self.discoverModels()
-        candidateURLs = urls
-        guard !urls.isEmpty else { return nil }
+    private func failure(modelName: String?, coreMLInvoked: Bool) -> BroadcastNanoDetectionResult {
+        .init(
+            detections: [],
+            succeeded: false,
+            modelName: modelName,
+            coreMLInvoked: coreMLInvoked,
+            decoder: .none,
+            decodeSucceeded: false,
+            inferenceFailed: true
+        )
+    }
 
+    private func ensureModel() -> MLModel? {
+        if let activeModel, preprocessor != nil, provider != nil {
+            return activeModel
+        }
+
+        guard let url = Self.discoverModel(), !blockedPaths.contains(url.path) else { return nil }
         let configuration = MLModelConfiguration()
         configuration.computeUnits = .cpuAndNeuralEngine
-        let orderedIndices = Array(preferredIndex..<urls.count) + Array(0..<preferredIndex)
-
-        for index in orderedIndices {
-            let url = urls[index]
-            guard !blockedPaths.contains(url.path) else { continue }
-            guard let model = try? MLModel(contentsOf: url, configuration: configuration),
-                  let candidate = try? VNCoreMLModel(for: model) else {
-                blockedPaths.insert(url.path)
-                continue
-            }
-            preferredIndex = index
-            activeURL = url
-            activeModelInputSize = Self.modelInputSize(for: model)
-            visionModel = candidate
-            independentVisibleMissCount = 0
-            return candidate
+        guard let model = try? MLModel(contentsOf: url, configuration: configuration),
+              let inputSize = Self.modelInputSize(for: model),
+              inputSize.width == inputSize.height,
+              inputSize.width.rounded() == inputSize.width,
+              inputSize.width >= 64,
+              inputSize.width <= 512 else {
+            blockedPaths.insert(url.path)
+            return nil
         }
-        return nil
+
+        let inputNameCandidates = model.modelDescription.inputDescriptionsByName.filter {
+            $0.value.type == .image
+        }
+        guard inputNameCandidates.count == 1,
+              let inputName = inputNameCandidates.first?.key,
+              let prepared = try? BroadcastFramePreprocessor(side: Int(inputSize.width)) else {
+            blockedPaths.insert(url.path)
+            return nil
+        }
+
+        activeURL = url
+        activeModel = model
+        activeModelInputSize = inputSize
+        preprocessor = prepared
+        provider = ReusablePixelBufferProvider(inputName: inputName, pixelBuffer: prepared.modelInput)
+        return model
     }
 
     private func blockCurrentModel() {
         if let activeURL { blockedPaths.insert(activeURL.path) }
         activeURL = nil
+        activeModel = nil
         activeModelInputSize = nil
-        visionModel = nil
-        independentVisibleMissCount = 0
+        preprocessor = nil
+        provider = nil
     }
 
-    private func decodeResults(
-        _ results: [VNObservation],
+    private func decodeFeatures(
+        _ features: [FeatureArray],
         minimumConfidence: Double,
         geometry: SourceGeometry,
         inputSize: ModelInputSize?,
         regionOfInterest roi: CGRect
     ) -> DecodeResult {
-        let objectResults = results.compactMap { $0 as? VNRecognizedObjectObservation }
-        if !objectResults.isEmpty {
-            let acceptedLabels = Set(["person", "human", "people", "pedestrian"])
-            let detections = objectResults.compactMap { observation -> BroadcastNanoDetection? in
-                guard let best = observation.labels.max(by: { $0.confidence < $1.confidence }) else { return nil }
-                let label = best.identifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                guard acceptedLabels.contains(label), Double(best.confidence) >= minimumConfidence else { return nil }
-                let localBox = observation.boundingBox
-                guard localBox.width > 0.006, localBox.height > 0.012 else { return nil }
-                let box = Self.fullFrameVisionBox(forLocalBox: localBox, roi: roi)
-                guard box.width > 0.006, box.height > 0.012 else { return nil }
-                return .init(
-                    boundingBox: box,
-                    point: Self.point(forVisionBox: box),
-                    confidence: Double(best.confidence)
-                )
-            }
-            return .detections(
-                Array(detections.sorted(by: { $0.confidence > $1.confidence }).prefix(8)),
-                .recognizedObject
-            )
-        }
-
-        let features = results
-            .compactMap { $0 as? VNCoreMLFeatureValueObservation }
-            .compactMap { observation -> FeatureArray? in
-                guard let array = observation.featureValue.multiArrayValue else { return nil }
-                return .init(name: observation.featureName.lowercased(), array: array)
-            }
-
-        if let pairCandidates = decodeCoordinateConfidencePair(features, minimumConfidence: minimumConfidence) {
+        if let pairCandidates = decodeCoordinateConfidencePair(
+            features,
+            minimumConfidence: minimumConfidence
+        ) {
             return .detections(
                 makeDetections(from: pairCandidates, geometry: geometry, regionOfInterest: roi),
                 .coordinateConfidence
             )
         }
 
-        let arrays = features.map(\.array)
-        if let rawOutput = arrays.first(where: { array in
+        if let rawOutput = features.map(\.array).first(where: { array in
             let shape = array.shape.map(\.intValue)
             return shape.count == 3 && shape.contains(where: { $0 >= 5 })
         }) {
@@ -279,7 +264,7 @@ final class BroadcastNanoPersonDetector {
             )
         }
 
-        return results.isEmpty ? .detections([], .emptyOutput) : .unsupported
+        return features.isEmpty ? .detections([], .emptyOutput) : .unsupported
     }
 
     private func decodeCoordinateConfidencePair(
@@ -352,8 +337,8 @@ final class BroadcastNanoPersonDetector {
                   confidence.isFinite, confidence >= minimumConfidence else { continue }
 
             let isPixelSpace = max(abs(rawX), abs(rawY), abs(rawW), abs(rawH)) > 2
-            let scaleX = isPixelSpace ? max(inputSize?.width ?? 640.0, 1.0) : 1.0
-            let scaleY = isPixelSpace ? max(inputSize?.height ?? 640.0, 1.0) : 1.0
+            let scaleX = isPixelSpace ? max(inputSize?.width ?? 640, 1) : 1
+            let scaleY = isPixelSpace ? max(inputSize?.height ?? 640, 1) : 1
             let x = rawX / scaleX
             let y = rawY / scaleY
             let w = rawW / scaleX
@@ -374,7 +359,9 @@ final class BroadcastNanoPersonDetector {
         nonMaximumSuppression(candidates, threshold: 0.45)
             .prefix(8)
             .compactMap { candidate in
-                guard let sourceCandidate = remapScaleFitCandidate(candidate, geometry: geometry) else { return nil }
+                guard let sourceCandidate = remapScaleFitCandidate(candidate, geometry: geometry) else {
+                    return nil
+                }
 
                 let minX = min(max(sourceCandidate.x - sourceCandidate.w / 2, 0), 1)
                 let minYTop = min(max(sourceCandidate.y - sourceCandidate.h / 2, 0), 1)
@@ -500,7 +487,6 @@ final class BroadcastNanoPersonDetector {
         let bMaxX = b.x + b.w / 2
         let bMinY = b.y - b.h / 2
         let bMaxY = b.y + b.h / 2
-
         let intersectionWidth = max(0, min(aMaxX, bMaxX) - max(aMinX, bMinX))
         let intersectionHeight = max(0, min(aMaxY, bMaxY) - max(aMinY, bMinY))
         let intersectionArea = intersectionWidth * intersectionHeight
@@ -530,22 +516,8 @@ final class BroadcastNanoPersonDetector {
     private static func point(forVisionBox box: CGRect) -> LightweightTargetPoint {
         .init(
             x: min(max(Double(box.midX), 0), 1),
-            y: min(max(1.0 - Double(box.minY + box.height * 0.68), 0), 1)
+            y: min(max(1 - Double(box.minY + box.height * 0.68), 0), 1)
         )
-    }
-
-    private static func sourceGeometry(
-        pixelBuffer: CVPixelBuffer,
-        orientation: CGImagePropertyOrientation
-    ) -> SourceGeometry {
-        let width = Double(CVPixelBufferGetWidth(pixelBuffer))
-        let height = Double(CVPixelBufferGetHeight(pixelBuffer))
-        switch orientation {
-        case .left, .leftMirrored, .right, .rightMirrored:
-            return .init(width: height, height: width)
-        default:
-            return .init(width: width, height: height)
-        }
     }
 
     private static func modelInputSize(for model: MLModel) -> ModelInputSize? {
@@ -561,18 +533,15 @@ final class BroadcastNanoPersonDetector {
         return nil
     }
 
-    private static func discoverModels() -> [URL] {
-        var result: [URL] = []
-        var seen: Set<String> = []
-        for name in preferredNames {
-            let candidates = [
-                Bundle.main.url(forResource: name, withExtension: "mlmodelc", subdirectory: "BroadcastModels"),
-                Bundle.main.url(forResource: name, withExtension: "mlmodelc")
-            ]
-            for case let url? in candidates where seen.insert(url.path).inserted {
-                result.append(url)
-            }
-        }
-        return result
+    private static func discoverModel() -> URL? {
+        let candidates = [
+            Bundle.main.url(
+                forResource: preferredName,
+                withExtension: "mlmodelc",
+                subdirectory: "BroadcastModels"
+            ),
+            Bundle.main.url(forResource: preferredName, withExtension: "mlmodelc")
+        ]
+        return candidates.compactMap { $0 }.first
     }
 }
