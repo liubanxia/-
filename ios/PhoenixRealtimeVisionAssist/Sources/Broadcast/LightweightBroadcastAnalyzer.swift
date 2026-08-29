@@ -26,7 +26,7 @@ struct LightweightVisionAnalysis {
 /// VNTrackObjectRequest handles lightweight inter-frame tracking. Sparse reacquisition uses one
 /// resident Core ML model whose high-resolution preprocessing is performed by reusable vImage
 /// buffers, not VNCoreMLRequest. When tracking is lost between global refreshes, only one
-/// overlapping 68% ROI is scanned per eligible analysis frame. No frame content is persisted.
+/// overlapping 60% ROI is scanned per eligible analysis frame. No frame content is persisted.
 final class LightweightBroadcastAnalyzer {
     private struct TargetObservation {
         let point: LightweightTargetPoint
@@ -240,7 +240,7 @@ final class LightweightBroadcastAnalyzer {
             height = rawHeight
         }
 
-        let coverage = 0.68
+        let coverage = 0.60
         let offset = 1 - coverage
         if width >= height {
             return roiPhase == 0
