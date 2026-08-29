@@ -122,6 +122,13 @@ jobs:
               case unsupported = 5
           }
 
+          enum LiteViewTelemetryPixelFormat: UInt64, Sendable {
+              case unknown = 0
+              case bgra = 1
+              case nv12FullRange = 2
+              case nv12VideoRange = 3
+          }
+
           struct GTBox {
               let rect: CGRect
               let effective384Height: Double
