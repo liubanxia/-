@@ -61,10 +61,14 @@ jobs:
           DET="$ROOT/Sources/ExtensionSupport/BroadcastNanoPersonDetector.swift"
           ANA="$ROOT/Sources/Broadcast/LightweightBroadcastAnalyzer.swift"
           HANDLER="$ROOT/Sources/Broadcast/BroadcastSampleHandler.swift"
+          TEL="$ROOT/Sources/Broadcast/TrueInferenceTelemetry.swift"
+          OVERLAY="$ROOT/Sources/App/TrueInferenceTelemetryOverlay.m"
           PROJECT="$ROOT/project.yml"
 
           test -f "$PRE"
           test -f "$DET"
+          test -f "$TEL"
+          test -f "$OVERLAY"
 
           # High-resolution frames must go through reusable vImage preprocessing and direct Core ML.
           grep -q 'model.prediction(from: provider)' "$DET"
@@ -96,6 +100,21 @@ jobs:
           ! grep -q 'runHumanRectangleFallback' "$ANA"
           ! grep -q 'preferBackgroundProcessing' "$ANA"
 
+          # Entitlement-free detector diagnostics must expose the actual input/preprocess/ML/decode chain.
+          grep -q 'frameDiagnosticsNotificationName = "com.phoenix.realtimevisionassist.broadcast.frame-diagnostics.v1"' "$TEL"
+          grep -q 'preprocessAttempted' "$TEL"
+          grep -q 'preprocessSucceeded' "$TEL"
+          grep -q 'latestPixelFormatCode' "$TEL"
+          grep -q 'latestOrientationCode' "$TEL"
+          grep -q 'guard sample.preprocessAttempted else { return }' "$TEL"
+          grep -q 'preprocessAttempted' "$DET"
+          grep -q 'telemetryPixelFormat' "$DET"
+          grep -q 'LiteViewFrameDiagnosticsNotificationName' "$OVERLAY"
+          grep -q '候选真推理遥测' "$OVERLAY"
+          grep -q 'NV12 420f' "$OVERLAY"
+          grep -q 'NV12 420v' "$OVERLAY"
+          ! grep -q '0.8.4 / Build 15' "$OVERLAY"
+
           # Resource release belongs to session teardown only, not every scan.
           RELEASE_COUNT="$(grep -c 'nanoDetector.releaseResources()' "$ANA")"
           test "$RELEASE_COUNT" = '1'
@@ -104,6 +123,8 @@ jobs:
           from pathlib import Path
           ana = Path('ios/PhoenixRealtimeVisionAssist/Sources/Broadcast/LightweightBroadcastAnalyzer.swift').read_text()
           pre = Path('ios/PhoenixRealtimeVisionAssist/Sources/ExtensionSupport/BroadcastFramePreprocessor.swift').read_text()
+          tel = Path('ios/PhoenixRealtimeVisionAssist/Sources/Broadcast/TrueInferenceTelemetry.swift').read_text()
+          overlay = Path('ios/PhoenixRealtimeVisionAssist/Sources/App/TrueInferenceTelemetryOverlay.m').read_text()
           project = Path('ios/PhoenixRealtimeVisionAssist/project.yml').read_text()
           assert 'trackedObservation == nil ? 2.60 : 3.20' in ana
           assert 'CGRect(x: 0, y: 0, width: coverage, height: 1)' in ana
@@ -112,8 +133,11 @@ jobs:
           assert 'CGRect(x: 0, y: 0, width: 1, height: coverage)' in ana
           assert 'case .right:' in pre and 'case .left:' in pre
           assert 'case .leftMirrored:' in pre and 'case .rightMirrored:' in pre
+          assert 'detectorSequence' in tel and 'latestPreprocessSucceeded' in tel
+          assert '最近链：预处理' in overlay
           assert '- path: Sources/ExtensionSupport' in project
           print('ALLOCATION_STABLE_RUNTIME_CONTRACT_PASS')
+          print('FRAME_DIAGNOSTICS_CONTRACT_PASS')
           PY
 
           # The ReplayKit frame ownership bridge must stay narrow: no raw CVPixelBuffer capture in
@@ -205,6 +229,7 @@ jobs:
             echo '- Production preprocessor supports BGRA, NV12 420f and NV12 420v; the separate contract job validates all eight EXIF orientations.'
             echo '- Tracker-loss reacquisition runs one 68% ROI per eligible frame and alternates phases.'
             echo '- No high-resolution VNCoreMLRequest or generic human-detector fallback is allowed in the candidate detector path.'
+            echo '- Entitlement-free frame diagnostics expose ReplayKit pixel format/orientation and preprocessing/Core ML/decode stage without persisting frames.'
             echo '- ReplayKit analysis keeps the narrow retained-frame ownership bridge; no full-frame copy is introduced.'
             echo '- No IPA or GitHub release is created by this workflow.'
             echo '- Build/host validation does not establish on-device recognition quality or the iPhone ReplayKit jetsam ceiling.'

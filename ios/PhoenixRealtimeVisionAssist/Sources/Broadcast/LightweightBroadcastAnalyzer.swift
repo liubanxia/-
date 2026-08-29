@@ -175,7 +175,11 @@ final class LightweightBroadcastAnalyzer {
                 decoder: nanoResult?.decoder ?? .none,
                 source: resultSource,
                 failoverTriggered: false,
-                inferenceFailed: nanoResult?.inferenceFailed ?? false
+                inferenceFailed: nanoResult?.inferenceFailed ?? false,
+                preprocessAttempted: nanoResult?.preprocessAttempted ?? false,
+                preprocessSucceeded: nanoResult?.preprocessSucceeded ?? false,
+                pixelFormat: nanoResult?.pixelFormat ?? .unknown,
+                orientationCode: nanoResult?.orientationCode ?? 0
             )
         )
 

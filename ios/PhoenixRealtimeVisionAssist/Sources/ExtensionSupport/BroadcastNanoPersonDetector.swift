@@ -18,6 +18,10 @@ struct BroadcastNanoDetectionResult: Sendable {
     let decoder: LiteViewTelemetryDecoder
     let decodeSucceeded: Bool
     let inferenceFailed: Bool
+    let preprocessAttempted: Bool
+    let preprocessSucceeded: Bool
+    let pixelFormat: LiteViewTelemetryPixelFormat
+    let orientationCode: UInt64
 }
 
 /// One resident Core ML detector for the ReplayKit process.
@@ -104,13 +108,20 @@ final class BroadcastNanoPersonDetector {
         minimumConfidence: Double = 0.22,
         regionOfInterest requestedROI: CGRect = unitROI
     ) -> BroadcastNanoDetectionResult {
+        let pixelFormat = Self.telemetryPixelFormat(for: CVPixelBufferGetPixelFormatType(pixelBuffer))
+        let orientationCode = UInt64(orientation.rawValue)
+
         guard let roi = Self.validatedROI(requestedROI),
               let model = ensureModel(),
               let preprocessor,
               let provider else {
             return failure(
                 modelName: activeURL?.deletingPathExtension().lastPathComponent,
-                coreMLInvoked: false
+                coreMLInvoked: false,
+                preprocessAttempted: false,
+                preprocessSucceeded: false,
+                pixelFormat: pixelFormat,
+                orientationCode: orientationCode
             )
         }
 
@@ -125,7 +136,14 @@ final class BroadcastNanoPersonDetector {
         } catch {
             // Do not silently route an unsupported/high-resolution source format back through
             // VNCoreMLRequest. The caller gets a truthful failed lane and telemetry instead.
-            return failure(modelName: modelName, coreMLInvoked: false)
+            return failure(
+                modelName: modelName,
+                coreMLInvoked: false,
+                preprocessAttempted: true,
+                preprocessSucceeded: false,
+                pixelFormat: pixelFormat,
+                orientationCode: orientationCode
+            )
         }
 
         let output: MLFeatureProvider
@@ -133,7 +151,14 @@ final class BroadcastNanoPersonDetector {
             output = try model.prediction(from: provider)
         } catch {
             blockCurrentModel()
-            return failure(modelName: modelName, coreMLInvoked: true)
+            return failure(
+                modelName: modelName,
+                coreMLInvoked: true,
+                preprocessAttempted: true,
+                preprocessSucceeded: true,
+                pixelFormat: pixelFormat,
+                orientationCode: orientationCode
+            )
         }
 
         let features = output.featureNames.compactMap { name -> FeatureArray? in
@@ -157,7 +182,11 @@ final class BroadcastNanoPersonDetector {
                 coreMLInvoked: true,
                 decoder: decoder,
                 decodeSucceeded: true,
-                inferenceFailed: false
+                inferenceFailed: false,
+                preprocessAttempted: true,
+                preprocessSucceeded: true,
+                pixelFormat: pixelFormat,
+                orientationCode: orientationCode
             )
         case .unsupported:
             blockCurrentModel()
@@ -168,12 +197,23 @@ final class BroadcastNanoPersonDetector {
                 coreMLInvoked: true,
                 decoder: .unsupported,
                 decodeSucceeded: false,
-                inferenceFailed: true
+                inferenceFailed: true,
+                preprocessAttempted: true,
+                preprocessSucceeded: true,
+                pixelFormat: pixelFormat,
+                orientationCode: orientationCode
             )
         }
     }
 
-    private func failure(modelName: String?, coreMLInvoked: Bool) -> BroadcastNanoDetectionResult {
+    private func failure(
+        modelName: String?,
+        coreMLInvoked: Bool,
+        preprocessAttempted: Bool,
+        preprocessSucceeded: Bool,
+        pixelFormat: LiteViewTelemetryPixelFormat,
+        orientationCode: UInt64
+    ) -> BroadcastNanoDetectionResult {
         .init(
             detections: [],
             succeeded: false,
@@ -181,7 +221,11 @@ final class BroadcastNanoPersonDetector {
             coreMLInvoked: coreMLInvoked,
             decoder: .none,
             decodeSucceeded: false,
-            inferenceFailed: true
+            inferenceFailed: true,
+            preprocessAttempted: preprocessAttempted,
+            preprocessSucceeded: preprocessSucceeded,
+            pixelFormat: pixelFormat,
+            orientationCode: orientationCode
         )
     }
 
@@ -531,6 +575,19 @@ final class BroadcastNanoPersonDetector {
             )
         }
         return nil
+    }
+
+    private static func telemetryPixelFormat(for format: OSType) -> LiteViewTelemetryPixelFormat {
+        switch format {
+        case kCVPixelFormatType_32BGRA:
+            return .bgra
+        case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
+            return .nv12FullRange
+        case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:
+            return .nv12VideoRange
+        default:
+            return .unknown
+        }
     }
 
     private static func discoverModel() -> URL? {

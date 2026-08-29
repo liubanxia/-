@@ -35,6 +35,13 @@ enum LiteViewTelemetrySource: UInt64, Sendable {
     case visionFallback = 3
 }
 
+enum LiteViewTelemetryPixelFormat: UInt64, Sendable {
+    case unknown = 0
+    case bgra = 1
+    case nv12FullRange = 2
+    case nv12VideoRange = 3
+}
+
 struct LiteViewInferenceTelemetrySample: Sendable {
     let coreMLInvoked: Bool
     let decodeSucceeded: Bool
@@ -44,15 +51,26 @@ struct LiteViewInferenceTelemetrySample: Sendable {
     let source: LiteViewTelemetrySource
     let failoverTriggered: Bool
     let inferenceFailed: Bool
+    let preprocessAttempted: Bool
+    let preprocessSucceeded: Bool
+    let pixelFormat: LiteViewTelemetryPixelFormat
+    let orientationCode: UInt64
 }
 
 /// Entitlement-free, counter-only proof that the ReplayKit extension is doing real inference.
 /// No frame, screenshot, audio sample, bounding-box history, or per-frame payload is persisted.
+///
+/// The legacy inference state remains binary-compatible. A second frame-diagnostics state carries
+/// only enum/counter evidence for the most recent detector scan so on-device failures can be
+/// separated into source-format/orientation, preprocessing, Core ML, and decoding stages.
 final class LiteViewInferenceTelemetryPublisher {
     static let notificationName = "com.phoenix.realtimevisionassist.broadcast.true-inference.v1"
+    static let frameDiagnosticsNotificationName = "com.phoenix.realtimevisionassist.broadcast.frame-diagnostics.v1"
 
-    private var token: Int32 = -1
-    private let isAvailable: Bool
+    private var inferenceToken: Int32 = -1
+    private var frameDiagnosticsToken: Int32 = -1
+    private let inferenceAvailable: Bool
+    private let frameDiagnosticsAvailable: Bool
 
     private var coreMLInvocationCount: UInt64 = 0
     private var decodeSuccessCount: UInt64 = 0
@@ -64,18 +82,39 @@ final class LiteViewInferenceTelemetryPublisher {
     private var decoderCode: UInt64 = 0
     private var sourceCode: UInt64 = 0
 
+    private var preprocessSuccessCount: UInt64 = 0
+    private var preprocessFailureCount: UInt64 = 0
+    private var detectorSequence: UInt64 = 0
+    private var latestPixelFormatCode: UInt64 = 0
+    private var latestOrientationCode: UInt64 = 0
+    private var latestPreprocessSucceeded = false
+    private var latestCoreMLInvoked = false
+    private var latestDecodeSucceeded = false
+    private var latestNonEmptyModelOutput = false
+    private var latestInferenceFailed = false
+
     init() {
-        var newToken: Int32 = -1
-        let status = Self.notificationName.withCString {
-            telemetry_notify_register_check($0, &newToken)
+        var newInferenceToken: Int32 = -1
+        let inferenceStatus = Self.notificationName.withCString {
+            telemetry_notify_register_check($0, &newInferenceToken)
         }
-        token = newToken
-        isAvailable = status == 0 && newToken >= 0
+        inferenceToken = newInferenceToken
+        inferenceAvailable = inferenceStatus == 0 && newInferenceToken >= 0
+
+        var newFrameToken: Int32 = -1
+        let frameStatus = Self.frameDiagnosticsNotificationName.withCString {
+            telemetry_notify_register_check($0, &newFrameToken)
+        }
+        frameDiagnosticsToken = newFrameToken
+        frameDiagnosticsAvailable = frameStatus == 0 && newFrameToken >= 0
     }
 
     deinit {
-        if isAvailable {
-            _ = telemetry_notify_cancel(token)
+        if inferenceAvailable {
+            _ = telemetry_notify_cancel(inferenceToken)
+        }
+        if frameDiagnosticsAvailable {
+            _ = telemetry_notify_cancel(frameDiagnosticsToken)
         }
     }
 
@@ -89,7 +128,20 @@ final class LiteViewInferenceTelemetryPublisher {
         modelCode = 0
         decoderCode = 0
         sourceCode = 0
-        publish()
+
+        preprocessSuccessCount = 0
+        preprocessFailureCount = 0
+        detectorSequence = 0
+        latestPixelFormatCode = 0
+        latestOrientationCode = 0
+        latestPreprocessSucceeded = false
+        latestCoreMLInvoked = false
+        latestDecodeSucceeded = false
+        latestNonEmptyModelOutput = false
+        latestInferenceFailed = false
+
+        publishInferenceState()
+        publishFrameDiagnosticsState()
     }
 
     func record(_ sample: LiteViewInferenceTelemetrySample) {
@@ -107,11 +159,28 @@ final class LiteViewInferenceTelemetryPublisher {
             decoderCode = sample.decoder.rawValue
         }
         sourceCode = sample.source.rawValue
-        publish()
+        publishInferenceState()
+
+        // Tracker-only frames intentionally do not overwrite the last real detector scan.
+        guard sample.preprocessAttempted else { return }
+        detectorSequence &+= 1
+        if sample.preprocessSucceeded {
+            preprocessSuccessCount &+= 1
+        } else {
+            preprocessFailureCount &+= 1
+        }
+        latestPixelFormatCode = sample.pixelFormat.rawValue
+        latestOrientationCode = min(sample.orientationCode, 15)
+        latestPreprocessSucceeded = sample.preprocessSucceeded
+        latestCoreMLInvoked = sample.coreMLInvoked
+        latestDecodeSucceeded = sample.decodeSucceeded
+        latestNonEmptyModelOutput = sample.nonEmptyModelOutput
+        latestInferenceFailed = sample.inferenceFailed
+        publishFrameDiagnosticsState()
     }
 
-    private func publish() {
-        guard isAvailable else { return }
+    private func publishInferenceState() {
+        guard inferenceAvailable else { return }
 
         // Layout, low -> high bits:
         // 0...11 Core ML calls, 12...23 decoded calls, 24...35 non-empty detections,
@@ -128,8 +197,33 @@ final class LiteViewInferenceTelemetryPublisher {
             | ((sequence & 0x00FF) << 55)
             | (UInt64(1) << 63)
 
-        guard telemetry_notify_set_state(token, state) == 0 else { return }
+        guard telemetry_notify_set_state(inferenceToken, state) == 0 else { return }
         _ = Self.notificationName.withCString { telemetry_notify_post($0) }
+    }
+
+    private func publishFrameDiagnosticsState() {
+        guard frameDiagnosticsAvailable else { return }
+
+        // Layout, low -> high bits:
+        // 0...11 preprocess successes, 12...23 preprocess failures,
+        // 24...25 latest pixel format, 26...29 EXIF orientation raw code,
+        // 30 latest preprocess success, 31 latest Core ML invoked,
+        // 32 latest decode success, 33 latest non-empty model output,
+        // 34 latest inference failure, 35...42 detector sequence, 63 magic.
+        var state = (preprocessSuccessCount & 0x0FFF)
+            | ((preprocessFailureCount & 0x0FFF) << 12)
+            | ((latestPixelFormatCode & 0x0003) << 24)
+            | ((latestOrientationCode & 0x000F) << 26)
+            | ((detectorSequence & 0x00FF) << 35)
+            | (UInt64(1) << 63)
+        if latestPreprocessSucceeded { state |= UInt64(1) << 30 }
+        if latestCoreMLInvoked { state |= UInt64(1) << 31 }
+        if latestDecodeSucceeded { state |= UInt64(1) << 32 }
+        if latestNonEmptyModelOutput { state |= UInt64(1) << 33 }
+        if latestInferenceFailed { state |= UInt64(1) << 34 }
+
+        guard telemetry_notify_set_state(frameDiagnosticsToken, state) == 0 else { return }
+        _ = Self.frameDiagnosticsNotificationName.withCString { telemetry_notify_post($0) }
     }
 
     private static func modelCode(for name: String) -> UInt64 {
