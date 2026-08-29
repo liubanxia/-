@@ -22,4 +22,66 @@ jobs:
           set -euo pipefail
           brew install xcodegen
           xcodegen --version
-          echo PUBLIC_MACOS15_XCODEGEN_OK
+      - name: Probe YiBao project spec shape
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/yibao-spec-probe
+          mkdir -p /tmp/yibao-spec-probe/App/Resources /tmp/yibao-spec-probe/Tests /tmp/yibao-spec-probe/Tools
+          cat > /tmp/yibao-spec-probe/App/ProbeApp.swift <<'SWIFT'
+          import SwiftUI
+          @main struct ProbeApp: App {
+              var body: some Scene { WindowGroup { Text("Probe") } }
+          }
+          SWIFT
+          cat > /tmp/yibao-spec-probe/Tests/ProbeTests.swift <<'SWIFT'
+          import XCTest
+          @testable import YiBaoZhiCha
+          final class ProbeTests: XCTestCase { func testProbe() { XCTAssertTrue(true) } }
+          SWIFT
+          cat > /tmp/yibao-spec-probe/Tools/security_audit.sh <<'SH'
+          #!/bin/bash
+          set -euo pipefail
+          echo SECURITY_PROBE_PASS
+          SH
+          cat > /tmp/yibao-spec-probe/project.yml <<'YAML'
+          name: YiBaoZhiCha
+          options:
+            bundleIdPrefix: com.phoenix
+            deploymentTarget:
+              iOS: "18.0"
+          targets:
+            YiBaoZhiCha:
+              type: application
+              platform: iOS
+              sources:
+                - path: App
+              resources:
+                - path: App/Resources
+              preBuildScripts:
+                - name: Security Audit
+                  script: |
+                    /bin/bash "$SRCROOT/Tools/security_audit.sh"
+              settings:
+                base:
+                  PRODUCT_BUNDLE_IDENTIFIER: com.phoenix.yibaozhicha.probe
+                  PRODUCT_NAME: YiBaoProbe
+                  SWIFT_VERSION: 6.0
+                  GENERATE_INFOPLIST_FILE: YES
+                  INFOPLIST_KEY_NSMicrophoneUsageDescription: Probe microphone permission text.
+                  INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: Probe speech permission text.
+                  IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+              dependencies:
+                - sdk: libsqlite3.tbd
+            YiBaoZhiChaTests:
+              type: bundle.unit-test
+              platform: iOS
+              sources:
+                - path: Tests
+              dependencies:
+                - target: YiBaoZhiCha
+          YAML
+          cd /tmp/yibao-spec-probe
+          xcodegen generate
+          xcodebuild -project YiBaoZhiCha.xcodeproj -scheme YiBaoZhiCha -sdk iphonesimulator -configuration Debug -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+          xcodebuild -project YiBaoZhiCha.xcodeproj -scheme YiBaoZhiCha -sdk iphonesimulator -configuration Debug -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build-for-testing
+          echo PUBLIC_YIBAO_SPEC_SHAPE_BUILD_PASS
