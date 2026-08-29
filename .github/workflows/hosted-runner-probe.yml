@@ -8,10 +8,18 @@ on:
 
 jobs:
   probe:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    runs-on: macos-14
+    timeout-minutes: 10
     steps:
-      - name: Probe
+      - name: Probe macOS and Xcode
         run: |
-          uname -a
-          echo PUBLIC_RUNNER_OK
+          set -euo pipefail
+          sw_vers
+          xcodebuild -version
+          xcrun simctl list runtimes
+      - name: Probe XcodeGen
+        run: |
+          set -euo pipefail
+          brew install xcodegen
+          xcodegen --version
+          echo PUBLIC_MACOS_XCODEGEN_OK
