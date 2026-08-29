@@ -1,0 +1,255 @@
+name: LiteView Runtime Stability Candidate Package
+
+on:
+  push:
+    branches:
+      - feature/ios-realtime-vision-runtime-candidate
+    paths:
+      - '.github/workflows/liteview-runtime-candidate-package.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package-runtime-candidate:
+    runs-on: macos-15
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Stage one production YOLO11n model in Broadcast Extension resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          MODEL_DIR="$ROOT/Resources/BroadcastModels"
+          ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
+          UNZIP_DIR="$RUNNER_TEMP/liteview-yolo11n-coreml"
+          COMPILE_DIR="$RUNNER_TEMP/liteview-runtime-candidate-model"
+          URL='https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
+
+          rm -rf "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
+          mkdir -p "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
+          curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 -o "$ZIP" "$URL"
+          unzip -q "$ZIP" -d "$UNZIP_DIR"
+          SRC="$(find "$UNZIP_DIR" -type d -name 'yolo11n.mlpackage' -print -quit)"
+          test -n "$SRC"
+          xcrun coremlc compile "$SRC" "$COMPILE_DIR"
+          COMPILED="$(find "$COMPILE_DIR" -type d -name 'yolo11n.mlmodelc' -print -quit)"
+          test -n "$COMPILED"
+          cp -R "$COMPILED" "$MODEL_DIR/yolo11n.mlmodelc"
+          test "$(find "$MODEL_DIR" -type d -name '*.mlmodelc' -prune -print | wc -l | tr -d ' ')" = '1'
+
+      - name: Guard validated runtime architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          PRE="$ROOT/Sources/ExtensionSupport/BroadcastFramePreprocessor.swift"
+          DET="$ROOT/Sources/ExtensionSupport/BroadcastNanoPersonDetector.swift"
+          ANA="$ROOT/Sources/Broadcast/LightweightBroadcastAnalyzer.swift"
+          HANDLER="$ROOT/Sources/Broadcast/BroadcastSampleHandler.swift"
+
+          grep -q 'model.prediction(from: provider)' "$DET"
+          ! grep -q 'VNCoreMLRequest' "$DET"
+          ! grep -q 'VNImageRequestHandler' "$DET"
+          grep -q 'vImageScale_ARGB8888' "$PRE"
+          grep -q 'kCVPixelFormatType_420YpCbCr8BiPlanarFullRange' "$PRE"
+          grep -q 'kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange' "$PRE"
+          grep -q 'let coverage = 0.60' "$ANA"
+          grep -q 'minimumConfidence: 0.09' "$ANA"
+          grep -q 'minimumConfidence: 0.12' "$ANA"
+          grep -q 'let handler = VNSequenceRequestHandler()' "$ANA"
+          ! grep -q 'private var sequenceHandler' "$ANA"
+          ! grep -q 'private let sequenceHandler' "$ANA"
+          test "$(grep -c 'VNSequenceRequestHandler()' "$ANA")" = '1'
+          grep -q 'private final class AnalysisFrame: @unchecked Sendable' "$HANDLER"
+          ! grep -Fq '[weak self, pixelBuffer]' "$HANDLER"
+          echo 'RUNTIME_STABILITY_ARCHITECTURE_PASS'
+
+      - name: Generate project
+        working-directory: ios/PhoenixRealtimeVisionAssist
+        run: xcodegen generate
+
+      - name: Run lifecycle smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          xcrun swiftc \
+            "$ROOT/Sources/Core/SharedRealtimeStateStore.swift" \
+            "$ROOT/Sources/Core/BroadcastLifecycle.swift" \
+            "$ROOT/Sources/Vision/PhoenixCapabilityModelBank.swift" \
+            "$ROOT/scripts/lifecycle_smoke_main.swift" \
+            -o "$RUNNER_TEMP/liteview-runtime-candidate-lifecycle"
+          "$RUNNER_TEMP/liteview-runtime-candidate-lifecycle"
+
+      - name: Build unsigned iPhone Release app and Broadcast Extension
+        working-directory: ios/PhoenixRealtimeVisionAssist
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/LiteViewRuntimeCandidatePackageDerivedData"
+          xcodebuild \
+            -project PhoenixRealtimeVisionAssist.xcodeproj \
+            -scheme PhoenixRealtimeVisionAssist \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/LiteViewRuntimeCandidatePackageDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Normalize candidate version and verify extension
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRODUCTS="$RUNNER_TEMP/LiteViewRuntimeCandidatePackageDerivedData/Build/Products/Release-iphoneos"
+          APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
+          EXT="$APP/PlugIns/PhoenixBroadcastExtension.appex"
+          APP_PLIST="$APP/Info.plist"
+          EXT_PLIST="$EXT/Info.plist"
+
+          test -d "$APP"
+          test -d "$EXT"
+
+          set_plist_string() {
+            local plist="$1" key="$2" value="$3"
+            /usr/libexec/PlistBuddy -c "Set :$key $value" "$plist" >/dev/null 2>&1 || \
+              /usr/libexec/PlistBuddy -c "Add :$key string $value" "$plist"
+          }
+
+          set_plist_string "$APP_PLIST" CFBundleDisplayName LiteView
+          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.2
+          set_plist_string "$APP_PLIST" CFBundleVersion 19
+          set_plist_string "$EXT_PLIST" CFBundleDisplayName 'LiteView Broadcast'
+          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.2
+          set_plist_string "$EXT_PLIST" CFBundleVersion 19
+
+          MODEL_COUNT="$(find "$EXT" -type d -name '*.mlmodelc' -prune -print | wc -l | tr -d ' ')"
+          EXT_SIZE_BYTES="$(du -sk "$EXT" | awk '{print $1 * 1024}')"
+          APP_SIZE_BYTES="$(du -sk "$APP" | awk '{print $1 * 1024}')"
+          APP_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PLIST")"
+          EXT_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$EXT_PLIST")"
+          EXT_POINT="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$EXT_PLIST")"
+
+          echo "MODEL_COUNT=$MODEL_COUNT"
+          echo "EXT_SIZE_BYTES=$EXT_SIZE_BYTES"
+          echo "APP_SIZE_BYTES=$APP_SIZE_BYTES"
+          echo "APP_ID=$APP_ID"
+          echo "EXT_ID=$EXT_ID"
+          echo "EXT_POINT=$EXT_POINT"
+
+          test "$MODEL_COUNT" = '1'
+          test -n "$(find "$EXT" -type d -name 'yolo11n.mlmodelc' -prune -print -quit)"
+          test "$EXT_SIZE_BYTES" -lt 33554432
+          test "$APP_ID" = 'com.phoenix.realtimevisionassist'
+          test "$EXT_ID" = 'com.phoenix.realtimevisionassist.broadcast'
+          test "$EXT_POINT" = 'com.apple.broadcast-services-upload'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PLIST")" = '0.9.2'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PLIST")" = '19'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$EXT_PLIST")" = '0.9.2'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_PLIST")" = '19'
+
+      - name: Package and verify unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRODUCTS="$RUNNER_TEMP/LiteViewRuntimeCandidatePackageDerivedData/Build/Products/Release-iphoneos"
+          APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
+          ROOT="$RUNNER_TEMP/LiteViewRuntimeCandidatePackage"
+          PAYLOAD="$ROOT/Payload"
+          IPA="$RUNNER_TEMP/LiteView-0.9.2-Build19-RuntimeStabilityCandidate-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.2-Build19-RuntimeStabilityCandidate.txt"
+          VERIFY="$RUNNER_TEMP/LiteViewRuntimeCandidateVerify"
+
+          rm -rf "$ROOT" "$VERIFY" "$IPA" "$MANIFEST"
+          mkdir -p "$PAYLOAD" "$VERIFY"
+          cp -R "$APP" "$PAYLOAD/"
+          (cd "$ROOT" && /usr/bin/zip -qry "$IPA" Payload)
+          test -s "$IPA"
+          /usr/bin/unzip -q "$IPA" -d "$VERIFY"
+
+          VAPP="$VERIFY/Payload/PhoenixRealtimeVisionAssist.app"
+          VEXT="$VAPP/PlugIns/PhoenixBroadcastExtension.appex"
+          test -d "$VAPP"
+          test -d "$VEXT"
+          test "$(find "$VEXT" -type d -name '*.mlmodelc' -prune -print | wc -l | tr -d ' ')" = '1'
+          test -n "$(find "$VEXT" -type d -name 'yolo11n.mlmodelc' -prune -print -quit)"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VAPP/Info.plist")" = '0.9.2'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$VAPP/Info.plist")" = '19'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VEXT/Info.plist")" = '0.9.2'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$VEXT/Info.plist")" = '19'
+
+          IPA_SIZE_BYTES="$(stat -f%z "$IPA")"
+          IPA_SHA256="$(shasum -a 256 "$IPA" | awk '{print $1}')"
+          EXT_SIZE_BYTES="$(du -sk "$VEXT" | awk '{print $1 * 1024}')"
+
+          cat > "$MANIFEST" <<EOF
+          LiteView 0.9.2 Build 19 Runtime Stability Candidate
+          commit=${GITHUB_SHA}
+          version=0.9.2
+          build=19
+          ipa_size_bytes=${IPA_SIZE_BYTES}
+          ipa_sha256=${IPA_SHA256}
+          broadcast_extension_size_bytes=${EXT_SIZE_BYTES}
+          broadcast_model=yolo11n.mlmodelc
+          broadcast_model_count=1
+          preprocessing=reusable vImage + direct MLModel.prediction
+          source_formats=BGRA + NV12 420f + NV12 420v
+          orientation=8 EXIF orientations supported
+          full_frame_confidence=0.12
+          sparse_roi_coverage=0.60
+          sparse_roi_confidence=0.09
+          tracker=VNTrackObjectRequest fast + request-scoped VNSequenceRequestHandler
+          persistence=no frames/screenshots/audio/analysis history
+          validation=pooled production sequence passed with flat RSS after tracker-handler fix; production detector 1200-call plateau passed; COCO generic visible-person gate passed; iphoneos Release build passed
+          scope=generic visible-person stability candidate; not game-specific recognition validation
+          signing=unsigned; re-sign main app and embedded Broadcast Extension without removing PlugIns
+          EOF
+
+          echo "IPA_SIZE_BYTES=$IPA_SIZE_BYTES"
+          echo "IPA_SHA256=$IPA_SHA256"
+          cat "$MANIFEST"
+
+      - name: Upload candidate artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-runtime-stability-candidate-0.9.2-build19
+          path: |
+            ${{ runner.temp }}/LiteView-0.9.2-Build19-RuntimeStabilityCandidate-unsigned.ipa
+            ${{ runner.temp }}/LiteView-0.9.2-Build19-RuntimeStabilityCandidate.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish candidate release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='liteview-runtime-candidate-latest'
+          IPA="$RUNNER_TEMP/LiteView-0.9.2-Build19-RuntimeStabilityCandidate-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.2-Build19-RuntimeStabilityCandidate.txt"
+          NOTES='LiteView 0.9.2 Build 19 runtime stability candidate. Generic visible-person pipeline only. This candidate replaces the long-lived VNSequenceRequestHandler with request-scoped tracking state after pooled A/B isolated it as the dominant host-side RSS growth source. It keeps one YOLO11n model in the ReplayKit extension, reusable vImage preprocessing, 60% sparse ROI reacquisition, and no frame/audio/history persistence. This is an on-device stability test candidate, not a claim of game-specific recognition quality.'
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
+            gh release edit "$TAG" --title 'LiteView 0.9.2 Build 19 Runtime Stability Candidate' --notes "$NOTES" --target "$GITHUB_SHA"
+          else
+            gh release create "$TAG" "$IPA" "$MANIFEST" \
+              --target "$GITHUB_SHA" \
+              --title 'LiteView 0.9.2 Build 19 Runtime Stability Candidate' \
+              --notes "$NOTES"
+          fi
