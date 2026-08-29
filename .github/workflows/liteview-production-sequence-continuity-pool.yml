@@ -6,6 +6,10 @@ on:
       - feature/ios-realtime-vision-runtime-candidate
     paths:
       - '.github/workflows/liteview-production-sequence-continuity-pool.yml'
+      - 'ios/PhoenixRealtimeVisionAssist/Sources/Broadcast/LightweightBroadcastAnalyzer.swift'
+      - 'ios/PhoenixRealtimeVisionAssist/Sources/Broadcast/TrueInferenceTelemetry.swift'
+      - 'ios/PhoenixRealtimeVisionAssist/Sources/ExtensionSupport/BroadcastFramePreprocessor.swift'
+      - 'ios/PhoenixRealtimeVisionAssist/Sources/ExtensionSupport/BroadcastNanoPersonDetector.swift'
   workflow_dispatch:
 
 permissions:
