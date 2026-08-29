@@ -8,7 +8,7 @@ on:
 
 jobs:
   probe:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 10
     steps:
       - name: Probe macOS and Xcode
@@ -22,4 +22,4 @@ jobs:
           set -euo pipefail
           brew install xcodegen
           xcodegen --version
-          echo PUBLIC_MACOS_XCODEGEN_OK
+          echo PUBLIC_MACOS15_XCODEGEN_OK
