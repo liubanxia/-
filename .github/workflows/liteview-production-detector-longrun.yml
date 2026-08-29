@@ -8,6 +8,7 @@ on:
       - '.github/workflows/liteview-production-detector-longrun.yml'
       - 'ios/PhoenixRealtimeVisionAssist/Sources/ExtensionSupport/BroadcastFramePreprocessor.swift'
       - 'ios/PhoenixRealtimeVisionAssist/Sources/ExtensionSupport/BroadcastNanoPersonDetector.swift'
+      - 'ios/PhoenixRealtimeVisionAssist/Sources/Broadcast/LightweightBroadcastAnalyzer.swift'
   workflow_dispatch:
 
 permissions:
@@ -189,10 +190,10 @@ jobs:
               .upMirrored, .rightMirrored, .downMirrored, .leftMirrored,
           ]
           let full = CGRect(x: 0, y: 0, width: 1, height: 1)
-          let left = CGRect(x: 0, y: 0, width: 0.68, height: 1)
-          let right = CGRect(x: 0.32, y: 0, width: 0.68, height: 1)
-          let top = CGRect(x: 0, y: 0.32, width: 1, height: 0.68)
-          let bottom = CGRect(x: 0, y: 0, width: 1, height: 0.68)
+          let left = CGRect(x: 0, y: 0, width: 0.60, height: 1)
+          let right = CGRect(x: 0.40, y: 0, width: 0.60, height: 1)
+          let top = CGRect(x: 0, y: 0.40, width: 1, height: 0.60)
+          let bottom = CGRect(x: 0, y: 0, width: 1, height: 0.60)
 
           let bgra = makeBGRA(width: 1920, height: 1080)
           let nv12Full = makeNV12(
@@ -351,7 +352,7 @@ jobs:
             echo
             echo 'This job compiles the repository production BroadcastFramePreprocessor.swift and BroadcastNanoPersonDetector.swift directly into a macOS probe app. The production detector discovers yolo11n.mlmodelc through Bundle.main/BroadcastModels, matching the app resource contract.'
             echo
-            echo 'The measured loop mixes BGRA, NV12 full-range, NV12 video-range, all eight EXIF orientations, full-frame refreshes and 68% sparse ROIs for 1200 detector calls after warmup.'
+            echo 'The measured loop mixes BGRA, NV12 full-range, NV12 video-range, all eight EXIF orientations, full-frame refreshes and 60% sparse ROIs for 1200 detector calls after warmup.'
             echo
             if [ -f build/production-detector/report.json ]; then
               echo '```json'

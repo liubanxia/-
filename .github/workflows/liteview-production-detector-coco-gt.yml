@@ -8,6 +8,7 @@ on:
       - '.github/workflows/liteview-production-detector-coco-gt.yml'
       - 'ios/PhoenixRealtimeVisionAssist/Sources/ExtensionSupport/BroadcastFramePreprocessor.swift'
       - 'ios/PhoenixRealtimeVisionAssist/Sources/ExtensionSupport/BroadcastNanoPersonDetector.swift'
+      - 'ios/PhoenixRealtimeVisionAssist/Sources/Broadcast/LightweightBroadcastAnalyzer.swift'
   workflow_dispatch:
 
 permissions:
@@ -244,8 +245,8 @@ jobs:
 
           let detector = BroadcastNanoPersonDetector()
           let full = CGRect(x: 0, y: 0, width: 1, height: 1)
-          let left = CGRect(x: 0, y: 0, width: 0.68, height: 1)
-          let right = CGRect(x: 0.32, y: 0, width: 0.68, height: 1)
+          let left = CGRect(x: 0, y: 0, width: 0.60, height: 1)
+          let right = CGRect(x: 0.40, y: 0, width: 0.60, height: 1)
           var fullMetrics = Metrics()
           var cycleMetrics = Metrics()
           var validCases = 0
@@ -338,7 +339,7 @@ jobs:
           {
             echo '## LiteView production detector — COCO person ground truth'
             echo
-            echo 'FULL is one production full-frame call at confidence 0.12. CYCLE is the union of FULL plus the two 68% ROI reacquisition phases at confidence 0.09; it represents cycle-level reacquisition potential, not per-frame inference.'
+            echo 'FULL is one production full-frame call at confidence 0.12. CYCLE is the union of FULL plus the two 60% ROI reacquisition phases at confidence 0.09; it represents cycle-level reacquisition potential, not per-frame inference.'
             echo
             if [ -f build/production-coco-gt/results.log ]; then
               echo '```text'
