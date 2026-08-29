@@ -1,0 +1,208 @@
+name: LiteView Audio Clean Overlay Candidate
+
+on:
+  push:
+    branches:
+      - feature/liteview-audio-clean-overlay
+    paths:
+      - 'ios/PhoenixRealtimeVisionAssist/**'
+      - '.github/workflows/liteview-audio-clean-overlay.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-audio-clean-overlay:
+    runs-on: macos-15
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Stage production YOLO11n model
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          MODEL_DIR="$ROOT/Resources/BroadcastModels"
+          ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
+          UNZIP_DIR="$RUNNER_TEMP/liteview-yolo11n-coreml"
+          COMPILE_DIR="$RUNNER_TEMP/liteview-audio-clean-model"
+          URL='https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
+
+          rm -rf "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
+          mkdir -p "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
+          curl -fL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 -o "$ZIP" "$URL"
+          unzip -q "$ZIP" -d "$UNZIP_DIR"
+          SRC="$(find "$UNZIP_DIR" -type d -name 'yolo11n.mlpackage' -print -quit)"
+          test -n "$SRC"
+          xcrun coremlc compile "$SRC" "$COMPILE_DIR"
+          COMPILED="$(find "$COMPILE_DIR" -type d -name 'yolo11n.mlmodelc' -print -quit)"
+          test -n "$COMPILED"
+          cp -R "$COMPILED" "$MODEL_DIR/yolo11n.mlmodelc"
+
+      - name: Guard audio and clean-overlay wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          HANDLER="$ROOT/Sources/Broadcast/EnhancedBroadcastSampleHandler.swift"
+          AUDIO="$ROOT/Sources/Broadcast/BroadcastAudioTelemetryAnalyzer.swift"
+          PLIST="$ROOT/Sources/Broadcast/Info.plist"
+          RADAR="$ROOT/Sources/App/RadarBootstrapLoader.m"
+
+          grep -q 'case \.audioApp' "$HANDLER"
+          grep -q 'audioAnalyzer.consume(sampleBuffer)' "$HANDLER"
+          grep -q 'case \.audioMic' "$HANDLER"
+          grep -q 'audio-diagnostics.v1' "$AUDIO"
+          grep -q 'leftLevel' "$AUDIO"
+          grep -q 'rightLevel' "$AUDIO"
+          grep -q 'dominantBand' "$AUDIO"
+          grep -q 'EnhancedBroadcastSampleHandler' "$PLIST"
+          ! grep -q 'invokeSwiftBootstrap' "$RADAR"
+          ! grep -q 'scheduleBootstrapAttempts' "$RADAR"
+          echo 'AUDIO_CLEAN_OVERLAY_WIRING_PASS'
+
+      - name: Generate project
+        working-directory: ios/PhoenixRealtimeVisionAssist
+        run: xcodegen generate
+
+      - name: Run lifecycle smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='ios/PhoenixRealtimeVisionAssist'
+          xcrun swiftc \
+            "$ROOT/Sources/Core/SharedRealtimeStateStore.swift" \
+            "$ROOT/Sources/Core/BroadcastLifecycle.swift" \
+            "$ROOT/Sources/Vision/PhoenixCapabilityModelBank.swift" \
+            "$ROOT/scripts/lifecycle_smoke_main.swift" \
+            -o "$RUNNER_TEMP/liteview-audio-clean-lifecycle"
+          "$RUNNER_TEMP/liteview-audio-clean-lifecycle"
+
+      - name: Build unsigned iPhone Release app and Broadcast Extension
+        working-directory: ios/PhoenixRealtimeVisionAssist
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/LiteViewAudioCleanDerivedData"
+          xcodebuild \
+            -project PhoenixRealtimeVisionAssist.xcodeproj \
+            -scheme PhoenixRealtimeVisionAssist \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/LiteViewAudioCleanDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Normalize 0.9.3 Build 20 and verify extension
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRODUCTS="$RUNNER_TEMP/LiteViewAudioCleanDerivedData/Build/Products/Release-iphoneos"
+          APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
+          EXT="$APP/PlugIns/PhoenixBroadcastExtension.appex"
+          APP_PLIST="$APP/Info.plist"
+          EXT_PLIST="$EXT/Info.plist"
+
+          test -d "$APP"
+          test -d "$EXT"
+
+          set_plist_string() {
+            local plist="$1" key="$2" value="$3"
+            /usr/libexec/PlistBuddy -c "Set :$key $value" "$plist" >/dev/null 2>&1 || \
+              /usr/libexec/PlistBuddy -c "Add :$key string $value" "$plist"
+          }
+
+          set_plist_string "$APP_PLIST" CFBundleDisplayName LiteView
+          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.3
+          set_plist_string "$APP_PLIST" CFBundleVersion 20
+          set_plist_string "$EXT_PLIST" CFBundleDisplayName 'LiteView Broadcast'
+          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.3
+          set_plist_string "$EXT_PLIST" CFBundleVersion 20
+
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT_PLIST")" = 'PhoenixBroadcastExtension.EnhancedBroadcastSampleHandler'
+          test -n "$(find "$EXT" -type d -name 'yolo11n.mlmodelc' -prune -print -quit)"
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRODUCTS="$RUNNER_TEMP/LiteViewAudioCleanDerivedData/Build/Products/Release-iphoneos"
+          APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
+          ROOT="$RUNNER_TEMP/LiteViewAudioCleanPackage"
+          PAYLOAD="$ROOT/Payload"
+          IPA="$RUNNER_TEMP/LiteView-0.9.3-Build20-AudioCleanOverlay-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.3-Build20-AudioCleanOverlay.txt"
+
+          rm -rf "$ROOT" "$IPA" "$MANIFEST"
+          mkdir -p "$PAYLOAD"
+          cp -R "$APP" "$PAYLOAD/"
+          (cd "$ROOT" && /usr/bin/zip -qry "$IPA" Payload)
+          test -s "$IPA"
+
+          IPA_SIZE_BYTES="$(stat -f%z "$IPA")"
+          IPA_SHA256="$(shasum -a 256 "$IPA" | awk '{print $1}')"
+
+          cat > "$MANIFEST" <<EOF
+          LiteView 0.9.3 Build 20 Audio Clean Overlay Candidate
+          commit=${GITHUB_SHA}
+          version=0.9.3
+          build=20
+          ipa_size_bytes=${IPA_SIZE_BYTES}
+          ipa_sha256=${IPA_SHA256}
+          video_pipeline=existing validated YOLO11n + ROI + tracker path preserved
+          replaykit_audio=audioApp connected through EnhancedBroadcastSampleHandler
+          audio_diagnostics=left/right aggregate level + peak + coarse frequency band + transient + sample rate + channel count
+          microphone=ignored
+          audio_persistence=none; no PCM history or audio files
+          radar_autoload=disabled
+          scope=visible-person vision plus generic app-audio diagnostics; no hidden-player or occlusion-location inference
+          signing=unsigned; re-sign main app and embedded Broadcast Extension without removing PlugIns
+          EOF
+
+          echo "IPA_SIZE_BYTES=$IPA_SIZE_BYTES"
+          echo "IPA_SHA256=$IPA_SHA256"
+          cat "$MANIFEST"
+
+      - name: Upload candidate artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteview-audio-clean-overlay-0.9.3-build20
+          path: |
+            ${{ runner.temp }}/LiteView-0.9.3-Build20-AudioCleanOverlay-unsigned.ipa
+            ${{ runner.temp }}/LiteView-0.9.3-Build20-AudioCleanOverlay.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish candidate release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='liteview-audio-clean-overlay-latest'
+          IPA="$RUNNER_TEMP/LiteView-0.9.3-Build20-AudioCleanOverlay-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.3-Build20-AudioCleanOverlay.txt"
+          NOTES='LiteView 0.9.3 Build 20 candidate. Preserves the validated visible-person video pipeline, connects ReplayKit audioApp to privacy-preserving aggregate audio diagnostics, ignores microphone audio, and disables the automatic PiP radar launcher. No raw audio, frames, screenshots, or analysis history are persisted.'
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
+            gh release edit "$TAG" --title 'LiteView 0.9.3 Build 20 Audio Clean Overlay' --notes "$NOTES" --target "$GITHUB_SHA"
+          else
+            gh release create "$TAG" "$IPA" "$MANIFEST" \
+              --target "$GITHUB_SHA" \
+              --title 'LiteView 0.9.3 Build 20 Audio Clean Overlay' \
+              --notes "$NOTES"
+          fi

@@ -11,15 +11,15 @@
     <key>CFBundlePackageType</key>
     <string>XPC!</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.7.0</string>
+    <string>0.9.3</string>
     <key>CFBundleVersion</key>
-    <string>10</string>
+    <string>20</string>
     <key>NSExtension</key>
     <dict>
         <key>NSExtensionPointIdentifier</key>
         <string>com.apple.broadcast-services-upload</string>
         <key>NSExtensionPrincipalClass</key>
-        <string>PhoenixBroadcastExtension.BroadcastSampleHandler</string>
+        <string>PhoenixBroadcastExtension.EnhancedBroadcastSampleHandler</string>
     </dict>
 </dict>
 </plist>
