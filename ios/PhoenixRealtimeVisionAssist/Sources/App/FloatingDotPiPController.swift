@@ -75,14 +75,28 @@ fileprivate final class FloatingDotAudioStateReader {
         let timestampCode = (state >> 56) & 0x3F
         let currentCode = UInt64(Int(uptime.rounded(.down))) & 0x3F
         let age = (currentCode &- timestampCode) & 0x3F
-        return .init(
-            analysisCount: state & 0x0FFF,
-            leftLevel: Double((state >> 12) & 0xFF) / 255.0,
-            rightLevel: Double((state >> 20) & 0xFF) / 255.0,
-            peakLevel: Double((state >> 28) & 0xFF) / 255.0,
-            dominantBand: Int((state >> 36) & 0x07),
-            transient: (state & (UInt64(1) << 39)) != 0,
-            active: (state & (UInt64(1) << 62)) != 0,
+        let analysisCount = state & UInt64(0x0FFF)
+        let leftCode = (state >> 12) & UInt64(0x00FF)
+        let rightCode = (state >> 20) & UInt64(0x00FF)
+        let peakCode = (state >> 28) & UInt64(0x00FF)
+        let dominantBandCode = (state >> 36) & UInt64(0x0007)
+        let transientMask = UInt64(1) << 39
+        let activeMask = UInt64(1) << 62
+        let leftLevel = Double(leftCode) / 255.0
+        let rightLevel = Double(rightCode) / 255.0
+        let peakLevel = Double(peakCode) / 255.0
+        let dominantBand = Int(dominantBandCode)
+        let transient = (state & transientMask) != 0
+        let active = (state & activeMask) != 0
+
+        return FloatingDotAudioSample(
+            analysisCount: analysisCount,
+            leftLevel: leftLevel,
+            rightLevel: rightLevel,
+            peakLevel: peakLevel,
+            dominantBand: dominantBand,
+            transient: transient,
+            active: active,
             ageSeconds: age
         )
     }
