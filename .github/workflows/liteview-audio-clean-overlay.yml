@@ -1,4 +1,4 @@
-name: LiteView Translucent Centered Radar Candidate
+name: LiteView Full Map Predictive Radar Candidate
 
 on:
   push:
@@ -51,7 +51,7 @@ jobs:
           test -n "$COMPILED"
           cp -R "$COMPILED" "$MODEL_DIR/yolo11n.mlmodelc"
 
-      - name: Guard audio and floating-dot wiring
+      - name: Guard audio, topology and full-map wiring
         shell: bash
         run: |
           set -euo pipefail
@@ -60,7 +60,9 @@ jobs:
           AUDIO="$ROOT/Sources/Broadcast/BroadcastAudioTelemetryAnalyzer.swift"
           ACCEPTANCE="$ROOT/Sources/Broadcast/BroadcastDeviceAcceptanceTelemetry.swift"
           ACCEPTANCE_PANEL="$ROOT/Sources/App/DeviceAcceptancePanel.swift"
-          FLOATING_DOTS="$ROOT/Sources/App/FloatingDotPiPController.swift"
+          FULL_MAP="$ROOT/Sources/App/FullMapFloatingRadarController.swift"
+          MAP_ENGINE="$ROOT/Sources/Map/FullMapPredictiveRadarEngine.swift"
+          MAP_SEEDS="$ROOT/Sources/Map/DeltaMapSeeds.swift"
           APP_ENTRY="$ROOT/Sources/App/PhoenixRealtimeVisionAssistApp.swift"
           APP_PLIST="$ROOT/Sources/App/Info.plist"
           PLIST="$ROOT/Sources/Broadcast/Info.plist"
@@ -79,26 +81,34 @@ jobs:
           grep -q 'DeviceAcceptancePanel' "$ACCEPTANCE_PANEL"
           grep -q 'audioApp 未持续投递' "$ACCEPTANCE_PANEL"
           grep -q 'FloatingDotPiPCard' "$APP_ENTRY"
-          grep -q 'sampleBufferDisplayLayer' "$FLOATING_DOTS"
-          grep -q 'CMSampleBufferCreateReadyWithImageBuffer' "$FLOATING_DOTS"
-          grep -q 'CVPixelBufferPoolCreatePixelBuffer' "$FLOATING_DOTS"
-          grep -q 'AVPictureInPictureSampleBufferPlaybackDelegate' "$FLOATING_DOTS"
-          grep -q '开启悬浮标点' "$FLOATING_DOTS"
-          grep -q '测试标点与预警' "$FLOATING_DOTS"
-          grep -q 'AudioServicesPlaySystemSound' "$FLOATING_DOTS"
-          grep -q 'lastBackgroundRenderDelta' "$FLOATING_DOTS"
+          grep -q 'sampleBufferDisplayLayer' "$FULL_MAP"
+          grep -q 'CMSampleBufferCreateReadyWithImageBuffer' "$FULL_MAP"
+          grep -q 'CVPixelBufferPoolCreatePixelBuffer' "$FULL_MAP"
+          grep -q 'AVPictureInPictureSampleBufferPlaybackDelegate' "$FULL_MAP"
+          grep -q '开启全图预测' "$FULL_MAP"
+          grep -q '测试全图预测' "$FULL_MAP"
+          grep -q 'AudioServicesPlaySystemSound' "$FULL_MAP"
+          grep -q 'lastBackgroundRenderDelta' "$FULL_MAP"
           grep -q 'appEnteredBackground' "$APP_ENTRY"
-          grep -q 'audio-diagnostics.v1' "$FLOATING_DOTS"
-          grep -q 'LITEVIEW_FLOATING_DOTS_BUILD27' "$FLOATING_DOTS"
-          grep -q 'PIP-E02' "$FLOATING_DOTS"
-          grep -q 'attemptPendingPictureInPictureStart' "$FLOATING_DOTS"
-          grep -q 'kCMSampleAttachmentKey_DisplayImmediately' "$FLOATING_DOTS"
-          grep -q 'radarOpacity = 0.65' "$FLOATING_DOTS"
-          grep -q 'drawOwnCenterPoint' "$FLOATING_DOTS"
-          grep -q 'stableTargetFrameCount >= 2' "$FLOATING_DOTS"
-          ! grep -q 'force: true' "$FLOATING_DOTS"
-          grep -q 'AVAudioSession' "$FLOATING_DOTS"
-          grep -q 'mixWithOthers' "$FLOATING_DOTS"
+          grep -q 'audio-diagnostics.v1' "$FULL_MAP"
+          grep -q 'LITEVIEW_FULL_MAP_RADAR_BUILD28' "$FULL_MAP"
+          grep -q 'PIP-E02' "$FULL_MAP"
+          grep -q 'attemptPendingPictureInPictureStart' "$FULL_MAP"
+          grep -q 'kCMSampleAttachmentKey_DisplayImmediately' "$FULL_MAP"
+          grep -q 'radarOpacity = 0.65' "$FULL_MAP"
+          grep -q 'drawMapTopology' "$FULL_MAP"
+          grep -q 'selectedAnchorNodeID' "$FULL_MAP"
+          grep -q 'headingDegrees' "$FULL_MAP"
+          grep -q 'exp(-age / 2.25)' "$FULL_MAP"
+          grep -q 'stableTargetFrameCount >= 2' "$FULL_MAP"
+          grep -q 'FullMapPredictiveRadarEngine' "$MAP_ENGINE"
+          grep -q 'predictRoutes' "$MAP_ENGINE"
+          grep -q 'RadarAudioLateralCue' "$MAP_ENGINE"
+          grep -q 'never reconstructs game/world coordinates' "$MAP_ENGINE"
+          grep -q 'static let all: \[MapKnowledge\] = \[az3\]' "$MAP_SEEDS"
+          ! grep -q 'force: true' "$FULL_MAP"
+          grep -q 'AVAudioSession' "$FULL_MAP"
+          grep -q 'mixWithOthers' "$FULL_MAP"
           grep -q 'minimumConfidence: 0.08' "$ANALYZER"
           grep -q 'minimumConfidence: 0.06' "$ANALYZER"
           grep -q 'VNDetectHumanRectanglesRequest' "$ANALYZER"
@@ -107,23 +117,29 @@ jobs:
           grep -q 'EnhancedBroadcastSampleHandler' "$PLIST"
           grep -q 'RadarPiPController.swift' "$PROJECT"
           grep -q 'RadarBootstrapLoader.m' "$PROJECT"
+          grep -q 'FloatingDotPiPController.swift' "$PROJECT"
+          grep -q 'CURRENT_PROJECT_VERSION: 28' "$PROJECT"
+          grep -q 'MARKETING_VERSION: 0.9.11' "$PROJECT"
           grep -q 'UIBackgroundModes' "$PROJECT"
           grep -q 'UIBackgroundModes' "$APP_PLIST"
-          echo 'LIVE_MARKER_WARNING_WIRING_PASS'
+          echo 'FULL_MAP_PREDICTIVE_RADAR_WIRING_PASS'
 
       - name: Generate project
         working-directory: ios/PhoenixRealtimeVisionAssist
         run: xcodegen generate
 
-      - name: Verify floating dots included and legacy radar excluded
+      - name: Verify full-map controller included and legacy radars excluded
         shell: bash
         run: |
           set -euo pipefail
           PBX='ios/PhoenixRealtimeVisionAssist/PhoenixRealtimeVisionAssist.xcodeproj/project.pbxproj'
           ! grep -q 'RadarPiPController.swift' "$PBX"
           ! grep -q 'RadarBootstrapLoader.m' "$PBX"
-          grep -q 'FloatingDotPiPController.swift' "$PBX"
-          echo 'FLOATING_DOT_TARGET_PASS'
+          ! grep -q 'FloatingDotPiPController.swift' "$PBX"
+          grep -q 'FullMapFloatingRadarController.swift' "$PBX"
+          grep -q 'FullMapPredictiveRadarEngine.swift' "$PBX"
+          grep -q 'FullMapPredictiveRadarEngineTests.swift' "$PBX"
+          echo 'FULL_MAP_TARGET_PASS'
 
       - name: Run lifecycle smoke test
         shell: bash
@@ -179,7 +195,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build
 
-      - name: Normalize 0.9.10 Build 27 and verify final binaries
+      - name: Normalize 0.9.11 Build 28 and verify final binaries
         shell: bash
         run: |
           set -euo pipefail
@@ -190,10 +206,10 @@ jobs:
           EXT_PLIST="$EXT/Info.plist"
           APP_BIN="$APP/PhoenixRealtimeVisionAssist"
           EXT_BIN="$EXT/PhoenixBroadcastExtension"
-          APP_STRINGS="$RUNNER_TEMP/liteview-build27-app-strings.txt"
-          EXT_STRINGS="$RUNNER_TEMP/liteview-build27-extension-strings.txt"
-          APP_LINKS="$RUNNER_TEMP/liteview-build27-app-links.txt"
-          EXT_LINKS="$RUNNER_TEMP/liteview-build27-extension-links.txt"
+          APP_STRINGS="$RUNNER_TEMP/liteview-build28-app-strings.txt"
+          EXT_STRINGS="$RUNNER_TEMP/liteview-build28-extension-strings.txt"
+          APP_LINKS="$RUNNER_TEMP/liteview-build28-app-links.txt"
+          EXT_LINKS="$RUNNER_TEMP/liteview-build28-extension-links.txt"
 
           test -d "$APP"
           test -d "$EXT"
@@ -211,11 +227,11 @@ jobs:
           }
 
           set_plist_string "$APP_PLIST" CFBundleDisplayName LiteView
-          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.10
-          set_plist_string "$APP_PLIST" CFBundleVersion 27
+          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.11
+          set_plist_string "$APP_PLIST" CFBundleVersion 28
           set_plist_string "$EXT_PLIST" CFBundleDisplayName 'LiteView Broadcast'
-          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.10
-          set_plist_string "$EXT_PLIST" CFBundleVersion 27
+          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.11
+          set_plist_string "$EXT_PLIST" CFBundleVersion 28
 
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT_PLIST")" = 'PhoenixBroadcastExtension.EnhancedBroadcastSampleHandler'
           test -n "$(find "$EXT" -type d -name 'yolo11n.mlmodelc' -prune -print -quit)"
@@ -223,7 +239,8 @@ jobs:
           grep -q 'device-acceptance.v1' "$EXT_STRINGS"
           grep -q 'device-acceptance.v1' "$APP_STRINGS"
           grep -q 'FloatingDotPiPModel' "$APP_STRINGS"
-          grep -q 'LITEVIEW_FLOATING_DOTS_BUILD27' "$APP_STRINGS"
+          grep -q 'LITEVIEW_FULL_MAP_RADAR_BUILD28' "$APP_STRINGS"
+          grep -q 'FullMapPredictiveRadarEngine' "$APP_STRINGS"
           grep -q 'PIP-E02' "$APP_STRINGS"
           grep -q 'Vision.framework' "$EXT_LINKS"
           grep -q 'AVKit.framework' "$APP_LINKS"
@@ -242,8 +259,8 @@ jobs:
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
           ROOT="$RUNNER_TEMP/LiteViewAudioCleanPackage"
           PAYLOAD="$ROOT/Payload"
-          IPA="$RUNNER_TEMP/LiteView-0.9.10-Build27-TranslucentCenteredRadar-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.10-Build27-TranslucentCenteredRadar.txt"
+          IPA="$RUNNER_TEMP/LiteView-0.9.11-Build28-FullMapPredictiveRadar-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.11-Build28-FullMapPredictiveRadar.txt"
 
           rm -rf "$ROOT" "$IPA" "$MANIFEST"
           mkdir -p "$PAYLOAD"
@@ -255,10 +272,10 @@ jobs:
           IPA_SHA256="$(shasum -a 256 "$IPA" | awk '{print $1}')"
 
           cat > "$MANIFEST" <<EOF
-          LiteView 0.9.10 Build 27 Translucent Centered Radar Candidate
+          LiteView 0.9.11 Build 28 Full Map Predictive Radar Candidate
           commit=${GITHUB_SHA}
-          version=0.9.10
-          build=27
+          version=0.9.11
+          build=28
           ipa_size_bytes=${IPA_SIZE_BYTES}
           ipa_sha256=${IPA_SHA256}
           video_pipeline=validated YOLO11n + ROI + tracker path preserved
@@ -270,26 +287,31 @@ jobs:
           acceptance_persistence=volatile Darwin aggregate state only; cleared at next broadcast start
           microphone=ignored
           audio_persistence=none; no PCM history or audio files
-          floating_dots=4fps AVSampleBufferDisplayLayer PiP; red observed target plus blue short-horizon prediction
+          map_mode=AZ3 whole-map public topology rendered in a 320x320 PiP canvas
+          map_coordinates=normalized public topology only; no game/world coordinates, memory access, injection, or hidden entity feed
+          anchor_calibration=user selects current public-map area anchor before use
+          heading_calibration=user sets heading; 0 degrees is map up and 90 degrees is map right
+          visual_mapping=stable visible-person screen bearing is mapped to the most plausible outgoing public-map route
+          route_prediction=up to four blue one/two-hop topology candidates with route-weight and heading continuity scoring
+          occlusion_decay=prediction survives only in volatile RAM and decays exponentially; removed after about 4.5 seconds without new visual evidence
+          audio_mapping=fresh stereo transient creates low-confidence orange route candidates only; never claimed as person identity
+          own_marker=green user-selected map anchor plus heading line
+          observed_marker=red topology estimate derived from recent visible-person evidence
+          prediction_marker=blue route-probability candidates with confidence-scaled halo
+          vertical_hint=plus/minus mark on candidates whose topology floor differs from current route origin
           pip_start_recovery=controller created after display layer attachment; asynchronous readiness retried for 3.6 seconds
-          sample_timing=synthetic PiP frames carry kCMSampleAttachmentKey_DisplayImmediately so an unrelated host-clock PTS cannot hold every frame
-          radar_shape=square 240x240 video canvas with circular content, transparent outer pixels, crosshair, and range ring
+          sample_timing=synthetic PiP frames carry kCMSampleAttachmentKey_DisplayImmediately
           radar_opacity=adjustable 50-75 percent; default semi-transparent black 65 percent
-          own_marker=fixed green center point; detected visible person stays red; prediction stays blue
           pip_failure_diagnostics=PIP-E01/PIP-E02 plus AVKit start error shown in app
           human_fallback=low-frequency VNDetectHumanRectanglesRequest only after two successful empty YOLO full scans; fast tracker seeded on hit
-          visual_warning=pulsing red border and warning glyph on visible-person evidence
           haptic_warning=one throttled vibration only when a person coordinate is stable for at least two frames and changes from absent to present
           self_test_haptic=none
-          audio_haptic=none; audio transient remains visual only
-          sound_warning=orange left/right edge cue from fresh stereo audioApp transient; not claimed as person identity
-          renderer_self_test=8-second deterministic moving red/blue points, border, sound-direction cue, and vibration
-          renderer_background_evidence=foreground/background render-frame delta shown after returning from game
-          pipeline_status=WAIT/FRAMES/AI/NO TARGET/TARGET/AI ERROR state rendered inside PiP
-          coordinate_mapping=top-down detector coordinates converted once for raw Core Graphics bitmap
-          radar_runtime=legacy radar Swift/ObjC sources excluded from app target and absent from final app binary
+          audio_haptic=none
+          renderer_self_test=8-second deterministic full-map visual/audio/topology prediction animation
+          renderer_background_evidence=foreground/background render-frame delta shown after returning from another app
+          legacy_radar=old centered FloatingDotPiPController and legacy RadarPiPController excluded from app target
           pip_keepalive=audio background mode plus playback session with mixWithOthers; no audio generated or persisted
-          scope=visible-person vision plus generic app-audio diagnostics; no hidden-player or occlusion-location inference
+          scope=screen-visible evidence + generic app-audio aggregates + public topology probability; no hidden game-state acquisition
           signing=unsigned; re-sign main app and embedded Broadcast Extension without removing PlugIns
           EOF
 
@@ -300,10 +322,10 @@ jobs:
       - name: Upload candidate artifact
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-translucent-centered-radar-0.9.10-build27
+          name: liteview-full-map-predictive-radar-0.9.11-build28
           path: |
-            ${{ runner.temp }}/LiteView-0.9.10-Build27-TranslucentCenteredRadar-unsigned.ipa
-            ${{ runner.temp }}/LiteView-0.9.10-Build27-TranslucentCenteredRadar.txt
+            ${{ runner.temp }}/LiteView-0.9.11-Build28-FullMapPredictiveRadar-unsigned.ipa
+            ${{ runner.temp }}/LiteView-0.9.11-Build28-FullMapPredictiveRadar.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -314,16 +336,16 @@ jobs:
         run: |
           set -euo pipefail
           TAG='liteview-audio-clean-overlay-latest'
-          IPA="$RUNNER_TEMP/LiteView-0.9.10-Build27-TranslucentCenteredRadar-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.10-Build27-TranslucentCenteredRadar.txt"
-          NOTES='LiteView 0.9.10 Build 27 translucent centered-radar candidate. Uses a square 240x240 canvas with circular 65%-opacity black radar content, transparent outer pixels, a fixed green self marker at center, red visible-person markers, and blue prediction. Background opacity is adjustable from 50% to 75%. Haptics now trigger only on a newly confirmed person coordinate stable for at least two frames; self-test and audio transients never vibrate. System PiP may composite video as opaque and remains a separate window.'
+          IPA="$RUNNER_TEMP/LiteView-0.9.11-Build28-FullMapPredictiveRadar-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.11-Build28-FullMapPredictiveRadar.txt"
+          NOTES='LiteView 0.9.11 Build 28 changes the PiP display from a centered screen-space radar to an AZ3 whole-map predictive topology view. The user selects a public-map anchor and heading. Stable visible-person evidence maps to a red topology estimate, blue candidates follow public route edges and decay after about 4.5 seconds without new evidence, and fresh stereo transients add low-confidence orange direction candidates. It uses no game/world coordinates, process memory, injection, DMA, or hidden entity feed.'
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
-            gh release edit "$TAG" --title 'LiteView 0.9.10 Build 27 Translucent Centered Radar' --notes "$NOTES" --target "$GITHUB_SHA"
+            gh release edit "$TAG" --title 'LiteView 0.9.11 Build 28 Full Map Predictive Radar' --notes "$NOTES" --target "$GITHUB_SHA"
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" \
               --target "$GITHUB_SHA" \
-              --title 'LiteView 0.9.10 Build 27 Translucent Centered Radar' \
+              --title 'LiteView 0.9.11 Build 28 Full Map Predictive Radar' \
               --notes "$NOTES"
           fi
