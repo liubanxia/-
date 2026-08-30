@@ -117,7 +117,7 @@ final class LightweightBroadcastAnalyzer {
             let result = nanoDetector.detect(
                 in: pixelBuffer,
                 orientation: orientation,
-                minimumConfidence: 0.12,
+                minimumConfidence: 0.08,
                 regionOfInterest: CGRect(x: 0, y: 0, width: 1, height: 1)
             )
             nanoResult = result
@@ -135,7 +135,7 @@ final class LightweightBroadcastAnalyzer {
             let result = nanoDetector.detect(
                 in: pixelBuffer,
                 orientation: orientation,
-                minimumConfidence: 0.09,
+                minimumConfidence: 0.06,
                 regionOfInterest: roi
             )
             nanoResult = result

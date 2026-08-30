@@ -1,4 +1,4 @@
-name: LiteView Floating Dots Candidate
+name: LiteView Live Markers and Warnings Candidate
 
 on:
   push:
@@ -65,6 +65,7 @@ jobs:
           APP_PLIST="$ROOT/Sources/App/Info.plist"
           PLIST="$ROOT/Sources/Broadcast/Info.plist"
           PROJECT="$ROOT/project.yml"
+          ANALYZER="$ROOT/Sources/Broadcast/LightweightBroadcastAnalyzer.swift"
 
           grep -q 'case \.audioApp' "$HANDLER"
           grep -q 'audioAnalyzer.consume(sampleBuffer)' "$HANDLER"
@@ -78,18 +79,27 @@ jobs:
           grep -q 'DeviceAcceptancePanel' "$ACCEPTANCE_PANEL"
           grep -q 'audioApp 未持续投递' "$ACCEPTANCE_PANEL"
           grep -q 'FloatingDotPiPCard' "$APP_ENTRY"
-          grep -q 'activeVideoCallSourceView' "$FLOATING_DOTS"
-          grep -q 'x: CGFloat(point.x) \* bounds.width' "$FLOATING_DOTS"
-          grep -q 'y: CGFloat(point.y) \* bounds.height' "$FLOATING_DOTS"
+          grep -q 'sampleBufferDisplayLayer' "$FLOATING_DOTS"
+          grep -q 'CMSampleBufferCreateReadyWithImageBuffer' "$FLOATING_DOTS"
+          grep -q 'CVPixelBufferPoolCreatePixelBuffer' "$FLOATING_DOTS"
+          grep -q 'AVPictureInPictureSampleBufferPlaybackDelegate' "$FLOATING_DOTS"
           grep -q '开启悬浮标点' "$FLOATING_DOTS"
-          grep -q 'LITEVIEW_FLOATING_DOTS_BUILD23' "$FLOATING_DOTS"
-          ! grep -q 'AVAudioSession' "$FLOATING_DOTS"
+          grep -q '测试标点与预警' "$FLOATING_DOTS"
+          grep -q 'AudioServicesPlaySystemSound' "$FLOATING_DOTS"
+          grep -q 'lastBackgroundRenderDelta' "$FLOATING_DOTS"
+          grep -q 'appEnteredBackground' "$APP_ENTRY"
+          grep -q 'audio-diagnostics.v1' "$FLOATING_DOTS"
+          grep -q 'LITEVIEW_FLOATING_DOTS_BUILD24' "$FLOATING_DOTS"
+          grep -q 'AVAudioSession' "$FLOATING_DOTS"
+          grep -q 'mixWithOthers' "$FLOATING_DOTS"
+          grep -q 'minimumConfidence: 0.08' "$ANALYZER"
+          grep -q 'minimumConfidence: 0.06' "$ANALYZER"
           grep -q 'EnhancedBroadcastSampleHandler' "$PLIST"
           grep -q 'RadarPiPController.swift' "$PROJECT"
           grep -q 'RadarBootstrapLoader.m' "$PROJECT"
-          ! grep -q 'UIBackgroundModes' "$PROJECT"
-          ! grep -q 'UIBackgroundModes' "$APP_PLIST"
-          echo 'FLOATING_DOT_WIRING_PASS'
+          grep -q 'UIBackgroundModes' "$PROJECT"
+          grep -q 'UIBackgroundModes' "$APP_PLIST"
+          echo 'LIVE_MARKER_WARNING_WIRING_PASS'
 
       - name: Generate project
         working-directory: ios/PhoenixRealtimeVisionAssist
@@ -159,7 +169,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build
 
-      - name: Normalize 0.9.6 Build 23 and verify final binaries
+      - name: Normalize 0.9.7 Build 24 and verify final binaries
         shell: bash
         run: |
           set -euo pipefail
@@ -170,8 +180,9 @@ jobs:
           EXT_PLIST="$EXT/Info.plist"
           APP_BIN="$APP/PhoenixRealtimeVisionAssist"
           EXT_BIN="$EXT/PhoenixBroadcastExtension"
-          APP_STRINGS="$RUNNER_TEMP/liteview-build23-app-strings.txt"
-          EXT_STRINGS="$RUNNER_TEMP/liteview-build23-extension-strings.txt"
+          APP_STRINGS="$RUNNER_TEMP/liteview-build24-app-strings.txt"
+          EXT_STRINGS="$RUNNER_TEMP/liteview-build24-extension-strings.txt"
+          APP_LINKS="$RUNNER_TEMP/liteview-build24-app-links.txt"
 
           test -d "$APP"
           test -d "$EXT"
@@ -179,6 +190,7 @@ jobs:
           test -x "$EXT_BIN"
           strings "$APP_BIN" > "$APP_STRINGS"
           strings "$EXT_BIN" > "$EXT_STRINGS"
+          otool -L "$APP_BIN" > "$APP_LINKS"
 
           set_plist_string() {
             local plist="$1" key="$2" value="$3"
@@ -187,11 +199,11 @@ jobs:
           }
 
           set_plist_string "$APP_PLIST" CFBundleDisplayName LiteView
-          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.6
-          set_plist_string "$APP_PLIST" CFBundleVersion 23
+          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.7
+          set_plist_string "$APP_PLIST" CFBundleVersion 24
           set_plist_string "$EXT_PLIST" CFBundleDisplayName 'LiteView Broadcast'
-          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.6
-          set_plist_string "$EXT_PLIST" CFBundleVersion 23
+          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.7
+          set_plist_string "$EXT_PLIST" CFBundleVersion 24
 
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT_PLIST")" = 'PhoenixBroadcastExtension.EnhancedBroadcastSampleHandler'
           test -n "$(find "$EXT" -type d -name 'yolo11n.mlmodelc' -prune -print -quit)"
@@ -199,10 +211,13 @@ jobs:
           grep -q 'device-acceptance.v1' "$EXT_STRINGS"
           grep -q 'device-acceptance.v1' "$APP_STRINGS"
           grep -q 'FloatingDotPiPModel' "$APP_STRINGS"
-          grep -q 'LITEVIEW_FLOATING_DOTS_BUILD23' "$APP_STRINGS"
+          grep -q 'LITEVIEW_FLOATING_DOTS_BUILD24' "$APP_STRINGS"
+          grep -q 'AVKit.framework' "$APP_LINKS"
+          grep -q 'AVFoundation.framework' "$APP_LINKS"
+          grep -q 'AudioToolbox.framework' "$APP_LINKS"
           ! grep -q 'LiteViewRadarBootstrap' "$APP_STRINGS"
           ! grep -q '开启游戏雷达' "$APP_STRINGS"
-          ! /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "$APP_PLIST" >/dev/null 2>&1
+          test "$(/usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes:0' "$APP_PLIST")" = audio
           echo 'FINAL_BINARY_VERIFICATION_PASS'
 
       - name: Package unsigned IPA
@@ -213,8 +228,8 @@ jobs:
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
           ROOT="$RUNNER_TEMP/LiteViewAudioCleanPackage"
           PAYLOAD="$ROOT/Payload"
-          IPA="$RUNNER_TEMP/LiteView-0.9.6-Build23-FloatingDots-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.6-Build23-FloatingDots.txt"
+          IPA="$RUNNER_TEMP/LiteView-0.9.7-Build24-LiveMarkersWarnings-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.7-Build24-LiveMarkersWarnings.txt"
 
           rm -rf "$ROOT" "$IPA" "$MANIFEST"
           mkdir -p "$PAYLOAD"
@@ -226,10 +241,10 @@ jobs:
           IPA_SHA256="$(shasum -a 256 "$IPA" | awk '{print $1}')"
 
           cat > "$MANIFEST" <<EOF
-          LiteView 0.9.6 Build 23 Floating Dots Candidate
+          LiteView 0.9.7 Build 24 Live Markers and Warnings Candidate
           commit=${GITHUB_SHA}
-          version=0.9.6
-          build=23
+          version=0.9.7
+          build=24
           ipa_size_bytes=${IPA_SIZE_BYTES}
           ipa_sha256=${IPA_SHA256}
           video_pipeline=validated YOLO11n + ROI + tracker path preserved
@@ -241,10 +256,16 @@ jobs:
           acceptance_persistence=volatile Darwin aggregate state only; cleared at next broadcast start
           microphone=ignored
           audio_persistence=none; no PCM history or audio files
-          floating_dots=system PiP content view; red observed target plus blue short-horizon prediction
-          coordinate_mapping=normalized x left-to-right and y top-to-bottom; no legacy vertical inversion
+          floating_dots=4fps AVSampleBufferDisplayLayer PiP; red observed target plus blue short-horizon prediction
+          visual_warning=pulsing red border and warning glyph on visible-person evidence
+          haptic_warning=throttled vibration on new visible-person evidence or fresh strong audio transient
+          sound_warning=orange left/right edge cue from fresh stereo audioApp transient; not claimed as person identity
+          renderer_self_test=8-second deterministic moving red/blue points, border, sound-direction cue, and vibration
+          renderer_background_evidence=foreground/background render-frame delta shown after returning from game
+          pipeline_status=WAIT/FRAMES/AI/NO TARGET/TARGET/AI ERROR state rendered inside PiP
+          coordinate_mapping=top-down detector coordinates converted once for raw Core Graphics bitmap
           radar_runtime=legacy radar Swift/ObjC sources excluded from app target and absent from final app binary
-          background_audio_mode=removed from main app
+          pip_keepalive=audio background mode plus playback session with mixWithOthers; no audio generated or persisted
           scope=visible-person vision plus generic app-audio diagnostics; no hidden-player or occlusion-location inference
           signing=unsigned; re-sign main app and embedded Broadcast Extension without removing PlugIns
           EOF
@@ -256,10 +277,10 @@ jobs:
       - name: Upload candidate artifact
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-floating-dots-0.9.6-build23
+          name: liteview-live-markers-warnings-0.9.7-build24
           path: |
-            ${{ runner.temp }}/LiteView-0.9.6-Build23-FloatingDots-unsigned.ipa
-            ${{ runner.temp }}/LiteView-0.9.6-Build23-FloatingDots.txt
+            ${{ runner.temp }}/LiteView-0.9.7-Build24-LiveMarkersWarnings-unsigned.ipa
+            ${{ runner.temp }}/LiteView-0.9.7-Build24-LiveMarkersWarnings.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -270,16 +291,16 @@ jobs:
         run: |
           set -euo pipefail
           TAG='liteview-audio-clean-overlay-latest'
-          IPA="$RUNNER_TEMP/LiteView-0.9.6-Build23-FloatingDots-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.6-Build23-FloatingDots.txt"
-          NOTES='LiteView 0.9.6 Build 23 floating-dots candidate. Adds a system PiP location window with a thin red observed-person point and blue short-horizon prediction, fixes vertical coordinate mapping, preserves physical-device video/AI/audio acceptance telemetry, excludes the legacy radar UI, does not activate an audio session, and persists no raw audio, frames, screenshots or coordinate history.'
+          IPA="$RUNNER_TEMP/LiteView-0.9.7-Build24-LiveMarkersWarnings-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.7-Build24-LiveMarkersWarnings.txt"
+          NOTES='LiteView 0.9.7 Build 24 live-markers candidate. Replaces the suspended video-call-style PiP view with a 4fps AVSampleBufferDisplayLayer PiP path, adds an 8-second renderer/warning self-test, pulsing visual and throttled vibration warnings, orange stereo-transient direction cues, explicit in-PiP pipeline states, and slightly more sensitive first-person acquisition. The PiP keepalive session mixes with other audio and produces or persists no audio.'
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
-            gh release edit "$TAG" --title 'LiteView 0.9.6 Build 23 Floating Dots' --notes "$NOTES" --target "$GITHUB_SHA"
+            gh release edit "$TAG" --title 'LiteView 0.9.7 Build 24 Live Markers and Warnings' --notes "$NOTES" --target "$GITHUB_SHA"
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" \
               --target "$GITHUB_SHA" \
-              --title 'LiteView 0.9.6 Build 23 Floating Dots' \
+              --title 'LiteView 0.9.7 Build 24 Live Markers and Warnings' \
               --notes "$NOTES"
           fi

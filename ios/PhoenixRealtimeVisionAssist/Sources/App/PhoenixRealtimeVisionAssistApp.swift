@@ -423,6 +423,7 @@ struct ContentView: View {
                 floatingDots.appBecameActive()
             } else if newValue == .background {
                 deviceAcceptance.appEnteredBackground()
+                floatingDots.appEnteredBackground()
             }
         }
     }

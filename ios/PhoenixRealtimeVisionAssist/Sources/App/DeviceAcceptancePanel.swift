@@ -290,7 +290,7 @@ struct DeviceAcceptancePanel: View {
                 Image(systemName: model.lastRun?.transportPassed == true
                     ? "checkmark.seal.fill"
                     : "iphone.and.arrow.forward")
-                Text("物理 iPhone 验收 · Build 23")
+                Text("物理 iPhone 验收 · Build 24")
                     .font(.headline)
             }
             .foregroundStyle(statusColor)

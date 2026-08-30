@@ -9,8 +9,8 @@ settings:
     IPHONEOS_DEPLOYMENT_TARGET: 17.0
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: ""
-    CURRENT_PROJECT_VERSION: 23
-    MARKETING_VERSION: 0.9.6
+    CURRENT_PROJECT_VERSION: 24
+    MARKETING_VERSION: 0.9.7
 targets:
   PhoenixRealtimeVisionAssist:
     type: application
@@ -30,6 +30,8 @@ targets:
       properties:
         CFBundleDisplayName: LiteView
         UILaunchScreen: {}
+        UIBackgroundModes:
+          - audio
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.phoenix.realtimevisionassist
