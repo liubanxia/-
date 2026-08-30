@@ -188,6 +188,7 @@ jobs:
           APP_STRINGS="$RUNNER_TEMP/liteview-build25-app-strings.txt"
           EXT_STRINGS="$RUNNER_TEMP/liteview-build25-extension-strings.txt"
           APP_LINKS="$RUNNER_TEMP/liteview-build25-app-links.txt"
+          EXT_LINKS="$RUNNER_TEMP/liteview-build25-extension-links.txt"
 
           test -d "$APP"
           test -d "$EXT"
@@ -196,6 +197,7 @@ jobs:
           strings "$APP_BIN" > "$APP_STRINGS"
           strings "$EXT_BIN" > "$EXT_STRINGS"
           otool -L "$APP_BIN" > "$APP_LINKS"
+          otool -L "$EXT_BIN" > "$EXT_LINKS"
 
           set_plist_string() {
             local plist="$1" key="$2" value="$3"
@@ -218,7 +220,7 @@ jobs:
           grep -q 'FloatingDotPiPModel' "$APP_STRINGS"
           grep -q 'LITEVIEW_FLOATING_DOTS_BUILD25' "$APP_STRINGS"
           grep -q 'PIP-E02' "$APP_STRINGS"
-          grep -q 'VNDetectHumanRectanglesRequest' "$EXT_STRINGS"
+          grep -q 'Vision.framework' "$EXT_LINKS"
           grep -q 'AVKit.framework' "$APP_LINKS"
           grep -q 'AVFoundation.framework' "$APP_LINKS"
           grep -q 'AudioToolbox.framework' "$APP_LINKS"
