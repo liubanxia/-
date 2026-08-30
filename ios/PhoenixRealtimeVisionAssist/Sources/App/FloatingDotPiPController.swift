@@ -172,6 +172,8 @@ final class FloatingDotPiPModel: NSObject,
     private var pixelBufferPool: CVPixelBufferPool?
     private var videoFormatDescription: CMVideoFormatDescription?
     private var audioSessionActive = false
+    private var pipStartAttempt = 0
+    private var pendingPiPStart: DispatchWorkItem?
 
     private var previousPoint: SharedNormalizedPoint?
     private var previousPointTimestamp: TimeInterval = 0
@@ -200,21 +202,11 @@ final class FloatingDotPiPModel: NSObject,
         ).cgColor
         configurePixelBufferPool()
 
-        if isSupported {
-            let source = AVPictureInPictureController.ContentSource(
-                sampleBufferDisplayLayer: displayLayer,
-                playbackDelegate: self
-            )
-            let controller = AVPictureInPictureController(contentSource: source)
-            controller.delegate = self
-            controller.canStartPictureInPictureAutomaticallyFromInline = false
-            controller.requiresLinearPlayback = true
-            pictureInPictureController = controller
-        }
     }
 
     deinit {
         refreshTimer?.invalidate()
+        pendingPiPStart?.cancel()
     }
 
     var buttonTitle: String {
@@ -241,6 +233,14 @@ final class FloatingDotPiPModel: NSObject,
         view.layer.addSublayer(displayLayer)
         layoutDisplayLayer(in: view.bounds)
         renderFrame()
+        // AVKit determines PiP availability asynchronously from a layer in a live view tree.
+        // Creating the controller during ObservableObject initialization can permanently leave
+        // isPictureInPicturePossible false on device, because the layer has no host view yet.
+        DispatchQueue.main.async { [weak self, weak view] in
+            guard let self, view?.window != nil else { return }
+            self.configurePictureInPictureIfNeeded()
+            self.renderFrame()
+        }
     }
 
     fileprivate func layoutDisplayLayer(in bounds: CGRect) {
@@ -282,10 +282,10 @@ final class FloatingDotPiPModel: NSObject,
     }
 
     func togglePictureInPicture() {
-        guard let controller = pictureInPictureController else { return }
         lastError = nil
 
-        if controller.isPictureInPictureActive {
+        if let controller = pictureInPictureController,
+           controller.isPictureInPictureActive {
             controller.stopPictureInPicture()
         } else {
             startPictureInPictureIfPossible()
@@ -305,16 +305,60 @@ final class FloatingDotPiPModel: NSObject,
     }
 
     private func startPictureInPictureIfPossible() {
-        guard let controller = pictureInPictureController else { return }
-        activateAudioSession()
-        renderFrame()
-        refreshPictureInPictureStatus()
-        guard controller.isPictureInPicturePossible else {
-            lastError = "PiP 尚未就绪；先确认系统设置中已允许画中画"
+        pendingPiPStart?.cancel()
+        configurePictureInPictureIfNeeded()
+        guard pictureInPictureController != nil else {
+            lastError = "PIP-E01：显示层尚未进入窗口；请停留此页后重试"
+            isStarting = false
             return
         }
+        activateAudioSession()
+        renderFrame()
         isStarting = true
-        controller.startPictureInPicture()
+        pipStartAttempt = 0
+        attemptPendingPictureInPictureStart()
+    }
+
+    private func configurePictureInPictureIfNeeded() {
+        guard isSupported,
+              pictureInPictureController == nil,
+              displayLayer.superlayer != nil else { return }
+        let source = AVPictureInPictureController.ContentSource(
+            sampleBufferDisplayLayer: displayLayer,
+            playbackDelegate: self
+        )
+        let controller = AVPictureInPictureController(contentSource: source)
+        controller.delegate = self
+        controller.canStartPictureInPictureAutomaticallyFromInline = false
+        controller.requiresLinearPlayback = true
+        pictureInPictureController = controller
+        refreshPictureInPictureStatus()
+    }
+
+    private func attemptPendingPictureInPictureStart() {
+        guard isStarting, let controller = pictureInPictureController else { return }
+        renderFrame()
+        refreshPictureInPictureStatus()
+        if controller.isPictureInPicturePossible {
+            controller.startPictureInPicture()
+            return
+        }
+
+        pipStartAttempt += 1
+        guard pipStartAttempt < 24 else {
+            isStarting = false
+            let layerState = displayLayer.superlayer == nil ? "detached" : "attached"
+            let mediaState = displayLayer.status == .failed ? "failed" : "ready"
+            lastError = "PIP-E02：等待 3.6 秒仍不可启动（layer=\(layerState), media=\(mediaState), audio=\(audioSessionActive ? \"on\" : \"off\")）。请在系统设置开启自动画中画后重试"
+            deactivateAudioSession()
+            return
+        }
+
+        let work = DispatchWorkItem { [weak self] in
+            self?.attemptPendingPictureInPictureStart()
+        }
+        pendingPiPStart = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
     }
 
     private func activateAudioSession() {
@@ -871,6 +915,8 @@ final class FloatingDotPiPModel: NSObject,
         _ pictureInPictureController: AVPictureInPictureController
     ) {
         isStarting = false
+        pendingPiPStart?.cancel()
+        pendingPiPStart = nil
         isActive = true
         renderFrame()
     }
@@ -880,6 +926,8 @@ final class FloatingDotPiPModel: NSObject,
         failedToStartPictureInPictureWithError error: Error
     ) {
         isStarting = false
+        pendingPiPStart?.cancel()
+        pendingPiPStart = nil
         isActive = false
         lastError = error.localizedDescription
         deactivateAudioSession()
@@ -910,7 +958,7 @@ struct FloatingDotPiPCard: View {
                 Label("人物标点与预警", systemImage: "pip")
                     .font(.headline)
                 Spacer()
-                Text("Build 24")
+                Text("Build 25")
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
             }
@@ -925,7 +973,7 @@ struct FloatingDotPiPCard: View {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .stroke(Color.white.opacity(0.10), lineWidth: 1)
                 }
-                .accessibilityIdentifier("LITEVIEW_FLOATING_DOTS_BUILD24")
+                .accessibilityIdentifier("LITEVIEW_FLOATING_DOTS_BUILD25")
 
             HStack(spacing: 13) {
                 legend(color: .red, text: "人物")
@@ -941,7 +989,7 @@ struct FloatingDotPiPCard: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(!model.isSupported || (!model.isPossible && !model.isActive))
+            .disabled(!model.isSupported || model.isStarting)
 
             Button("测试标点与预警（8 秒）", action: model.runVisualWarningTest)
                 .buttonStyle(.bordered)
@@ -953,6 +1001,13 @@ struct FloatingDotPiPCard: View {
             Text(model.liveStatusText)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(model.statusColor)
+
+            if let error = model.lastError {
+                Text(error)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+            }
 
             Text(model.soundStatusText)
                 .font(.caption.monospacedDigit())

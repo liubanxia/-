@@ -40,6 +40,8 @@ final class LightweightBroadcastAnalyzer {
     private let telemetry = LiteViewInferenceTelemetryPublisher()
     private var trackedObservation: VNDetectedObjectObservation?
     private var lastFullScanUptime: TimeInterval = 0
+    private var lastVisionFallbackUptime: TimeInterval = 0
+    private var consecutiveEmptyFullScans = 0
     private var lastHeavyTargetCount = 0
     private var roiPhase = 0
     private var stabilizedTarget: LightweightTargetPoint?
@@ -54,6 +56,8 @@ final class LightweightBroadcastAnalyzer {
         telemetry.reset()
         trackedObservation = nil
         lastFullScanUptime = 0
+        lastVisionFallbackUptime = 0
+        consecutiveEmptyFullScans = 0
         lastHeavyTargetCount = 0
         roiPhase = 0
         stabilizedTarget = nil
@@ -68,6 +72,8 @@ final class LightweightBroadcastAnalyzer {
         nanoDetector.releaseResources()
         trackedObservation = nil
         lastFullScanUptime = 0
+        lastVisionFallbackUptime = 0
+        consecutiveEmptyFullScans = 0
         lastHeavyTargetCount = 0
         roiPhase = 0
         stabilizedTarget = nil
@@ -91,6 +97,7 @@ final class LightweightBroadcastAnalyzer {
         var currentObservation: TargetObservation?
         var resultSource: LiteViewTelemetrySource = .none
         var nanoResult: BroadcastNanoDetectionResult?
+        var failoverTriggered = false
 
         let fullRefreshInterval: TimeInterval = trackedObservation == nil ? 2.60 : 3.20
         let fullRefreshDue = lastFullScanUptime == 0 || now - lastFullScanUptime >= fullRefreshInterval
@@ -129,6 +136,45 @@ final class LightweightBroadcastAnalyzer {
                 successfulLaneCount: &successfulLaneCount,
                 resultSource: &resultSource
             )
+
+            if result.succeeded {
+                if result.detections.isEmpty {
+                    consecutiveEmptyFullScans = min(consecutiveEmptyFullScans + 1, 255)
+                } else {
+                    consecutiveEmptyFullScans = 0
+                }
+            }
+
+            // The bundled COCO nano model can legitimately return an empty result for stylized
+            // game characters. Only after two successful-but-empty full scans, and at most once
+            // every 4.5 seconds, probe Apple's independent human-rectangle detector. A detected
+            // rectangle seeds the cheap fast tracker, so this fallback does not run every frame.
+            // Detector/preprocessor failures never enter this path and remain visible as failures.
+            if result.succeeded,
+               result.detections.isEmpty,
+               consecutiveEmptyFullScans >= 2,
+               now - lastVisionFallbackUptime >= 4.5 {
+                attemptedLaneCount += 1
+                lastVisionFallbackUptime = now
+                failoverTriggered = true
+                let fallback = runVisionHumanFallback(
+                    pixelBuffer: pixelBuffer,
+                    orientation: orientation
+                )
+                if fallback.succeeded {
+                    successfulLaneCount += 1
+                    targetCount = fallback.targetCount
+                    lastHeavyTargetCount = fallback.targetCount
+                    if let observation = fallback.observation {
+                        currentObservation = observation
+                        trackedObservation = VNDetectedObjectObservation(
+                            boundingBox: observation.boundingBox
+                        )
+                        resultSource = .visionFallback
+                        consecutiveEmptyFullScans = 0
+                    }
+                }
+            }
         } else if currentObservation == nil {
             attemptedLaneCount += 1
             let roi = nextSparseROI(pixelBuffer: pixelBuffer, orientation: orientation)
@@ -171,7 +217,7 @@ final class LightweightBroadcastAnalyzer {
                 modelName: nanoResult?.modelName,
                 decoder: nanoResult?.decoder ?? .none,
                 source: resultSource,
-                failoverTriggered: false,
+                failoverTriggered: failoverTriggered,
                 inferenceFailed: nanoResult?.inferenceFailed ?? false,
                 preprocessAttempted: nanoResult?.preprocessAttempted ?? false,
                 preprocessSucceeded: nanoResult?.preprocessSucceeded ?? false,
@@ -271,6 +317,51 @@ final class LightweightBroadcastAnalyzer {
                 )
             } catch {
                 return nil
+            }
+        }
+    }
+
+    private func runVisionHumanFallback(
+        pixelBuffer: CVPixelBuffer,
+        orientation: CGImagePropertyOrientation
+    ) -> (succeeded: Bool, targetCount: Int, observation: TargetObservation?) {
+        autoreleasepool {
+            let request = VNDetectHumanRectanglesRequest()
+            request.upperBodyOnly = false
+            request.preferBackgroundProcessing = true
+            let handler = VNImageRequestHandler(
+                cvPixelBuffer: pixelBuffer,
+                orientation: orientation,
+                options: [:]
+            )
+
+            do {
+                try handler.perform([request])
+                let plausible = (request.results ?? []).filter { result in
+                    let box = result.boundingBox
+                    guard result.confidence >= 0.12,
+                          box.width >= 0.008,
+                          box.height >= 0.018,
+                          box.width <= 0.62,
+                          box.height <= 0.96 else { return false }
+                    let aspect = box.height / max(box.width, 0.001)
+                    return aspect >= 0.62 && aspect <= 7.5
+                }
+                guard let selected = plausible.max(by: { $0.confidence < $1.confidence }) else {
+                    return (true, 0, nil)
+                }
+                let box = selected.boundingBox
+                return (
+                    true,
+                    plausible.count,
+                    .init(
+                        point: point(forVisionBox: box),
+                        confidence: Double(selected.confidence),
+                        boundingBox: box
+                    )
+                )
+            } catch {
+                return (false, 0, nil)
             }
         }
     }

@@ -1,4 +1,4 @@
-name: LiteView Live Markers and Warnings Candidate
+name: LiteView PiP Recovery and Human Fallback Candidate
 
 on:
   push:
@@ -89,11 +89,16 @@ jobs:
           grep -q 'lastBackgroundRenderDelta' "$FLOATING_DOTS"
           grep -q 'appEnteredBackground' "$APP_ENTRY"
           grep -q 'audio-diagnostics.v1' "$FLOATING_DOTS"
-          grep -q 'LITEVIEW_FLOATING_DOTS_BUILD24' "$FLOATING_DOTS"
+          grep -q 'LITEVIEW_FLOATING_DOTS_BUILD25' "$FLOATING_DOTS"
+          grep -q 'PIP-E02' "$FLOATING_DOTS"
+          grep -q 'attemptPendingPictureInPictureStart' "$FLOATING_DOTS"
           grep -q 'AVAudioSession' "$FLOATING_DOTS"
           grep -q 'mixWithOthers' "$FLOATING_DOTS"
           grep -q 'minimumConfidence: 0.08' "$ANALYZER"
           grep -q 'minimumConfidence: 0.06' "$ANALYZER"
+          grep -q 'VNDetectHumanRectanglesRequest' "$ANALYZER"
+          grep -q 'consecutiveEmptyFullScans >= 2' "$ANALYZER"
+          grep -q 'lastVisionFallbackUptime >= 4.5\|now - lastVisionFallbackUptime >= 4.5' "$ANALYZER"
           grep -q 'EnhancedBroadcastSampleHandler' "$PLIST"
           grep -q 'RadarPiPController.swift' "$PROJECT"
           grep -q 'RadarBootstrapLoader.m' "$PROJECT"
@@ -169,7 +174,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build
 
-      - name: Normalize 0.9.7 Build 24 and verify final binaries
+      - name: Normalize 0.9.8 Build 25 and verify final binaries
         shell: bash
         run: |
           set -euo pipefail
@@ -180,9 +185,9 @@ jobs:
           EXT_PLIST="$EXT/Info.plist"
           APP_BIN="$APP/PhoenixRealtimeVisionAssist"
           EXT_BIN="$EXT/PhoenixBroadcastExtension"
-          APP_STRINGS="$RUNNER_TEMP/liteview-build24-app-strings.txt"
-          EXT_STRINGS="$RUNNER_TEMP/liteview-build24-extension-strings.txt"
-          APP_LINKS="$RUNNER_TEMP/liteview-build24-app-links.txt"
+          APP_STRINGS="$RUNNER_TEMP/liteview-build25-app-strings.txt"
+          EXT_STRINGS="$RUNNER_TEMP/liteview-build25-extension-strings.txt"
+          APP_LINKS="$RUNNER_TEMP/liteview-build25-app-links.txt"
 
           test -d "$APP"
           test -d "$EXT"
@@ -199,11 +204,11 @@ jobs:
           }
 
           set_plist_string "$APP_PLIST" CFBundleDisplayName LiteView
-          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.7
-          set_plist_string "$APP_PLIST" CFBundleVersion 24
+          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.8
+          set_plist_string "$APP_PLIST" CFBundleVersion 25
           set_plist_string "$EXT_PLIST" CFBundleDisplayName 'LiteView Broadcast'
-          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.7
-          set_plist_string "$EXT_PLIST" CFBundleVersion 24
+          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.8
+          set_plist_string "$EXT_PLIST" CFBundleVersion 25
 
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT_PLIST")" = 'PhoenixBroadcastExtension.EnhancedBroadcastSampleHandler'
           test -n "$(find "$EXT" -type d -name 'yolo11n.mlmodelc' -prune -print -quit)"
@@ -211,7 +216,9 @@ jobs:
           grep -q 'device-acceptance.v1' "$EXT_STRINGS"
           grep -q 'device-acceptance.v1' "$APP_STRINGS"
           grep -q 'FloatingDotPiPModel' "$APP_STRINGS"
-          grep -q 'LITEVIEW_FLOATING_DOTS_BUILD24' "$APP_STRINGS"
+          grep -q 'LITEVIEW_FLOATING_DOTS_BUILD25' "$APP_STRINGS"
+          grep -q 'PIP-E02' "$APP_STRINGS"
+          grep -q 'VNDetectHumanRectanglesRequest' "$EXT_STRINGS"
           grep -q 'AVKit.framework' "$APP_LINKS"
           grep -q 'AVFoundation.framework' "$APP_LINKS"
           grep -q 'AudioToolbox.framework' "$APP_LINKS"
@@ -228,8 +235,8 @@ jobs:
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
           ROOT="$RUNNER_TEMP/LiteViewAudioCleanPackage"
           PAYLOAD="$ROOT/Payload"
-          IPA="$RUNNER_TEMP/LiteView-0.9.7-Build24-LiveMarkersWarnings-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.7-Build24-LiveMarkersWarnings.txt"
+          IPA="$RUNNER_TEMP/LiteView-0.9.8-Build25-PiPRecoveryHumanFallback-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.8-Build25-PiPRecoveryHumanFallback.txt"
 
           rm -rf "$ROOT" "$IPA" "$MANIFEST"
           mkdir -p "$PAYLOAD"
@@ -241,10 +248,10 @@ jobs:
           IPA_SHA256="$(shasum -a 256 "$IPA" | awk '{print $1}')"
 
           cat > "$MANIFEST" <<EOF
-          LiteView 0.9.7 Build 24 Live Markers and Warnings Candidate
+          LiteView 0.9.8 Build 25 PiP Recovery and Human Fallback Candidate
           commit=${GITHUB_SHA}
-          version=0.9.7
-          build=24
+          version=0.9.8
+          build=25
           ipa_size_bytes=${IPA_SIZE_BYTES}
           ipa_sha256=${IPA_SHA256}
           video_pipeline=validated YOLO11n + ROI + tracker path preserved
@@ -257,6 +264,9 @@ jobs:
           microphone=ignored
           audio_persistence=none; no PCM history or audio files
           floating_dots=4fps AVSampleBufferDisplayLayer PiP; red observed target plus blue short-horizon prediction
+          pip_start_recovery=controller created after display layer attachment; asynchronous readiness retried for 3.6 seconds
+          pip_failure_diagnostics=PIP-E01/PIP-E02 plus AVKit start error shown in app
+          human_fallback=low-frequency VNDetectHumanRectanglesRequest only after two successful empty YOLO full scans; fast tracker seeded on hit
           visual_warning=pulsing red border and warning glyph on visible-person evidence
           haptic_warning=throttled vibration on new visible-person evidence or fresh strong audio transient
           sound_warning=orange left/right edge cue from fresh stereo audioApp transient; not claimed as person identity
@@ -277,10 +287,10 @@ jobs:
       - name: Upload candidate artifact
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-live-markers-warnings-0.9.7-build24
+          name: liteview-pip-recovery-human-fallback-0.9.8-build25
           path: |
-            ${{ runner.temp }}/LiteView-0.9.7-Build24-LiveMarkersWarnings-unsigned.ipa
-            ${{ runner.temp }}/LiteView-0.9.7-Build24-LiveMarkersWarnings.txt
+            ${{ runner.temp }}/LiteView-0.9.8-Build25-PiPRecoveryHumanFallback-unsigned.ipa
+            ${{ runner.temp }}/LiteView-0.9.8-Build25-PiPRecoveryHumanFallback.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -291,16 +301,16 @@ jobs:
         run: |
           set -euo pipefail
           TAG='liteview-audio-clean-overlay-latest'
-          IPA="$RUNNER_TEMP/LiteView-0.9.7-Build24-LiveMarkersWarnings-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.7-Build24-LiveMarkersWarnings.txt"
-          NOTES='LiteView 0.9.7 Build 24 live-markers candidate. Replaces the suspended video-call-style PiP view with a 4fps AVSampleBufferDisplayLayer PiP path, adds an 8-second renderer/warning self-test, pulsing visual and throttled vibration warnings, orange stereo-transient direction cues, explicit in-PiP pipeline states, and slightly more sensitive first-person acquisition. The PiP keepalive session mixes with other audio and produces or persists no audio.'
+          IPA="$RUNNER_TEMP/LiteView-0.9.8-Build25-PiPRecoveryHumanFallback-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.8-Build25-PiPRecoveryHumanFallback.txt"
+          NOTES='LiteView 0.9.8 Build 25 PiP-recovery candidate. Creates sample-buffer PiP only after its display layer is attached, retries asynchronous AVKit readiness for 3.6 seconds, and exposes PIP-E01/PIP-E02 or the native AVKit start error in the app. When YOLO completes successfully but produces two empty full scans, a throttled independent Vision human-rectangle pass may seed the fast tracker. No frame, image, coordinate history, or audio is persisted.'
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
-            gh release edit "$TAG" --title 'LiteView 0.9.7 Build 24 Live Markers and Warnings' --notes "$NOTES" --target "$GITHUB_SHA"
+            gh release edit "$TAG" --title 'LiteView 0.9.8 Build 25 PiP Recovery and Human Fallback' --notes "$NOTES" --target "$GITHUB_SHA"
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" \
               --target "$GITHUB_SHA" \
-              --title 'LiteView 0.9.7 Build 24 Live Markers and Warnings' \
+              --title 'LiteView 0.9.8 Build 25 PiP Recovery and Human Fallback' \
               --notes "$NOTES"
           fi
