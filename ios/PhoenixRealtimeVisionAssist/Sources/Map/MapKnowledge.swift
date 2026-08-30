@@ -1,6 +1,6 @@
 import Foundation
 
-enum DeltaMapID: String, Codable, CaseIterable, Sendable {
+enum DeltaMapID: String, Codable, CaseIterable, Sendable, Hashable {
     case zeroDam
     case spaceCity
     case layaliGrove
