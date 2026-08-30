@@ -327,6 +327,7 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var status = RuntimeStatusModel()
     @StateObject private var deviceAcceptance = DeviceAcceptanceModel()
+    @StateObject private var floatingDots = FloatingDotPiPModel()
 
     var body: some View {
         ScrollView {
@@ -345,6 +346,8 @@ struct ContentView: View {
                     extensionHeartbeatConfirmed: status.extensionHeartbeatConfirmed,
                     snapshot: status.snapshot
                 )
+
+                FloatingDotPiPCard(model: floatingDots)
 
                 DirectBroadcastButton(
                     isBroadcastActive: status.isBroadcastActive,
@@ -406,15 +409,18 @@ struct ContentView: View {
         .onAppear {
             status.start()
             deviceAcceptance.start()
+            floatingDots.start()
         }
         .onDisappear {
             status.stop()
             deviceAcceptance.stop()
+            floatingDots.stop()
         }
         .onChange(of: scenePhase) { _, newValue in
             if newValue == .active {
                 status.appBecameActive()
                 deviceAcceptance.appBecameActive()
+                floatingDots.appBecameActive()
             } else if newValue == .background {
                 deviceAcceptance.appEnteredBackground()
             }

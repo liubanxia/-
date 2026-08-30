@@ -1,4 +1,4 @@
-name: LiteView Audio Clean Overlay Candidate
+name: LiteView Floating Dots Candidate
 
 on:
   push:
@@ -51,7 +51,7 @@ jobs:
           test -n "$COMPILED"
           cp -R "$COMPILED" "$MODEL_DIR/yolo11n.mlmodelc"
 
-      - name: Guard audio and clean-overlay wiring
+      - name: Guard audio and floating-dot wiring
         shell: bash
         run: |
           set -euo pipefail
@@ -60,6 +60,9 @@ jobs:
           AUDIO="$ROOT/Sources/Broadcast/BroadcastAudioTelemetryAnalyzer.swift"
           ACCEPTANCE="$ROOT/Sources/Broadcast/BroadcastDeviceAcceptanceTelemetry.swift"
           ACCEPTANCE_PANEL="$ROOT/Sources/App/DeviceAcceptancePanel.swift"
+          FLOATING_DOTS="$ROOT/Sources/App/FloatingDotPiPController.swift"
+          APP_ENTRY="$ROOT/Sources/App/PhoenixRealtimeVisionAssistApp.swift"
+          APP_PLIST="$ROOT/Sources/App/Info.plist"
           PLIST="$ROOT/Sources/Broadcast/Info.plist"
           PROJECT="$ROOT/project.yml"
 
@@ -74,24 +77,33 @@ jobs:
           grep -q 'BroadcastDeviceAcceptanceTelemetryPublisher' "$ROOT/Sources/Broadcast/BroadcastSampleHandler.swift"
           grep -q 'DeviceAcceptancePanel' "$ACCEPTANCE_PANEL"
           grep -q 'audioApp 未持续投递' "$ACCEPTANCE_PANEL"
+          grep -q 'FloatingDotPiPCard' "$APP_ENTRY"
+          grep -q 'activeVideoCallSourceView' "$FLOATING_DOTS"
+          grep -q 'x: CGFloat(point.x) \* bounds.width' "$FLOATING_DOTS"
+          grep -q 'y: CGFloat(point.y) \* bounds.height' "$FLOATING_DOTS"
+          grep -q '开启悬浮标点' "$FLOATING_DOTS"
+          grep -q 'LITEVIEW_FLOATING_DOTS_BUILD23' "$FLOATING_DOTS"
+          ! grep -q 'AVAudioSession' "$FLOATING_DOTS"
           grep -q 'EnhancedBroadcastSampleHandler' "$PLIST"
           grep -q 'RadarPiPController.swift' "$PROJECT"
           grep -q 'RadarBootstrapLoader.m' "$PROJECT"
           ! grep -q 'UIBackgroundModes' "$PROJECT"
-          echo 'AUDIO_CLEAN_OVERLAY_WIRING_PASS'
+          ! grep -q 'UIBackgroundModes' "$APP_PLIST"
+          echo 'FLOATING_DOT_WIRING_PASS'
 
       - name: Generate project
         working-directory: ios/PhoenixRealtimeVisionAssist
         run: xcodegen generate
 
-      - name: Verify radar sources are excluded from generated target
+      - name: Verify floating dots included and legacy radar excluded
         shell: bash
         run: |
           set -euo pipefail
           PBX='ios/PhoenixRealtimeVisionAssist/PhoenixRealtimeVisionAssist.xcodeproj/project.pbxproj'
           ! grep -q 'RadarPiPController.swift' "$PBX"
           ! grep -q 'RadarBootstrapLoader.m' "$PBX"
-          echo 'RADAR_TARGET_EXCLUSION_PASS'
+          grep -q 'FloatingDotPiPController.swift' "$PBX"
+          echo 'FLOATING_DOT_TARGET_PASS'
 
       - name: Run lifecycle smoke test
         shell: bash
@@ -147,7 +159,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build
 
-      - name: Normalize 0.9.5 Build 22 and verify final binaries
+      - name: Normalize 0.9.6 Build 23 and verify final binaries
         shell: bash
         run: |
           set -euo pipefail
@@ -171,17 +183,19 @@ jobs:
           }
 
           set_plist_string "$APP_PLIST" CFBundleDisplayName LiteView
-          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.5
-          set_plist_string "$APP_PLIST" CFBundleVersion 22
+          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.6
+          set_plist_string "$APP_PLIST" CFBundleVersion 23
           set_plist_string "$EXT_PLIST" CFBundleDisplayName 'LiteView Broadcast'
-          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.5
-          set_plist_string "$EXT_PLIST" CFBundleVersion 22
+          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.6
+          set_plist_string "$EXT_PLIST" CFBundleVersion 23
 
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT_PLIST")" = 'PhoenixBroadcastExtension.EnhancedBroadcastSampleHandler'
           test -n "$(find "$EXT" -type d -name 'yolo11n.mlmodelc' -prune -print -quit)"
           strings "$EXT_BIN" | grep -q 'audio-diagnostics.v1'
           strings "$EXT_BIN" | grep -q 'device-acceptance.v1'
           strings "$APP_BIN" | grep -q 'device-acceptance.v1'
+          strings "$APP_BIN" | grep -q 'FloatingDotPiPModel'
+          strings "$APP_BIN" | grep -q 'LITEVIEW_FLOATING_DOTS_BUILD23'
           ! strings "$APP_BIN" | grep -q 'LiteViewRadarBootstrap'
           ! strings "$APP_BIN" | grep -q '开启游戏雷达'
           ! /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "$APP_PLIST" >/dev/null 2>&1
@@ -195,8 +209,8 @@ jobs:
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
           ROOT="$RUNNER_TEMP/LiteViewAudioCleanPackage"
           PAYLOAD="$ROOT/Payload"
-          IPA="$RUNNER_TEMP/LiteView-0.9.5-Build22-DeviceAcceptance-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.5-Build22-DeviceAcceptance.txt"
+          IPA="$RUNNER_TEMP/LiteView-0.9.6-Build23-FloatingDots-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.6-Build23-FloatingDots.txt"
 
           rm -rf "$ROOT" "$IPA" "$MANIFEST"
           mkdir -p "$PAYLOAD"
@@ -208,10 +222,10 @@ jobs:
           IPA_SHA256="$(shasum -a 256 "$IPA" | awk '{print $1}')"
 
           cat > "$MANIFEST" <<EOF
-          LiteView 0.9.5 Build 22 Physical Device Acceptance Candidate
+          LiteView 0.9.6 Build 23 Floating Dots Candidate
           commit=${GITHUB_SHA}
-          version=0.9.5
-          build=22
+          version=0.9.6
+          build=23
           ipa_size_bytes=${IPA_SIZE_BYTES}
           ipa_sha256=${IPA_SHA256}
           video_pipeline=validated YOLO11n + ROI + tracker path preserved
@@ -223,6 +237,8 @@ jobs:
           acceptance_persistence=volatile Darwin aggregate state only; cleared at next broadcast start
           microphone=ignored
           audio_persistence=none; no PCM history or audio files
+          floating_dots=system PiP content view; red observed target plus blue short-horizon prediction
+          coordinate_mapping=normalized x left-to-right and y top-to-bottom; no legacy vertical inversion
           radar_runtime=legacy radar Swift/ObjC sources excluded from app target and absent from final app binary
           background_audio_mode=removed from main app
           scope=visible-person vision plus generic app-audio diagnostics; no hidden-player or occlusion-location inference
@@ -236,10 +252,10 @@ jobs:
       - name: Upload candidate artifact
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-device-acceptance-0.9.5-build22
+          name: liteview-floating-dots-0.9.6-build23
           path: |
-            ${{ runner.temp }}/LiteView-0.9.5-Build22-DeviceAcceptance-unsigned.ipa
-            ${{ runner.temp }}/LiteView-0.9.5-Build22-DeviceAcceptance.txt
+            ${{ runner.temp }}/LiteView-0.9.6-Build23-FloatingDots-unsigned.ipa
+            ${{ runner.temp }}/LiteView-0.9.6-Build23-FloatingDots.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -250,16 +266,16 @@ jobs:
         run: |
           set -euo pipefail
           TAG='liteview-audio-clean-overlay-latest'
-          IPA="$RUNNER_TEMP/LiteView-0.9.5-Build22-DeviceAcceptance-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.5-Build22-DeviceAcceptance.txt"
-          NOTES='LiteView 0.9.5 Build 22 physical-device acceptance candidate. Adds foreground/background counter comparison for sustained ReplayKit video, AI and audioApp delivery; reports ReplayKit FPS, inference latency, thermal state and recognition evidence; keeps the visible-person pipeline; ignores microphone audio; and persists no raw audio, frames, screenshots or coordinate history.'
+          IPA="$RUNNER_TEMP/LiteView-0.9.6-Build23-FloatingDots-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.6-Build23-FloatingDots.txt"
+          NOTES='LiteView 0.9.6 Build 23 floating-dots candidate. Adds a system PiP location window with a thin red observed-person point and blue short-horizon prediction, fixes vertical coordinate mapping, preserves physical-device video/AI/audio acceptance telemetry, excludes the legacy radar UI, does not activate an audio session, and persists no raw audio, frames, screenshots or coordinate history.'
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
-            gh release edit "$TAG" --title 'LiteView 0.9.5 Build 22 Device Acceptance' --notes "$NOTES" --target "$GITHUB_SHA"
+            gh release edit "$TAG" --title 'LiteView 0.9.6 Build 23 Floating Dots' --notes "$NOTES" --target "$GITHUB_SHA"
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" \
               --target "$GITHUB_SHA" \
-              --title 'LiteView 0.9.5 Build 22 Device Acceptance' \
+              --title 'LiteView 0.9.6 Build 23 Floating Dots' \
               --notes "$NOTES"
           fi
