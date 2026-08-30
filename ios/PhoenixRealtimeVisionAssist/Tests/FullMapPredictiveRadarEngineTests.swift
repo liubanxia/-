@@ -2,14 +2,56 @@ import XCTest
 @testable import PhoenixRealtimeVisionAssist
 
 final class FullMapPredictiveRadarEngineTests: XCTestCase {
-    func testAZ3DefaultAnchorExists() {
+    func testAllSixMapsHavePublicTopologyAndDefaultAnchor() {
         let engine = FullMapPredictiveRadarEngine()
-        let anchor = engine.defaultAnchorNodeID(for: .az3)
-        XCTAssertEqual(anchor, "az3.reactor.1f")
-        XCTAssertTrue(engine.knowledge(for: .az3).nodes.contains { $0.id == anchor })
+        XCTAssertEqual(DeltaMapCatalog.all.count, 6)
+        XCTAssertEqual(DeltaMapSeeds.all.count, 6)
+
+        for entry in DeltaMapCatalog.all {
+            let knowledge = engine.knowledge(for: entry.id)
+            let anchor = DeltaMapCatalog.defaultAnchorID(for: entry.id)
+            XCTAssertFalse(knowledge.nodes.isEmpty, "\(entry.displayName) nodes missing")
+            XCTAssertFalse(knowledge.edges.isEmpty, "\(entry.displayName) edges missing")
+            XCTAssertTrue(
+                knowledge.nodes.contains { $0.id == anchor },
+                "\(entry.displayName) default anchor missing: \(anchor)"
+            )
+            XCTAssertFalse(DeltaMapCatalog.anchors(for: entry.id).isEmpty)
+        }
     }
 
-    func testCenteredVisualCueFacingEastSelectsEastRoute() {
+    func testEveryCatalogAnchorExistsInItsMapSeed() {
+        let engine = FullMapPredictiveRadarEngine()
+        for anchor in DeltaMapCatalog.anchors {
+            let knowledge = engine.knowledge(for: anchor.mapID)
+            XCTAssertTrue(
+                knowledge.nodes.contains { $0.id == anchor.id },
+                "Catalog anchor missing from seed: \(anchor.id)"
+            )
+        }
+    }
+
+    func testEveryMapCanProducePredictionFromDefaultAnchor() {
+        let engine = FullMapPredictiveRadarEngine()
+        for entry in DeltaMapCatalog.all {
+            let solution = engine.solve(
+                mapID: entry.id,
+                anchorNodeID: DeltaMapCatalog.defaultAnchorID(for: entry.id),
+                headingDegrees: 90,
+                visualScreenX: 0.5,
+                visualConfidence: 0.92,
+                stableFrames: 4,
+                audioCue: .right,
+                audioStrength: 0.7,
+                previousObservedNodeID: nil
+            )
+            XCTAssertNotNil(solution.observed, "\(entry.displayName) visual mapping failed")
+            XCTAssertFalse(solution.predictions.isEmpty, "\(entry.displayName) prediction missing")
+            XCTAssertFalse(solution.audioCandidates.isEmpty, "\(entry.displayName) audio candidates missing")
+        }
+    }
+
+    func testAZ3CenteredVisualCueFacingEastSelectsEastRoute() {
         let engine = FullMapPredictiveRadarEngine()
         let solution = engine.solve(
             mapID: .az3,
@@ -48,8 +90,8 @@ final class FullMapPredictiveRadarEngineTests: XCTestCase {
     func testStereoCueProducesUncertainAudioCandidatesOnly() {
         let engine = FullMapPredictiveRadarEngine()
         let solution = engine.solve(
-            mapID: .az3,
-            anchorNodeID: "az3.reactor.1f",
+            mapID: .tidePrison,
+            anchorNodeID: DeltaMapCatalog.defaultAnchorID(for: .tidePrison),
             headingDegrees: 0,
             visualScreenX: nil,
             visualConfidence: 0,
