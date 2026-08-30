@@ -81,11 +81,15 @@ targets:
     platform: iOS
     sources:
       - path: Tests
+        excludes:
+          - '**/README.md'
       - path: Sources/Core/RuntimeConfiguration.swift
       - path: Sources/Core/BroadcastLifecycle.swift
       - path: Sources/Core/SharedRealtimeStateStore.swift
       - path: Sources/Vision/PhoenixCapabilityModelBank.swift
       - path: Sources/Map
+        excludes:
+          - README.md
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.phoenix.realtimevisionassist.tests
