@@ -143,7 +143,7 @@ private func diagnose(_ sampleBuffer: CMSampleBuffer) -> String {
     return pieces.joined(separator: " ")
 }
 
-private func decode(_ state: UInt64) -> (count: UInt64, left: UInt64, right: UInt64, peak: UInt64, band: UInt64, sampleRateKHz: UInt64, channels: UInt64, active: Bool, ready: Bool) {
+private func decode(_ state: UInt64) -> (count: UInt64, left: UInt64, right: UInt64, peak: UInt64, band: UInt64, sampleRateKHz: UInt64, channels: UInt64, uptimeCode: UInt64, active: Bool, ready: Bool) {
     (
         count: state & 0x0FFF,
         left: (state >> 12) & 0xFF,
@@ -152,6 +152,7 @@ private func decode(_ state: UInt64) -> (count: UInt64, left: UInt64, right: UIn
         band: (state >> 36) & 0x07,
         sampleRateKHz: (state >> 40) & 0xFF,
         channels: (state >> 48) & 0xFF,
+        uptimeCode: (state >> 56) & 0x3F,
         active: ((state >> 62) & 1) == 1,
         ready: ((state >> 63) & 1) == 1
     )
@@ -175,6 +176,7 @@ struct AudioSyntheticSmoke {
         guard snapshot.peakLevel > 0 else { fatalError("FAIL: peak remained zero") }
         guard Int(snapshot.sampleRate.rounded()) == 48_000 else { fatalError("FAIL: sample rate=\(snapshot.sampleRate)") }
         guard snapshot.channels == 2 else { fatalError("FAIL: channels=\(snapshot.channels)") }
+        guard snapshot.timestamp > 0 else { fatalError("FAIL: sample freshness timestamp missing") }
         guard snapshot.dominantBand == 2 else { fatalError("FAIL: dominant band expected 400 Hz probe (2), got \(snapshot.dominantBand)") }
 
         guard let rawState = analyzer.publishedStateForTesting(), rawState != 0 else {
@@ -187,7 +189,8 @@ struct AudioSyntheticSmoke {
               telemetry.peak > 0,
               telemetry.band == 2,
               telemetry.sampleRateKHz == 48,
-              telemetry.channels == 2 else {
+              telemetry.channels == 2,
+              telemetry.uptimeCode == (UInt64(Int(snapshot.timestamp)) & 0x3F) else {
             fatalError("FAIL: packed telemetry mismatch raw=\(rawState) decoded=\(telemetry)")
         }
 

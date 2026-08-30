@@ -100,10 +100,24 @@ static int LiteViewAudioDiagnosticsToken = -1;
     BOOL transient = ((state >> 39) & UINT64_C(1)) != 0;
     uint64_t sampleRateKHz = (state >> 40) & UINT64_C(0x00FF);
     uint64_t channels = (state >> 48) & UINT64_C(0x00FF);
+    uint64_t sampleUptimeSlot = (state >> 56) & UINT64_C(0x003F);
+    BOOL active = ((state >> 62) & UINT64_C(1)) != 0;
+    uint64_t currentUptimeSlot = ((uint64_t)NSProcessInfo.processInfo.systemUptime) & UINT64_C(0x003F);
+    uint64_t ageSeconds = (currentUptimeSlot - sampleUptimeSlot) & UINT64_C(0x003F);
+
+    NSString *streamStatus = nil;
+    if (active && ageSeconds <= 4) {
+        streamStatus = @"持续投递";
+    } else if (active) {
+        streamStatus = [NSString stringWithFormat:@"已接通 · %llus 未更新", ageSeconds];
+    } else {
+        streamStatus = @"广播已停止 · 末次汇总";
+    }
 
     return [NSString stringWithFormat:
-            @"App 音频已接通 · #%llu · %llukHz/%lluch · 频段 %@%@\n"
+            @"audioApp %@ · #%llu · %llukHz/%lluch · 频段 %@%@\n"
              "L %.0f%% · R %.0f%% · Peak %.0f%% · 原始音频不落盘",
+            streamStatus,
             count,
             sampleRateKHz,
             channels,

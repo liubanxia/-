@@ -33,6 +33,7 @@ final class BroadcastAudioTelemetryAnalyzer {
         let transient: Bool
         let sampleRate: Double
         let channels: Int
+        let timestamp: TimeInterval
     }
 
     static let notificationName = "com.phoenix.realtimevisionassist.broadcast.audio-diagnostics.v1"
@@ -42,6 +43,7 @@ final class BroadcastAudioTelemetryAnalyzer {
     private var lastAnalysisUptime: TimeInterval = 0
     private var analysisCount: UInt64 = 0
     private var smoothedPeak: Double = 0
+    private var streamActive = false
     private var lastSnapshotStorage: Snapshot?
 
     init() {
@@ -61,13 +63,23 @@ final class BroadcastAudioTelemetryAnalyzer {
         lastAnalysisUptime = 0
         analysisCount = 0
         smoothedPeak = 0
+        streamActive = true
         lastSnapshotStorage = nil
         lock.unlock()
         clearPublishedState()
     }
 
     func finish() {
-        clearPublishedState()
+        lock.lock()
+        streamActive = false
+        let snapshot = lastSnapshotStorage
+        lock.unlock()
+
+        if let snapshot {
+            publish(snapshot, active: false)
+        } else {
+            clearPublishedState()
+        }
     }
 
     func consume(_ sampleBuffer: CMSampleBuffer) {
@@ -195,12 +207,14 @@ final class BroadcastAudioTelemetryAnalyzer {
             dominantBand: dominantBand,
             transient: peak >= 0.035 && peak > max(0.045, priorPeak * 1.75),
             sampleRate: asbd.mSampleRate,
-            channels: channels
+            channels: channels,
+            timestamp: now
         )
         lastSnapshotStorage = snapshot
+        let active = streamActive
         lock.unlock()
 
-        publish(snapshot)
+        publish(snapshot, active: active)
     }
 
     func snapshotForTesting() -> Snapshot? {
@@ -266,14 +280,14 @@ final class BroadcastAudioTelemetryAnalyzer {
         return bestBand
     }
 
-    private func publish(_ snapshot: Snapshot) {
+    private func publish(_ snapshot: Snapshot, active: Bool) {
         guard token >= 0 else { return }
-        let state = Self.pack(snapshot)
+        let state = Self.pack(snapshot, active: active)
         guard liteview_audio_notify_set_state(token, state) == 0 else { return }
         _ = Self.notificationName.withCString { liteview_audio_notify_post($0) }
     }
 
-    static func pack(_ snapshot: Snapshot) -> UInt64 {
+    static func pack(_ snapshot: Snapshot, active: Bool = true) -> UInt64 {
         let countCode = min(snapshot.analysisCount, 0x0FFF)
         let leftCode = UInt64((min(max(snapshot.leftLevel, 0), 1) * 255).rounded())
         let rightCode = UInt64((min(max(snapshot.rightLevel, 0), 1) * 255).rounded())
@@ -281,6 +295,7 @@ final class BroadcastAudioTelemetryAnalyzer {
         let bandCode = UInt64(min(max(snapshot.dominantBand, 0), 7))
         let sampleRateCode = UInt64(min(max(Int((snapshot.sampleRate / 1_000).rounded()), 0), 255))
         let channelCode = UInt64(min(max(snapshot.channels, 0), 255))
+        let uptimeCode = UInt64(Int(snapshot.timestamp.rounded(.down))) & 0x3F
 
         var state = countCode
         state |= leftCode << 12
@@ -290,7 +305,8 @@ final class BroadcastAudioTelemetryAnalyzer {
         if snapshot.transient { state |= UInt64(1) << 39 }
         state |= sampleRateCode << 40
         state |= channelCode << 48
-        state |= UInt64(1) << 62
+        state |= uptimeCode << 56
+        if active { state |= UInt64(1) << 62 }
         state |= UInt64(1) << 63
         return state
     }

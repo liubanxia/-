@@ -43,6 +43,7 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
 
     private let sharedState = SharedRealtimeStateStore()
     private let analyzer = LightweightBroadcastAnalyzer()
+    private let deviceAcceptanceTelemetry = BroadcastDeviceAcceptanceTelemetryPublisher()
     private let analysisQueue = DispatchQueue(
         label: "com.phoenix.liteview.broadcast.analysis",
         qos: .utility,
@@ -112,6 +113,7 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
 
         analysisQueue.async { [weak self] in self?.analyzer.reset() }
         sharedState.clear()
+        deviceAcceptanceTelemetry.reset()
         publish(metrics)
         BroadcastSignalName.post(BroadcastSignalName.started)
         BroadcastSignalName.post(BroadcastSignalName.heartbeat)
@@ -333,6 +335,7 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
             primaryTargetConfidence: metrics.primaryTargetConfidence,
             stableTargetFrameCount: metrics.stableTargetFrameCount
         )
+        publishDeviceAcceptance(metrics, active: metrics.phase == .running)
         if snapshot != nil {
             BroadcastSignalName.post(BroadcastSignalName.snapshot)
         }
@@ -358,9 +361,22 @@ final class BroadcastSampleHandler: RPBroadcastSampleHandler {
             primaryTargetConfidence: metrics.primaryTargetConfidence,
             stableTargetFrameCount: metrics.stableTargetFrameCount
         )
+        publishDeviceAcceptance(metrics, active: false)
         if snapshot != nil {
             BroadcastSignalName.post(BroadcastSignalName.snapshot)
         }
+    }
+
+    private func publishDeviceAcceptance(_ metrics: Metrics, active: Bool) {
+        deviceAcceptanceTelemetry.publish(
+            videoFrameCount: metrics.videoFrameCount,
+            analysisFrameCount: metrics.analysisFrameCount,
+            videoFramesPerSecond: metrics.videoFramesPerSecond,
+            analysisLatencyMilliseconds: metrics.analysisLatencyMilliseconds,
+            targetCount: metrics.targetCount,
+            lastAnalysisSucceeded: metrics.lastAnalysisSucceeded,
+            active: active
+        )
     }
 
     private func currentMetricsLocked() -> Metrics {

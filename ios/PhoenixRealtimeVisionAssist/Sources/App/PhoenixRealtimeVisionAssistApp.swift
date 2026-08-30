@@ -326,6 +326,7 @@ final class RuntimeStatusModel: ObservableObject {
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var status = RuntimeStatusModel()
+    @StateObject private var deviceAcceptance = DeviceAcceptanceModel()
 
     var body: some View {
         ScrollView {
@@ -365,6 +366,8 @@ struct ContentView: View {
                     isBroadcastActive: status.isBroadcastActive
                 )
 
+                DeviceAcceptancePanel(model: deviceAcceptance)
+
                 VStack(spacing: 8) {
                     if status.extensionHeartbeatConfirmed {
                         Label("扩展通信已确认；是否成功以帧与 AI 指标为准", systemImage: "antenna.radiowaves.left.and.right")
@@ -400,11 +403,20 @@ struct ContentView: View {
             .frame(maxWidth: 560)
             .frame(maxWidth: .infinity)
         }
-        .onAppear { status.start() }
-        .onDisappear { status.stop() }
+        .onAppear {
+            status.start()
+            deviceAcceptance.start()
+        }
+        .onDisappear {
+            status.stop()
+            deviceAcceptance.stop()
+        }
         .onChange(of: scenePhase) { _, newValue in
             if newValue == .active {
                 status.appBecameActive()
+                deviceAcceptance.appBecameActive()
+            } else if newValue == .background {
+                deviceAcceptance.appEnteredBackground()
             }
         }
     }
