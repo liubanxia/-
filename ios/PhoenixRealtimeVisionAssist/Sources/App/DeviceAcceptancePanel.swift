@@ -90,18 +90,23 @@ private final class DeviceAcceptanceStateReader {
               (state & (UInt64(1) << 63)) != 0 else { return nil }
 
         let timestampCode = (state >> 56) & 0x7F
-        return .init(
-            videoFrameCount: state & 0xFFFF,
-            analysisFrameCount: (state >> 16) & 0x0FFF,
-            videoFramesPerSecond: Double((state >> 28) & 0x03FF) / 10,
-            analysisLatencyMilliseconds: Double((state >> 38) & 0x03FF),
+        let videoFrameCount = state & 0xFFFF
+        let analysisFrameCount = (state >> 16) & 0x0FFF
+        let fpsCode = (state >> 28) & 0x03FF
+        let latencyCode = (state >> 38) & 0x03FF
+        let age = modularAge(uptime: uptime, timestampCode: timestampCode, mask: 0x7F)
+        return DevicePerformanceSample(
+            videoFrameCount: videoFrameCount,
+            analysisFrameCount: analysisFrameCount,
+            videoFramesPerSecond: Double(fpsCode) / 10.0,
+            analysisLatencyMilliseconds: Double(latencyCode),
             thermalCode: Int((state >> 48) & 0x03),
-            lowPowerMode: ((state >> 50) & 1) != 0,
+            lowPowerMode: (state & (UInt64(1) << 50)) != 0,
             targetCount: Int((state >> 51) & 0x03),
-            everDetectedTarget: ((state >> 53) & 1) != 0,
-            lastAnalysisSucceeded: ((state >> 54) & 1) != 0,
-            active: ((state >> 55) & 1) != 0,
-            ageSeconds: modularAge(uptime: uptime, timestampCode: timestampCode, mask: 0x7F)
+            everDetectedTarget: (state & (UInt64(1) << 53)) != 0,
+            lastAnalysisSucceeded: (state & (UInt64(1) << 54)) != 0,
+            active: (state & (UInt64(1) << 55)) != 0,
+            ageSeconds: age
         )
     }
 
@@ -110,15 +115,19 @@ private final class DeviceAcceptanceStateReader {
               (state & (UInt64(1) << 63)) != 0 else { return nil }
 
         let timestampCode = (state >> 56) & 0x3F
-        return .init(
+        let leftCode = (state >> 12) & 0xFF
+        let rightCode = (state >> 20) & 0xFF
+        let peakCode = (state >> 28) & 0xFF
+        let age = modularAge(uptime: uptime, timestampCode: timestampCode, mask: 0x3F)
+        return DeviceAudioSample(
             analysisCount: state & 0x0FFF,
-            leftLevel: Double((state >> 12) & 0xFF) / 255,
-            rightLevel: Double((state >> 20) & 0xFF) / 255,
-            peakLevel: Double((state >> 28) & 0xFF) / 255,
+            leftLevel: Double(leftCode) / 255.0,
+            rightLevel: Double(rightCode) / 255.0,
+            peakLevel: Double(peakCode) / 255.0,
             sampleRateKHz: Int((state >> 40) & 0xFF),
             channels: Int((state >> 48) & 0xFF),
-            active: ((state >> 62) & 1) != 0,
-            ageSeconds: modularAge(uptime: uptime, timestampCode: timestampCode, mask: 0x3F)
+            active: (state & (UInt64(1) << 62)) != 0,
+            ageSeconds: age
         )
     }
 
