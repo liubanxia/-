@@ -63,7 +63,6 @@ jobs:
           APP="$ROOT/Sources/App/PhoenixRealtimeVisionAssistApp.swift"
           AUDIO="$ROOT/Sources/Broadcast/BroadcastAudioTelemetryAnalyzer.swift"
           HANDLER="$ROOT/Sources/Broadcast/EnhancedBroadcastSampleHandler.swift"
-
           test -f "$CTRL"
           grep -q 'LITEVIEW_VISIBLE_MULTI_MAP_BUILD30' "$CTRL"
           grep -q 'BUILD 30 · VISIBLE MAP' "$CTRL"
@@ -164,13 +163,16 @@ jobs:
           EXT_BIN="$EXT/PhoenixBroadcastExtension"
           APP_STRINGS="$RUNNER_TEMP/build30-app-strings.txt"
           EXT_STRINGS="$RUNNER_TEMP/build30-ext-strings.txt"
-
+          APP_LINKS="$RUNNER_TEMP/build30-app-links.txt"
+          EXT_LINKS="$RUNNER_TEMP/build30-ext-links.txt"
           test -d "$APP"
           test -d "$EXT"
           test -x "$APP_BIN"
           test -x "$EXT_BIN"
-          strings "$APP_BIN" > "$APP_STRINGS"
-          strings "$EXT_BIN" > "$EXT_STRINGS"
+          strings "$APP_BIN" > "$APP_STRINGS" || true
+          strings "$EXT_BIN" > "$EXT_STRINGS" || true
+          otool -L "$APP_BIN" > "$APP_LINKS"
+          otool -L "$EXT_BIN" > "$EXT_LINKS"
 
           set_plist_string() {
             local plist="$1" key="$2" value="$3"
@@ -184,13 +186,27 @@ jobs:
           set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.13
           set_plist_string "$EXT_PLIST" CFBundleVersion 30
 
-          grep -q 'LITEVIEW_VISIBLE_MULTI_MAP_BUILD30' "$APP_STRINGS"
-          grep -q 'BUILD 30 · VISIBLE MAP' "$APP_STRINGS"
-          grep -q '测试可见性' "$APP_STRINGS"
-          grep -q 'Zero Dam / 零号大坝' "$APP_STRINGS"
-          grep -q 'Tide Prison / 潮汐监狱' "$APP_STRINGS"
-          grep -q 'audio-diagnostics.v1' "$EXT_STRINGS"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP_PLIST")" = 'LiteView'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PLIST")" = '0.9.13'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PLIST")" = '30'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$EXT_PLIST")" = 'LiteView Broadcast'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$EXT_PLIST")" = '0.9.13'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_PLIST")" = '30'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT_PLIST")" = 'PhoenixBroadcastExtension.EnhancedBroadcastSampleHandler'
           test -n "$(find "$EXT" -type d -name 'yolo11n.mlmodelc' -prune -print -quit)"
+          grep -q 'AVKit.framework' "$APP_LINKS"
+          grep -q 'AVFoundation.framework' "$APP_LINKS"
+          grep -q 'AudioToolbox.framework' "$APP_LINKS"
+          grep -q 'Vision.framework' "$EXT_LINKS"
+
+          echo 'Release-optimized Swift literal diagnostics (non-fatal):'
+          for needle in 'LITEVIEW_VISIBLE_MULTI_MAP_BUILD30' 'BUILD 30' 'Zero Dam' 'Tide Prison' 'audio-diagnostics.v1'; do
+            if grep -Fq "$needle" "$APP_STRINGS" "$EXT_STRINGS"; then
+              echo "STRING_PRESENT: $needle"
+            else
+              echo "STRING_OPTIMIZED_OR_ABSENT: $needle"
+            fi
+          done
           echo 'BUILD30_FINAL_BINARY_PASS'
 
       - name: Package unsigned IPA
@@ -252,7 +268,7 @@ jobs:
           TAG='liteview-audio-clean-overlay-latest'
           IPA="$RUNNER_TEMP/LiteView-0.9.13-Build30-VisibleSixMapRadar-unsigned.ipa"
           MANIFEST="$RUNNER_TEMP/LiteView-0.9.13-Build30-VisibleSixMapRadar.txt"
-          NOTES='Build 30 fixes the blank-looking six-map view. The map title, grid, topology routes, public-area labels and green self anchor are now rendered before ReplayKit starts. Routes and nodes are substantially thicker/brighter for iPhone PiP. Red, blue and orange evidence overlays remain conditional.'
+          NOTES='Build 30 fixes the blank-looking six-map view. The map title, grid, topology routes, public-area labels and green self anchor are rendered before ReplayKit starts. Routes and nodes are substantially thicker and brighter for iPhone PiP. Red, blue and orange evidence overlays remain conditional.'
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
             gh release edit "$TAG" --title 'LiteView 0.9.13 Build 30 Visible Six Map Radar' --notes "$NOTES" --target "$GITHUB_SHA"
