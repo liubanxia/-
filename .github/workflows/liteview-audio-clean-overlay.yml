@@ -134,7 +134,7 @@ jobs:
             -o "$RUNNER_TEMP/liteview-build30-audio"
           "$RUNNER_TEMP/liteview-build30-audio"
 
-      - name: Build unsigned iPhone Release app and tests
+      - name: Build unsigned iPhone Release app and Broadcast Extension
         working-directory: ios/PhoenixRealtimeVisionAssist
         shell: bash
         run: |
@@ -149,7 +149,7 @@ jobs:
             -derivedDataPath "$DERIVED" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            build-for-testing
+            build
 
       - name: Normalize 0.9.13 Build 30 and verify final binaries
         shell: bash
