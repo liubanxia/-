@@ -349,7 +349,8 @@ final class FloatingDotPiPModel: NSObject,
             isStarting = false
             let layerState = displayLayer.superlayer == nil ? "detached" : "attached"
             let mediaState = displayLayer.status == .failed ? "failed" : "ready"
-            lastError = "PIP-E02：等待 3.6 秒仍不可启动（layer=\(layerState), media=\(mediaState), audio=\(audioSessionActive ? \"on\" : \"off\")）。请在系统设置开启自动画中画后重试"
+            let audioState = audioSessionActive ? "on" : "off"
+            lastError = "PIP-E02：等待 3.6 秒仍不可启动（layer=\(layerState), media=\(mediaState), audio=\(audioState)）。请在系统设置开启自动画中画后重试"
             deactivateAudioSession()
             return
         }
