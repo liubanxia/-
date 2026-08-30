@@ -9,8 +9,8 @@ settings:
     IPHONEOS_DEPLOYMENT_TARGET: 17.0
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: ""
-    CURRENT_PROJECT_VERSION: 27
-    MARKETING_VERSION: 0.9.10
+    CURRENT_PROJECT_VERSION: 28
+    MARKETING_VERSION: 0.9.11
 targets:
   PhoenixRealtimeVisionAssist:
     type: application
@@ -20,6 +20,7 @@ targets:
         excludes:
           - RadarPiPController.swift
           - RadarBootstrapLoader.m
+          - FloatingDotPiPController.swift
       - path: Sources/Core
       - path: Sources/Vision
       - path: Sources/Audio
