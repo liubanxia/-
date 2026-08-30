@@ -415,6 +415,24 @@ final class FloatingDotPiPModel: NSObject,
         ) == noErr,
         let sampleBuffer else { return }
 
+        // The display layer has no media timebase tied to CMClockGetHostTimeClock(). Without an
+        // immediate-display attachment, AVSampleBufferDisplayLayer may hold/drop every synthetic
+        // frame and AVKit never makes sample-buffer PiP possible on a physical device.
+        if let attachments = CMSampleBufferGetSampleAttachmentsArray(
+            sampleBuffer,
+            createIfNecessary: true
+        ), CFArrayGetCount(attachments) > 0 {
+            let dictionary = unsafeBitCast(
+                CFArrayGetValueAtIndex(attachments, 0),
+                to: CFMutableDictionary.self
+            )
+            CFDictionarySetValue(
+                dictionary,
+                Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
+                Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
+            )
+        }
+
         if displayLayer.status == .failed {
             displayLayer.flush()
         }
@@ -959,7 +977,7 @@ struct FloatingDotPiPCard: View {
                 Label("人物标点与预警", systemImage: "pip")
                     .font(.headline)
                 Spacer()
-                Text("Build 25")
+                Text("Build 26")
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
             }
@@ -974,7 +992,7 @@ struct FloatingDotPiPCard: View {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .stroke(Color.white.opacity(0.10), lineWidth: 1)
                 }
-                .accessibilityIdentifier("LITEVIEW_FLOATING_DOTS_BUILD25")
+                .accessibilityIdentifier("LITEVIEW_FLOATING_DOTS_BUILD26")
 
             HStack(spacing: 13) {
                 legend(color: .red, text: "人物")
