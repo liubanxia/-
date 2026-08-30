@@ -162,6 +162,7 @@ final class FloatingDotPiPModel: NSObject,
     @Published private(set) var lastBackgroundRenderDelta: UInt64?
     @Published private(set) var lastError: String?
     @Published var vibrationWarningEnabled = true
+    @Published var radarOpacity = 0.65
 
     let displayLayer = AVSampleBufferDisplayLayer()
 
@@ -194,12 +195,7 @@ final class FloatingDotPiPModel: NSObject,
         super.init()
 
         displayLayer.videoGravity = .resizeAspect
-        displayLayer.backgroundColor = UIColor(
-            red: 0.025,
-            green: 0.03,
-            blue: 0.04,
-            alpha: 1
-        ).cgColor
+        displayLayer.backgroundColor = UIColor.clear.cgColor
         configurePixelBufferPool()
 
     }
@@ -297,9 +293,8 @@ final class FloatingDotPiPModel: NSObject,
         testStartedUptime = now
         testEndsUptime = now + 8
         isTestActive = true
-        setLiveStatus("测试中：应看到红点、蓝点、红色边框、橙色声音方向和一次震动")
+        setLiveStatus("测试中：应看到中心绿点、移动红蓝点、红色边框和橙色声音方向")
         start()
-        triggerVibration(at: now, force: true)
         renderFrame()
         startPictureInPictureIfPossible()
     }
@@ -496,7 +491,10 @@ final class FloatingDotPiPModel: NSObject,
 
         updatePrediction(snapshot: snapshot, now: now)
         let hasDetectedTarget = snapshot.targetCount > 0
-        updateVisionWarning(hasTarget: hasDetectedTarget, at: now)
+        let hasConfirmedTarget = hasDetectedTarget
+            && snapshot.primaryTarget != nil
+            && snapshot.stableTargetFrameCount >= 2
+        updateVisionWarning(hasTarget: hasConfirmedTarget, at: now)
 
         switch snapshot.visionPipelineStage {
         case .waitingForFrames:
@@ -587,10 +585,8 @@ final class FloatingDotPiPModel: NSObject,
             setSoundStatus("声音预警：广播已经停止")
         }
 
-        guard lastAudioAnalysisCount != audio.analysisCount else { return }
-        lastAudioAnalysisCount = audio.analysisCount
-        if audio.active, audio.ageSeconds <= 2, audio.transient {
-            triggerVibration(at: now)
+        if lastAudioAnalysisCount != audio.analysisCount {
+            lastAudioAnalysisCount = audio.analysisCount
         }
     }
 
@@ -600,9 +596,9 @@ final class FloatingDotPiPModel: NSObject,
         triggerVibration(at: now)
     }
 
-    private func triggerVibration(at now: TimeInterval, force: Bool = false) {
+    private func triggerVibration(at now: TimeInterval) {
         guard vibrationWarningEnabled else { return }
-        guard force || now - lastWarningUptime >= 2.5 else { return }
+        guard now - lastWarningUptime >= 2.5 else { return }
         lastWarningUptime = now
         AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
     }
@@ -682,8 +678,8 @@ final class FloatingDotPiPModel: NSObject,
         ]
         let pixelAttributes: [CFString: Any] = [
             kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
-            kCVPixelBufferWidthKey: 320,
-            kCVPixelBufferHeightKey: 180,
+            kCVPixelBufferWidthKey: 240,
+            kCVPixelBufferHeightKey: 240,
             kCVPixelBufferCGImageCompatibilityKey: true,
             kCVPixelBufferCGBitmapContextCompatibilityKey: true,
             kCVPixelBufferIOSurfacePropertiesKey: [:]
@@ -730,22 +726,41 @@ final class FloatingDotPiPModel: NSObject,
                 CGImageAlphaInfo.premultipliedFirst.rawValue
         ) else { return nil }
 
-        context.setFillColor(UIColor(red: 0.025, green: 0.03, blue: 0.04, alpha: 1).cgColor)
-        context.fill(CGRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight))
+        context.clear(CGRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight))
+
+        let radarInset: CGFloat = 6
+        let radarRect = CGRect(
+            x: radarInset,
+            y: radarInset,
+            width: canvasWidth - radarInset * 2,
+            height: canvasHeight - radarInset * 2
+        )
+        context.setFillColor(
+            UIColor(
+                red: 0.018,
+                green: 0.024,
+                blue: 0.032,
+                alpha: min(max(radarOpacity, 0.50), 0.75)
+            ).cgColor
+        )
+        context.fillEllipse(in: radarRect)
+        drawRadarGrid(in: context, radarRect: radarRect)
 
         context.setFillColor(frame.state.color.withAlphaComponent(0.92).cgColor)
-        context.fill(CGRect(x: 0, y: 0, width: canvasWidth, height: 4))
+        context.fill(
+            CGRect(x: canvasWidth * 0.30, y: canvasHeight - 10, width: canvasWidth * 0.40, height: 3)
+        )
         drawStatusCode(frame.state.code, in: context)
 
         if frame.visionAlert {
             let alpha: CGFloat = frame.pulseOn ? 0.95 : 0.42
             context.setStrokeColor(UIColor.systemRed.withAlphaComponent(alpha).cgColor)
             context.setLineWidth(frame.pulseOn ? 3 : 1.5)
-            context.stroke(
-                CGRect(x: 2, y: 2, width: canvasWidth - 4, height: canvasHeight - 4)
-            )
+            context.strokeEllipse(in: radarRect.insetBy(dx: 1.5, dy: 1.5))
             drawWarningSymbol(in: context, height: height, pulseOn: frame.pulseOn)
         }
+
+        drawOwnCenterPoint(in: context, width: width, height: height)
 
         if let observed = frame.observed {
             drawDot(
@@ -789,9 +804,10 @@ final class FloatingDotPiPModel: NSObject,
     ) {
         // The detector uses top-to-bottom normalized y. This raw Core Graphics bitmap uses
         // bottom-to-top y, so convert exactly once here.
+        let radarSpan = CGFloat(min(width, height)) - 24
         let center = CGPoint(
-            x: CGFloat(point.x) * CGFloat(width),
-            y: (1 - CGFloat(point.y)) * CGFloat(height)
+            x: CGFloat(width) * 0.5 + (CGFloat(point.x) - 0.5) * radarSpan,
+            y: CGFloat(height) * 0.5 + (0.5 - CGFloat(point.y)) * radarSpan
         )
         let halo = CGRect(
             x: center.x - haloDiameter / 2,
@@ -814,6 +830,34 @@ final class FloatingDotPiPModel: NSObject,
         context.setStrokeColor(UIColor.white.withAlphaComponent(0.88).cgColor)
         context.setLineWidth(0.8)
         context.strokeEllipse(in: dot)
+    }
+
+    private func drawOwnCenterPoint(in context: CGContext, width: Int, height: Int) {
+        let center = CGPoint(x: CGFloat(width) * 0.5, y: CGFloat(height) * 0.5)
+        let halo = CGRect(x: center.x - 7, y: center.y - 7, width: 14, height: 14)
+        context.setStrokeColor(UIColor.systemGreen.withAlphaComponent(0.42).cgColor)
+        context.setLineWidth(1)
+        context.strokeEllipse(in: halo)
+
+        let dot = CGRect(x: center.x - 3, y: center.y - 3, width: 6, height: 6)
+        context.setFillColor(UIColor.systemGreen.cgColor)
+        context.fillEllipse(in: dot)
+        context.setStrokeColor(UIColor.white.withAlphaComponent(0.86).cgColor)
+        context.setLineWidth(0.7)
+        context.strokeEllipse(in: dot)
+    }
+
+    private func drawRadarGrid(in context: CGContext, radarRect: CGRect) {
+        let center = CGPoint(x: radarRect.midX, y: radarRect.midY)
+        context.setStrokeColor(UIColor.white.withAlphaComponent(0.13).cgColor)
+        context.setLineWidth(0.7)
+        context.strokeEllipse(in: radarRect.insetBy(dx: 1, dy: 1))
+        context.strokeEllipse(in: radarRect.insetBy(dx: radarRect.width * 0.25, dy: radarRect.height * 0.25))
+        context.move(to: CGPoint(x: center.x, y: radarRect.minY + 5))
+        context.addLine(to: CGPoint(x: center.x, y: radarRect.maxY - 5))
+        context.move(to: CGPoint(x: radarRect.minX + 5, y: center.y))
+        context.addLine(to: CGPoint(x: radarRect.maxX - 5, y: center.y))
+        context.strokePath()
     }
 
     private func drawWarningSymbol(
@@ -977,28 +1021,40 @@ struct FloatingDotPiPCard: View {
                 Label("人物标点与预警", systemImage: "pip")
                     .font(.headline)
                 Spacer()
-                Text("Build 26")
+                Text("Build 27")
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
             }
 
             FloatingDotPreview(model: model)
-                .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                .aspectRatio(1, contentMode: .fit)
                 .frame(maxWidth: .infinity)
-                .frame(maxHeight: 180)
-                .background(Color.black)
+                .frame(maxHeight: 240)
+                .background(Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .stroke(Color.white.opacity(0.10), lineWidth: 1)
                 }
-                .accessibilityIdentifier("LITEVIEW_FLOATING_DOTS_BUILD26")
+                .accessibilityIdentifier("LITEVIEW_FLOATING_DOTS_BUILD27")
 
             HStack(spacing: 13) {
+                legend(color: .green, text: "自己")
                 legend(color: .red, text: "人物")
                 legend(color: .blue, text: "预判")
-                legend(color: .orange, text: "声音方向")
             }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("雷达背景透明度")
+                    Spacer()
+                    Text("\(Int(model.radarOpacity * 100))%")
+                        .monospacedDigit()
+                }
+                Slider(value: $model.radarOpacity, in: 0.50...0.75, step: 0.05)
+                    .onChange(of: model.radarOpacity) { _, _ in model.start() }
+            }
+            .font(.caption)
 
             Button(action: model.togglePictureInPicture) {
                 Label(
@@ -1014,7 +1070,7 @@ struct FloatingDotPiPCard: View {
                 .buttonStyle(.bordered)
                 .frame(maxWidth: .infinity)
 
-            Toggle("人物或强瞬态出现时震动预警", isOn: $model.vibrationWarningEnabled)
+            Toggle("确认人物首次出现时震动预警", isOn: $model.vibrationWarningEnabled)
                 .font(.caption)
 
             Text(model.liveStatusText)
@@ -1064,7 +1120,8 @@ fileprivate final class FloatingDotPreviewHostView: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = .black
+        backgroundColor = .clear
+        isOpaque = false
     }
 
     required init?(coder: NSCoder) {
