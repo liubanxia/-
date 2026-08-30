@@ -170,11 +170,15 @@ jobs:
           EXT_PLIST="$EXT/Info.plist"
           APP_BIN="$APP/PhoenixRealtimeVisionAssist"
           EXT_BIN="$EXT/PhoenixBroadcastExtension"
+          APP_STRINGS="$RUNNER_TEMP/liteview-build23-app-strings.txt"
+          EXT_STRINGS="$RUNNER_TEMP/liteview-build23-extension-strings.txt"
 
           test -d "$APP"
           test -d "$EXT"
           test -x "$APP_BIN"
           test -x "$EXT_BIN"
+          strings "$APP_BIN" > "$APP_STRINGS"
+          strings "$EXT_BIN" > "$EXT_STRINGS"
 
           set_plist_string() {
             local plist="$1" key="$2" value="$3"
@@ -191,13 +195,13 @@ jobs:
 
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT_PLIST")" = 'PhoenixBroadcastExtension.EnhancedBroadcastSampleHandler'
           test -n "$(find "$EXT" -type d -name 'yolo11n.mlmodelc' -prune -print -quit)"
-          strings "$EXT_BIN" | grep -q 'audio-diagnostics.v1'
-          strings "$EXT_BIN" | grep -q 'device-acceptance.v1'
-          strings "$APP_BIN" | grep -q 'device-acceptance.v1'
-          strings "$APP_BIN" | grep -q 'FloatingDotPiPModel'
-          strings "$APP_BIN" | grep -q 'LITEVIEW_FLOATING_DOTS_BUILD23'
-          ! strings "$APP_BIN" | grep -q 'LiteViewRadarBootstrap'
-          ! strings "$APP_BIN" | grep -q '开启游戏雷达'
+          grep -q 'audio-diagnostics.v1' "$EXT_STRINGS"
+          grep -q 'device-acceptance.v1' "$EXT_STRINGS"
+          grep -q 'device-acceptance.v1' "$APP_STRINGS"
+          grep -q 'FloatingDotPiPModel' "$APP_STRINGS"
+          grep -q 'LITEVIEW_FLOATING_DOTS_BUILD23' "$APP_STRINGS"
+          ! grep -q 'LiteViewRadarBootstrap' "$APP_STRINGS"
+          ! grep -q '开启游戏雷达' "$APP_STRINGS"
           ! /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "$APP_PLIST" >/dev/null 2>&1
           echo 'FINAL_BINARY_VERIFICATION_PASS'
 
