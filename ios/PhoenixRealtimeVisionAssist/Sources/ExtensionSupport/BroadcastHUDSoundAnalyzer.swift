@@ -5,12 +5,8 @@ import Foundation
 import ImageIO
 import ReplayKit
 
-/// Detects the mobile game's screen-visible sound indicators in the compass/HUD band.
-///
-/// This is intentionally UI-only. It reads rendered ReplayKit pixels, not game memory or hidden
-/// state. Red/white soundwave glyphs are grouped by horizontal location; glyph size is used only
-/// as a coarse proximity cue. A vertical asymmetry around a glyph is treated as a weak up/down
-/// arrow cue and requires extra confidence before publication.
+/// Stability-first recognition of screen-visible mobile sound indicators.
+/// Raw color/shape candidates must persist across frames before publication.
 final class BroadcastHUDSoundAnalyzer {
     private struct PixelCluster {
         var minX: Int
@@ -29,11 +25,23 @@ final class BroadcastHUDSoundAnalyzer {
         var centerY: Double { Double(minY + maxY) * 0.5 }
     }
 
+    private struct CueTrack {
+        var kind: HUDSoundKind
+        var lateral: Double
+        var proximity: Double
+        var confidence: Double
+        var hits: Int
+        var verticalCue: Int
+        var verticalHits: Int
+        var lastSeen: TimeInterval
+    }
+
     private let publisher = HUDSoundStatePublisher()
     private let preprocessor: BroadcastFramePreprocessor?
     private let lock = NSLock()
     private var lastAnalysisUptime: TimeInterval = 0
     private var active = false
+    private var tracks: [CueTrack] = []
 
     init() {
         preprocessor = try? BroadcastFramePreprocessor(side: 384)
@@ -43,6 +51,7 @@ final class BroadcastHUDSoundAnalyzer {
         lock.lock()
         lastAnalysisUptime = 0
         active = true
+        tracks = []
         lock.unlock()
         publisher.clear()
     }
@@ -50,6 +59,7 @@ final class BroadcastHUDSoundAnalyzer {
     func finish() {
         lock.lock()
         active = false
+        tracks = []
         lock.unlock()
         publisher.clear()
     }
@@ -68,8 +78,6 @@ final class BroadcastHUDSoundAnalyzer {
               let preprocessor else { return }
 
         let orientation = videoOrientation(of: sampleBuffer)
-        // Top-center HUD band. The ROI intentionally includes the compass and the soundwave row;
-        // downstream geometry filters reject narrow compass ticks/digits.
         let roi = CGRect(x: 0.06, y: 0.70, width: 0.88, height: 0.29)
         do {
             _ = try preprocessor.preprocess(
@@ -81,8 +89,90 @@ final class BroadcastHUDSoundAnalyzer {
             return
         }
 
-        let evidence = analyzePreparedBuffer(preprocessor.modelInput)
-        publisher.publish(evidence, timestamp: now)
+        let raw = analyzePreparedBuffer(preprocessor.modelInput)
+        let stable = stabilize(raw, at: now)
+        publisher.publish(stable, timestamp: now)
+    }
+
+    private func stabilize(
+        _ raw: [SharedHUDSoundEvidence],
+        at now: TimeInterval
+    ) -> [SharedHUDSoundEvidence] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        tracks = tracks.filter { now - $0.lastSeen <= 0.42 }
+        var touched = Set<Int>()
+
+        for cue in raw.sorted(by: { $0.confidence > $1.confidence }) {
+            var bestIndex: Int?
+            var bestDistance = Double.greatestFiniteMagnitude
+            for index in tracks.indices where !touched.contains(index) {
+                guard tracks[index].kind == cue.kind else { continue }
+                let distance = abs(tracks[index].lateral - cue.lateral)
+                guard distance <= 0.20, distance < bestDistance else { continue }
+                bestDistance = distance
+                bestIndex = index
+            }
+
+            if let index = bestIndex {
+                var track = tracks[index]
+                track.lateral = track.lateral * 0.62 + cue.lateral * 0.38
+                track.proximity = track.proximity * 0.58 + cue.proximity * 0.42
+                track.confidence = min(1, track.confidence * 0.52 + cue.confidence * 0.48)
+                track.hits = min(track.hits + 1, 8)
+                if cue.verticalCue != 0, cue.verticalCue == track.verticalCue {
+                    track.verticalHits = min(track.verticalHits + 1, 8)
+                } else if cue.verticalCue != 0 {
+                    track.verticalCue = cue.verticalCue
+                    track.verticalHits = 1
+                } else {
+                    track.verticalHits = max(track.verticalHits - 1, 0)
+                    if track.verticalHits == 0 { track.verticalCue = 0 }
+                }
+                track.lastSeen = now
+                tracks[index] = track
+                touched.insert(index)
+            } else {
+                tracks.append(
+                    CueTrack(
+                        kind: cue.kind,
+                        lateral: cue.lateral,
+                        proximity: cue.proximity,
+                        confidence: cue.confidence,
+                        hits: 1,
+                        verticalCue: cue.verticalCue,
+                        verticalHits: cue.verticalCue == 0 ? 0 : 1,
+                        lastSeen: now
+                    )
+                )
+                touched.insert(tracks.count - 1)
+            }
+        }
+
+        let stableTracks = tracks.filter {
+            now - $0.lastSeen <= 0.18
+                && $0.hits >= 2
+                && $0.confidence >= 0.42
+        }
+
+        return stableTracks
+            .sorted { lhs, rhs in
+                if lhs.hits != rhs.hits { return lhs.hits > rhs.hits }
+                return lhs.confidence > rhs.confidence
+            }
+            .prefix(HUDSoundStatePublisher.slotCount)
+            .map { track in
+                SharedHUDSoundEvidence(
+                    lateral: track.lateral,
+                    proximity: track.proximity,
+                    verticalCue: track.verticalHits >= 2 && track.confidence >= 0.58
+                        ? track.verticalCue
+                        : 0,
+                    kind: track.kind,
+                    confidence: min(1, track.confidence + min(Double(track.hits - 2) * 0.035, 0.12))
+                )
+            }
     }
 
     private func analyzePreparedBuffer(_ buffer: CVPixelBuffer) -> [SharedHUDSoundEvidence] {
@@ -116,13 +206,13 @@ final class BroadcastHUDSoundAnalyzer {
                 let minC = min(r, min(g, b))
                 let saturation = maxC - minC
 
-                let isRed = r >= 150
-                    && r >= g + 34
-                    && r >= b + 26
-                    && saturation >= 42
-                let isWhite = maxC >= 176
-                    && minC >= 128
-                    && saturation <= 58
+                let isRed = r >= 158
+                    && r >= g + 40
+                    && r >= b + 32
+                    && saturation >= 48
+                let isWhite = maxC >= 188
+                    && minC >= 142
+                    && saturation <= 48
 
                 let index = y * width + x
                 if isRed { redMask[index] = true }
@@ -141,13 +231,12 @@ final class BroadcastHUDSoundAnalyzer {
             let w = cluster.width
             let h = cluster.height
             let area = cluster.pixelCount
-            // Soundwave glyphs are broader than compass digits/ticks. The loose height range also
-            // keeps compact arrow/sound combinations.
-            guard w >= 16, w <= 150,
-                  h >= 3, h <= 58,
-                  area >= 20, area <= 2200 else { return false }
+            guard w >= 18, w <= 145,
+                  h >= 4, h <= 54,
+                  area >= 24, area <= 2100 else { return false }
             let aspect = Double(w) / Double(max(h, 1))
-            return aspect >= 1.15 && aspect <= 18
+            let density = Double(area) / Double(max(w * h, 1))
+            return aspect >= 1.30 && aspect <= 15 && density >= 0.085
         }
 
         let merged = mergeNearby(filtered, width: width)
@@ -155,7 +244,7 @@ final class BroadcastHUDSoundAnalyzer {
             .map { cluster, kind in
                 makeEvidence(cluster: cluster, kind: kind, canvasWidth: width, canvasHeight: height)
             }
-            .filter { $0.confidence >= 0.20 }
+            .filter { $0.confidence >= 0.30 }
             .sorted { $0.confidence > $1.confidence }
             .prefix(HUDSoundStatePublisher.slotCount)
             .map { $0 }
@@ -198,7 +287,7 @@ final class BroadcastHUDSoundAnalyzer {
                 }
             }
 
-            guard pixels.count >= 5 else { continue }
+            guard pixels.count >= 6 else { continue }
             var minX = width
             var maxX = 0
             var minY = height
@@ -241,9 +330,9 @@ final class BroadcastHUDSoundAnalyzer {
         var output: [(PixelCluster, HUDSoundKind)] = []
 
         for item in sorted {
-            if var last = output.last,
-               abs(last.0.centerX - item.0.centerX) <= Double(width) * 0.055,
-               abs(last.0.centerY - item.0.centerY) <= 36 {
+            if let last = output.last,
+               abs(last.0.centerX - item.0.centerX) <= Double(width) * 0.050,
+               abs(last.0.centerY - item.0.centerY) <= 32 {
                 output.removeLast()
                 let combined = PixelCluster(
                     minX: min(last.0.minX, item.0.minX),
@@ -283,14 +372,14 @@ final class BroadcastHUDSoundAnalyzer {
         let verticalBalance = Double(cluster.upperCount - cluster.lowerCount)
             / Double(max(cluster.upperCount + cluster.lowerCount, 1))
         let verticalCue: Int
-        if cluster.height >= 12, abs(verticalBalance) >= 0.26 {
+        if cluster.height >= 14, abs(verticalBalance) >= 0.30 {
             verticalCue = verticalBalance > 0 ? 1 : -1
         } else {
             verticalCue = 0
         }
 
-        let sizeConfidence = min(max((Double(cluster.width) - 12) / 55, 0), 1)
-        let densityConfidence = min(max((areaDensity - 0.08) / 0.34, 0), 1)
+        let sizeConfidence = min(max((Double(cluster.width) - 14) / 52, 0), 1)
+        let densityConfidence = min(max((areaDensity - 0.09) / 0.30, 0), 1)
         let centerPenalty = min(abs(lateral) * 0.08, 0.08)
         let colorPurity: Double
         if kind == .gunfire {
@@ -302,10 +391,10 @@ final class BroadcastHUDSoundAnalyzer {
         }
         let confidence = min(
             max(
-                0.25
-                    + sizeConfidence * 0.27
-                    + densityConfidence * 0.23
-                    + colorPurity * 0.25
+                0.18
+                    + sizeConfidence * 0.29
+                    + densityConfidence * 0.26
+                    + colorPurity * 0.27
                     - centerPenalty,
                 0
             ),
