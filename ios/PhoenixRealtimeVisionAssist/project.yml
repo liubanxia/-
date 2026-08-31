@@ -9,8 +9,8 @@ settings:
     IPHONEOS_DEPLOYMENT_TARGET: 17.0
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: ""
-    CURRENT_PROJECT_VERSION: 30
-    MARKETING_VERSION: 0.9.13
+    CURRENT_PROJECT_VERSION: 31
+    MARKETING_VERSION: 0.9.14
 targets:
   PhoenixRealtimeVisionAssist:
     type: application
@@ -23,6 +23,7 @@ targets:
           - FloatingDotPiPController.swift
           - FullMapFloatingRadarController.swift
           - MultiMapFloatingRadarController.swift
+          - VisibleMultiMapRadarController.swift
       - path: Sources/Core
       - path: Sources/Vision
       - path: Sources/Audio
@@ -54,6 +55,7 @@ targets:
       - path: Sources/Broadcast
       - path: Sources/ExtensionSupport
       - path: Sources/Core/SharedRealtimeStateStore.swift
+      - path: Sources/Core/EvidenceStateChannels.swift
       - path: Resources/BroadcastModels
         type: folder
         buildPhase: resources
@@ -86,6 +88,7 @@ targets:
       - path: Sources/Core/RuntimeConfiguration.swift
       - path: Sources/Core/BroadcastLifecycle.swift
       - path: Sources/Core/SharedRealtimeStateStore.swift
+      - path: Sources/Core/EvidenceStateChannels.swift
       - path: Sources/Vision/PhoenixCapabilityModelBank.swift
       - path: Sources/Map
         excludes:
