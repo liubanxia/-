@@ -76,6 +76,8 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         SKIP_INSTALL: YES
         APPLICATION_EXTENSION_API_ONLY: YES
+        SWIFT_COMPILATION_MODE: singlefile
+        SWIFT_OPTIMIZATION_LEVEL: -O
     entitlements:
       path: Config/Broadcast.entitlements
       properties:
