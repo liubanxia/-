@@ -2,7 +2,7 @@ import AudioToolbox
 import CoreMedia
 import Foundation
 
-/// Build 31 stereo spatial cue analyzer.
+/// Build 32 stereo spatial cue analyzer.
 /// Uses inter-channel delay/coherence plus level bias; it never stores PCM history.
 final class BroadcastSpatialAudioAnalyzer {
     private let publisher = SpatialAudioStatePublisher()
@@ -102,10 +102,10 @@ final class BroadcastSpatialAudioAnalyzer {
             guard buffers.count >= 2,
                   let leftData = buffers[0].mData,
                   let rightData = buffers[1].mData else { return }
-            let frameCount = min(
-                maxFrames,
-                min(Int(buffers[0].mDataByteSize), Int(buffers[1].mDataByteSize)) / bytesPerSample
-            )
+            let leftBytes = Int(buffers[0].mDataByteSize)
+            let rightBytes = Int(buffers[1].mDataByteSize)
+            let availableBytes = min(leftBytes, rightBytes)
+            let frameCount = min(maxFrames, availableBytes / bytesPerSample)
             guard frameCount >= 96 else { return }
             for index in 0..<frameCount {
                 left.append(readSample(leftData, index: index, isFloat32: isFloat32))
@@ -114,7 +114,8 @@ final class BroadcastSpatialAudioAnalyzer {
         } else {
             guard let data = buffers[0].mData else { return }
             let frameBytes = bytesPerSample * channels
-            let frameCount = min(maxFrames, Int(buffers[0].mDataByteSize) / max(frameBytes, 1))
+            let byteCount = Int(buffers[0].mDataByteSize)
+            let frameCount = min(maxFrames, byteCount / max(frameBytes, 1))
             guard frameCount >= 96 else { return }
             for frame in 0..<frameCount {
                 let base = frame * channels
@@ -127,18 +128,29 @@ final class BroadcastSpatialAudioAnalyzer {
         removeMean(&right)
         let leftRMS = rms(left)
         let rightRMS = rms(right)
-        let peak = max(peakMagnitude(left), peakMagnitude(right))
-        let maxLag = min(32, max(6, Int((asbd.mSampleRate * 0.00067).rounded())))
-        let correlation = bestNormalizedCorrelation(left: left, right: right, maxLag: maxLag)
+        let leftPeak = peakMagnitude(left)
+        let rightPeak = peakMagnitude(right)
+        let peak = max(leftPeak, rightPeak)
+        let lagWindow = asbd.mSampleRate * 0.00067
+        let roundedLagWindow = Int(lagWindow.rounded())
+        let maxLag = min(32, max(6, roundedLagWindow))
+        let correlation = bestNormalizedCorrelation(
+            left: left,
+            right: right,
+            maxLag: maxLag
+        )
 
-        let levelBias = (rightRMS - leftRMS) / max(leftRMS + rightRMS, 0.000_001)
+        let levelDenominator = max(leftRMS + rightRMS, 0.000_001)
+        let levelBias = (rightRMS - leftRMS) / levelDenominator
         // Positive lag means the right channel best matches a later sample and therefore the
         // acoustic event reached the left channel first. Convert that to negative lateral.
-        let delayBias = -Double(correlation.lag) / Double(max(maxLag, 1))
-        let coherence = min(max(correlation.correlation, 0), 1)
+        let delayDenominator = Double(max(maxLag, 1))
+        let delayBias = -Double(correlation.lag) / delayDenominator
+        let coherence = clamp01(correlation.correlation)
         let delayWeight = 0.30 + 0.50 * coherence
-        let levelWeight = 1 - delayWeight
-        let lateral = min(max(levelBias * levelWeight + delayBias * delayWeight, -1), 1)
+        let levelWeight = 1.0 - delayWeight
+        let rawLateral = levelBias * levelWeight + delayBias * delayWeight
+        let lateral = min(max(rawLateral, -1.0), 1.0)
 
         lock.lock()
         let oldPeak = priorPeak
@@ -146,12 +158,17 @@ final class BroadcastSpatialAudioAnalyzer {
         let isActive = active
         lock.unlock()
 
-        let transient = peak >= 0.028 && peak > max(0.035, oldPeak * 1.45)
-        let energy = min(max((max(leftRMS, rightRMS) - 0.003) / 0.12, 0), 1)
-        let confidence = min(
-            max(coherence * 0.66 + abs(levelBias) * 0.18 + energy * 0.16, 0),
-            1
-        )
+        let transientThreshold = max(0.035, oldPeak * 1.45)
+        let transient = peak >= 0.028 && peak > transientThreshold
+        let rmsPeak = max(leftRMS, rightRMS)
+        let rawEnergy = (rmsPeak - 0.003) / 0.12
+        let energy = clamp01(rawEnergy)
+
+        let coherenceContribution = coherence * 0.66
+        let levelContribution = abs(levelBias) * 0.18
+        let energyContribution = energy * 0.16
+        let rawConfidence = coherenceContribution + levelContribution + energyContribution
+        let confidence = clamp01(rawConfidence)
 
         publisher.publish(
             SharedSpatialAudioEvidence(
@@ -190,7 +207,8 @@ final class BroadcastSpatialAudioAnalyzer {
                 leftEnergy += l * l
                 rightEnergy += r * r
             }
-            let denominator = sqrt(max(leftEnergy * rightEnergy, 0.000_000_001))
+            let energyProduct = leftEnergy * rightEnergy
+            let denominator = sqrt(max(energyProduct, 0.000_000_001))
             let value = dot / denominator
             if value > bestValue {
                 bestValue = value
@@ -202,8 +220,11 @@ final class BroadcastSpatialAudioAnalyzer {
 
     private func removeMean(_ samples: inout [Double]) {
         guard !samples.isEmpty else { return }
-        let mean = samples.reduce(0, +) / Double(samples.count)
-        for index in samples.indices { samples[index] -= mean }
+        let sum = samples.reduce(0, +)
+        let mean = sum / Double(samples.count)
+        for index in samples.indices {
+            samples[index] -= mean
+        }
     }
 
     private func rms(_ samples: [Double]) -> Double {
@@ -217,7 +238,11 @@ final class BroadcastSpatialAudioAnalyzer {
     }
 
     private func peakMagnitude(_ samples: [Double]) -> Double {
-        samples.reduce(0) { max($0, min(abs($1), 1)) }
+        var peak = 0.0
+        for value in samples {
+            peak = max(peak, min(abs(value), 1))
+        }
+        return peak
     }
 
     private func readSample(
@@ -229,7 +254,11 @@ final class BroadcastSpatialAudioAnalyzer {
             let value = data.bindMemory(to: Float.self, capacity: index + 1)[index]
             return value.isFinite ? Double(value) : 0
         }
-        return Double(data.bindMemory(to: Int16.self, capacity: index + 1)[index])
-            / Double(Int16.max)
+        let value = data.bindMemory(to: Int16.self, capacity: index + 1)[index]
+        return Double(value) / Double(Int16.max)
+    }
+
+    private func clamp01(_ value: Double) -> Double {
+        min(max(value, 0), 1)
     }
 }
