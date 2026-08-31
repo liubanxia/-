@@ -39,6 +39,9 @@ targets:
         UILaunchScreen: {}
         UIBackgroundModes:
           - audio
+        NSLocalNetworkUsageDescription: "LiteView uses your local network only to send its own screen-visible radar analysis to your Web Radar device."
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.phoenix.realtimevisionassist
@@ -63,6 +66,9 @@ targets:
       - path: Sources/Core/HUDSoundStateChannel.swift
       - path: Sources/Core/CompassHeadingStateChannel.swift
       - path: Sources/Core/MapLocalizationStateChannel.swift
+      - path: Sources/Core/ContinuousMapPositionStateChannel.swift
+      - path: Sources/Core/MapScreenVisibilityStateChannel.swift
+      - path: Sources/Core/WebRadarConfiguration.swift
       - path: Resources/BroadcastModels
         type: folder
         buildPhase: resources
@@ -71,6 +77,9 @@ targets:
       path: Sources/Broadcast/Info.plist
       properties:
         CFBundleDisplayName: LiteView Broadcast
+        NSLocalNetworkUsageDescription: "LiteView Broadcast uses your local network only to send screen-visible radar analysis to your Web Radar device."
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         NSExtension:
           NSExtensionPointIdentifier: com.apple.broadcast-services-upload
           NSExtensionPrincipalClass: PhoenixBroadcastExtension.EnhancedBroadcastSampleHandler
@@ -101,6 +110,9 @@ targets:
       - path: Sources/Core/HUDSoundStateChannel.swift
       - path: Sources/Core/CompassHeadingStateChannel.swift
       - path: Sources/Core/MapLocalizationStateChannel.swift
+      - path: Sources/Core/ContinuousMapPositionStateChannel.swift
+      - path: Sources/Core/MapScreenVisibilityStateChannel.swift
+      - path: Sources/Core/WebRadarConfiguration.swift
       - path: Sources/Vision/PhoenixCapabilityModelBank.swift
       - path: Sources/Map
         excludes:
