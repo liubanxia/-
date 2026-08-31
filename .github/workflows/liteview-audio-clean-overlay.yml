@@ -1,4 +1,4 @@
-name: LiteView Multiscale Person Recovery Candidate
+name: LiteView Web Radar Candidate
 
 on:
   push:
@@ -6,6 +6,7 @@ on:
       - feature/liteview-audio-clean-overlay
     paths:
       - 'ios/PhoenixRealtimeVisionAssist/**'
+      - 'web/liteview-radar/**'
       - '.github/workflows/liteview-audio-clean-overlay.yml'
   workflow_dispatch:
 
@@ -13,9 +14,9 @@ permissions:
   contents: write
 
 jobs:
-  build-multiscale-person-recovery:
+  build-web-radar-candidate:
     runs-on: macos-15
-    timeout-minutes: 35
+    timeout-minutes: 40
 
     steps:
       - name: Checkout
@@ -37,7 +38,7 @@ jobs:
           MODEL_DIR="$ROOT/Resources/BroadcastModels"
           ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
           UNZIP_DIR="$RUNNER_TEMP/liteview-yolo11n-coreml"
-          COMPILE_DIR="$RUNNER_TEMP/liteview-build37-model"
+          COMPILE_DIR="$RUNNER_TEMP/liteview-build38-model"
           URL='https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
           rm -rf "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
           mkdir -p "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
@@ -50,84 +51,79 @@ jobs:
           test -n "$COMPILED"
           cp -R "$COMPILED" "$MODEL_DIR/yolo11n.mlmodelc"
 
-      - name: Guard Build 37 multiscale person wiring
+      - name: Guard Build 38 Web Radar wiring
         shell: bash
         run: |
           set -euo pipefail
           ROOT='ios/PhoenixRealtimeVisionAssist'
-          PERSON="$ROOT/Sources/ExtensionSupport/MultiScalePersonAnalyzer.swift"
-          MAPOCR="$ROOT/Sources/ExtensionSupport/BroadcastMapLocalizationAnalyzer.swift"
-          COMPASS="$ROOT/Sources/ExtensionSupport/BroadcastCompassHeadingAnalyzer.swift"
-          HUD="$ROOT/Sources/ExtensionSupport/BroadcastHUDSoundAnalyzer.swift"
           HANDLER="$ROOT/Sources/Broadcast/EnhancedBroadcastSampleHandler.swift"
+          BRIDGE="$ROOT/Sources/Broadcast/BroadcastWebRadarBridge.swift"
+          LOCALIZER="$ROOT/Sources/ExtensionSupport/BroadcastContinuousMapLocalizer.swift"
+          FULLMAP="$ROOT/Sources/ExtensionSupport/BroadcastFullMapVisibilityAnalyzer.swift"
           PROJECT="$ROOT/project.yml"
+          SERVER='web/liteview-radar/server.py'
 
-          grep -q 'final class MultiScalePersonAnalyzer' "$PERSON"
-          grep -q 'searchROIs' "$PERSON"
-          grep -q 'CGRect(x: 0.16, y: 0.04, width: 0.68, height: 0.92)' "$PERSON"
-          grep -q 'VNDetectHumanRectanglesRequest' "$PERSON"
-          grep -q 'immediate = track.confidence >= 0.52' "$PERSON"
-          grep -q 'private let multiscalePersonAnalyzer = MultiScalePersonAnalyzer()' "$HANDLER"
-          grep -q 'multiscalePersonAnalyzer.consumeVideo(sampleBuffer)' "$HANDLER"
-          ! grep -q 'visionLifecycle.consumeVideo(sampleBuffer)' "$HANDLER"
-          grep -q 'requiredHits = switching ? 3 : 2' "$MAPOCR"
-          grep -q 'confirmLargeJump' "$COMPASS"
-          grep -q 'verticalHits >= 2' "$HUD"
-          grep -q 'CURRENT_PROJECT_VERSION: 37' "$PROJECT"
-          grep -q 'MARKETING_VERSION: 0.9.20' "$PROJECT"
-          echo 'BUILD37_MULTISCALE_PERSON_GUARD_PASS'
+          grep -q 'BroadcastWebRadarBridge' "$HANDLER"
+          grep -q 'BroadcastContinuousMapLocalizer' "$HANDLER"
+          grep -q 'BroadcastFullMapVisibilityAnalyzer' "$HANDLER"
+          grep -q 'auto-lan-discovery' "$BRIDGE"
+          grep -q 'rawFrameUpload: false' "$BRIDGE"
+          grep -q 'VNGenerateImageFeaturePrintRequest' "$LOCALIZER"
+          grep -q 'matchedPOICount >= 2' "$LOCALIZER"
+          grep -q 'richPOISet' "$FULLMAP"
+          grep -q 'LITEVIEW_RADAR_V1' "$SERVER"
+          grep -q 'CURRENT_PROJECT_VERSION: 38' "$PROJECT"
+          grep -q 'MARKETING_VERSION: 0.9.21' "$PROJECT"
+          echo 'BUILD38_WEB_RADAR_GUARD_PASS'
+
+      - name: Web Radar smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile web/liteview-radar/server.py web/liteview-radar/demo_sender.py
+          (cd web/liteview-radar && python3 server.py --host 127.0.0.1 --port 8765 > "$RUNNER_TEMP/web-radar.log" 2>&1 & echo $! > "$RUNNER_TEMP/web-radar.pid")
+          python3 - <<'PY'
+          import json,time,urllib.request
+          base='http://127.0.0.1:8765'
+          for _ in range(30):
+              try:
+                  with urllib.request.urlopen(base+'/health',timeout=.5) as r: health=json.load(r)
+                  assert health['ok'] and health['discovery']['magic']=='LITEVIEW_RADAR_V1'
+                  break
+              except Exception: time.sleep(.1)
+          else: raise SystemExit('Web Radar relay failed to start')
+          payload={'map':'AZ3','player':{'x':.42,'y':.61,'heading':133,'confidence':.88,'mode':'tracking'},'targets':[{'screenX':.28,'screenY':.55,'confidence':.79,'boxHeight':.11,'stableFrames':3}],'sounds':[{'kind':'footstep','lateral':-.4,'bearing':-36,'proximity':.62,'verticalCue':1,'confidence':.73,'source':'hud'}]}
+          req=urllib.request.Request(base+'/api/state',data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'},method='POST')
+          with urllib.request.urlopen(req,timeout=1) as r: assert json.load(r)['ok']
+          with urllib.request.urlopen(base+'/api/state',timeout=1) as r: state=json.load(r)
+          assert state['map']=='AZ3' and abs(state['player']['x']-.42)<1e-9 and len(state['targets'])==1
+          print('BUILD38_WEB_RADAR_SMOKE_PASS')
+          PY
+          kill "$(cat "$RUNNER_TEMP/web-radar.pid")" >/dev/null 2>&1 || true
 
       - name: Generate project
         working-directory: ios/PhoenixRealtimeVisionAssist
         run: xcodegen generate
 
-      - name: Verify Build 37 target wiring
+      - name: Verify Build 38 target wiring
         shell: bash
         run: |
           set -euo pipefail
           PBX='ios/PhoenixRealtimeVisionAssist/PhoenixRealtimeVisionAssist.xcodeproj/project.pbxproj'
-          grep -q 'AutoCircularMinimapRadarController.swift' "$PBX"
           grep -q 'MultiScalePersonAnalyzer.swift' "$PBX"
-          grep -q 'BroadcastNanoPersonDetector.swift' "$PBX"
-          grep -q 'BroadcastMapLocalizationAnalyzer.swift' "$PBX"
-          grep -q 'BroadcastCompassHeadingAnalyzer.swift' "$PBX"
-          grep -q 'BroadcastHUDSoundAnalyzer.swift' "$PBX"
-          ! grep -q 'EdgeHUDRadarController.swift in Sources' "$PBX"
-          echo 'BUILD37_TARGET_WIRING_PASS'
-
-      - name: Run lifecycle smoke test
-        shell: bash
-        run: |
-          set -euo pipefail
-          ROOT='ios/PhoenixRealtimeVisionAssist'
-          xcrun swiftc \
-            "$ROOT/Sources/Core/SharedRealtimeStateStore.swift" \
-            "$ROOT/Sources/Core/BroadcastLifecycle.swift" \
-            "$ROOT/Sources/Vision/PhoenixCapabilityModelBank.swift" \
-            "$ROOT/scripts/lifecycle_smoke_main.swift" \
-            -o "$RUNNER_TEMP/liteview-build37-lifecycle"
-          "$RUNNER_TEMP/liteview-build37-lifecycle"
-
-      - name: Run synthetic PCM telemetry test
-        shell: bash
-        run: |
-          set -euo pipefail
-          ROOT='ios/PhoenixRealtimeVisionAssist'
-          xcrun swiftc \
-            "$ROOT/Sources/Broadcast/BroadcastAudioTelemetryAnalyzer.swift" \
-            "$ROOT/scripts/audio_synthetic_smoke.swift" \
-            -framework AudioToolbox \
-            -framework CoreMedia \
-            -framework CoreFoundation \
-            -o "$RUNNER_TEMP/liteview-build37-audio"
-          "$RUNNER_TEMP/liteview-build37-audio"
+          grep -q 'BroadcastWebRadarBridge.swift' "$PBX"
+          grep -q 'BroadcastContinuousMapLocalizer.swift' "$PBX"
+          grep -q 'BroadcastFullMapVisibilityAnalyzer.swift' "$PBX"
+          grep -q 'ContinuousMapPositionStateChannel.swift' "$PBX"
+          grep -q 'MapScreenVisibilityStateChannel.swift' "$PBX"
+          echo 'BUILD38_TARGET_WIRING_PASS'
 
       - name: Build unsigned iPhone Release app and Broadcast Extension
         working-directory: ios/PhoenixRealtimeVisionAssist
         shell: bash
         run: |
           set -euo pipefail
-          DERIVED="$RUNNER_TEMP/LiteViewBuild37DerivedData"
+          DERIVED="$RUNNER_TEMP/LiteViewBuild38DerivedData"
           rm -rf "$DERIVED"
           xcodebuild \
             -project PhoenixRealtimeVisionAssist.xcodeproj \
@@ -139,88 +135,87 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build
 
-      - name: Normalize 0.9.20 Build 37 and verify final binaries
+      - name: Normalize Build 38 and verify final binaries
         shell: bash
         run: |
           set -euo pipefail
-          PRODUCTS="$RUNNER_TEMP/LiteViewBuild37DerivedData/Build/Products/Release-iphoneos"
+          PRODUCTS="$RUNNER_TEMP/LiteViewBuild38DerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
           EXT="$APP/PlugIns/PhoenixBroadcastExtension.appex"
           APP_PLIST="$APP/Info.plist"
           EXT_PLIST="$EXT/Info.plist"
           APP_BIN="$APP/PhoenixRealtimeVisionAssist"
           EXT_BIN="$EXT/PhoenixBroadcastExtension"
-          APP_LINKS="$RUNNER_TEMP/build37-app-links.txt"
-          EXT_LINKS="$RUNNER_TEMP/build37-ext-links.txt"
           test -d "$APP" && test -d "$EXT" && test -x "$APP_BIN" && test -x "$EXT_BIN"
-          otool -L "$APP_BIN" > "$APP_LINKS"
-          otool -L "$EXT_BIN" > "$EXT_LINKS"
 
           set_plist_string() {
             local plist="$1" key="$2" value="$3"
-            /usr/libexec/PlistBuddy -c "Set :$key $value" "$plist" >/dev/null 2>&1 || \
-              /usr/libexec/PlistBuddy -c "Add :$key string $value" "$plist"
+            /usr/libexec/PlistBuddy -c "Set :$key $value" "$plist" >/dev/null 2>&1 || /usr/libexec/PlistBuddy -c "Add :$key string $value" "$plist"
           }
           set_plist_string "$APP_PLIST" CFBundleDisplayName LiteView
-          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.20
-          set_plist_string "$APP_PLIST" CFBundleVersion 37
+          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.21
+          set_plist_string "$APP_PLIST" CFBundleVersion 38
           set_plist_string "$EXT_PLIST" CFBundleDisplayName 'LiteView Broadcast'
-          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.20
-          set_plist_string "$EXT_PLIST" CFBundleVersion 37
+          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.21
+          set_plist_string "$EXT_PLIST" CFBundleVersion 38
 
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PLIST")" = '37'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_PLIST")" = '37'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PLIST")" = '38'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_PLIST")" = '38'
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT_PLIST")" = 'PhoenixBroadcastExtension.EnhancedBroadcastSampleHandler'
           test -n "$(find "$EXT" -type d -name 'yolo11n.mlmodelc' -prune -print -quit)"
-          grep -q 'AVKit.framework' "$APP_LINKS"
-          grep -q 'AVFoundation.framework' "$APP_LINKS"
-          grep -q 'Vision.framework' "$EXT_LINKS"
-          echo 'BUILD37_FINAL_BINARY_PASS'
+          /usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$EXT_PLIST" | grep -q 'Web Radar'
+          /usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity:NSAllowsLocalNetworking' "$EXT_PLIST" | grep -q 'true'
+          otool -L "$EXT_BIN" | grep -q 'Network.framework'
+          echo 'BUILD38_FINAL_BINARY_PASS'
 
-      - name: Package unsigned IPA
+      - name: Package unsigned IPA and Web Radar bundle
         shell: bash
         run: |
           set -euo pipefail
-          PRODUCTS="$RUNNER_TEMP/LiteViewBuild37DerivedData/Build/Products/Release-iphoneos"
+          PRODUCTS="$RUNNER_TEMP/LiteViewBuild38DerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
-          ROOT="$RUNNER_TEMP/LiteViewBuild37Package"
-          IPA="$RUNNER_TEMP/LiteView-0.9.20-Build37-MultiscalePersonRecovery-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.20-Build37-MultiscalePersonRecovery.txt"
-          rm -rf "$ROOT" "$IPA" "$MANIFEST"
+          ROOT="$RUNNER_TEMP/LiteViewBuild38Package"
+          IPA="$RUNNER_TEMP/LiteView-0.9.21-Build38-WebRadar-unsigned.ipa"
+          WEBZIP="$RUNNER_TEMP/LiteView-WebRadar-0.9.21-Build38.zip"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.21-Build38-WebRadar.txt"
+          rm -rf "$ROOT" "$IPA" "$WEBZIP" "$MANIFEST"
           mkdir -p "$ROOT/Payload"
           cp -R "$APP" "$ROOT/Payload/"
           (cd "$ROOT" && /usr/bin/zip -qry "$IPA" Payload)
-          test -s "$IPA"
-          SIZE="$(stat -f%z "$IPA")"
-          SHA="$(shasum -a 256 "$IPA" | awk '{print $1}')"
+          (cd web && /usr/bin/zip -qry "$WEBZIP" liteview-radar)
+          test -s "$IPA" && test -s "$WEBZIP"
+          IPA_SIZE="$(stat -f%z "$IPA")"
+          IPA_SHA="$(shasum -a 256 "$IPA" | awk '{print $1}')"
+          WEB_SIZE="$(stat -f%z "$WEBZIP")"
+          WEB_SHA="$(shasum -a 256 "$WEBZIP" | awk '{print $1}')"
           cat > "$MANIFEST" <<EOF
-          LiteView 0.9.20 Build 37 Multiscale Person Recovery
+          LiteView 0.9.21 Build 38 Web Radar
           commit=${GITHUB_SHA}
-          version=0.9.20
-          build=37
-          ipa_size_bytes=${SIZE}
-          ipa_sha256=${SHA}
-          visible_people=alternating full/center/left/right CoreML ROIs with sparse Vision human fallback
-          person_warning=high-confidence fresh hit may warn immediately; weaker targets require persistence
-          map_poi=stability-first OCR coarse localization retained
-          continuous_exact_map_position=not claimed; requires minimap background/reference registration
-          compass=large-jump two-sample confirmation retained
-          hud_sound=two-frame cue tracking retained
+          version=0.9.21
+          build=38
+          ipa_size_bytes=${IPA_SIZE}
+          ipa_sha256=${IPA_SHA}
+          web_zip_size_bytes=${WEB_SIZE}
+          web_zip_sha256=${WEB_SHA}
+          transport=Broadcast Extension compact JSON -> LAN HTTP POST -> SSE browser
+          discovery=automatic UDP LITEVIEW_RADAR_V1 beacon on port 8766
+          az3_reference=screen-visible full-map feature-print grid, memory only
+          continuous_position=published only after confidence-gated minimap/reference match
+          raw_video_upload=false
           hidden_game_state=none
           memory_access=none
-          signing=unsigned; preserve PlugIns when re-signing
+          signing=unsigned; preserve PlugIns/PhoenixBroadcastExtension.appex when re-signing
           EOF
-          echo "IPA_SIZE_BYTES=$SIZE"
-          echo "IPA_SHA256=$SHA"
           cat "$MANIFEST"
 
       - name: Upload candidate artifact
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-multiscale-person-recovery-0.9.20-build37
+          name: liteview-web-radar-0.9.21-build38
           path: |
-            ${{ runner.temp }}/LiteView-0.9.20-Build37-MultiscalePersonRecovery-unsigned.ipa
-            ${{ runner.temp }}/LiteView-0.9.20-Build37-MultiscalePersonRecovery.txt
+            ${{ runner.temp }}/LiteView-0.9.21-Build38-WebRadar-unsigned.ipa
+            ${{ runner.temp }}/LiteView-WebRadar-0.9.21-Build38.zip
+            ${{ runner.temp }}/LiteView-0.9.21-Build38-WebRadar.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -231,15 +226,13 @@ jobs:
         run: |
           set -euo pipefail
           TAG='liteview-audio-clean-overlay-latest'
-          IPA="$RUNNER_TEMP/LiteView-0.9.20-Build37-MultiscalePersonRecovery-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.20-Build37-MultiscalePersonRecovery.txt"
-          NOTES='Build 37 replaces the full-frame-only person path with a multiscale screen-visible analyzer. It alternates whole-screen and enlarged center/left/right ROIs so distant mobile-game characters occupy more model pixels, uses a sparse Vision human fallback when Core ML has no recent target, and allows a very strong fresh target to trigger warning immediately while weaker candidates still require temporal persistence. Map/POI OCR remains automatic coarse localization; exact continuous position is not falsely claimed without minimap reference registration.'
+          IPA="$RUNNER_TEMP/LiteView-0.9.21-Build38-WebRadar-unsigned.ipa"
+          WEBZIP="$RUNNER_TEMP/LiteView-WebRadar-0.9.21-Build38.zip"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.21-Build38-WebRadar.txt"
+          NOTES='Build 38 adds the first real Web Radar data path. The Broadcast Extension sends only LiteView screen-visible/person/HUD-sound/compass/map evidence as compact LAN JSON. The Python relay advertises itself on the LAN so the extension can auto-discover it, then browsers receive state over SSE. For AZ3 self-localization, opening the normal full-map screen can create an in-memory Vision feature-print reference grid; later minimap matches publish continuous normalized x/y only when distance and best-vs-second-best confidence gates pass. Ambiguous registration publishes no position rather than a fake coordinate. No raw frames are uploaded and no game process memory is read.'
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
-            gh release edit "$TAG" --title 'LiteView 0.9.20 Build 37 Multiscale Person Recovery' --notes "$NOTES" --target "$GITHUB_SHA"
+            gh release upload "$TAG" "$IPA" "$WEBZIP" "$MANIFEST" --clobber
+            gh release edit "$TAG" --title 'LiteView 0.9.21 Build 38 Web Radar' --notes "$NOTES" --target "$GITHUB_SHA"
           else
-            gh release create "$TAG" "$IPA" "$MANIFEST" \
-              --target "$GITHUB_SHA" \
-              --title 'LiteView 0.9.20 Build 37 Multiscale Person Recovery' \
-              --notes "$NOTES"
+            gh release create "$TAG" "$IPA" "$WEBZIP" "$MANIFEST" --target "$GITHUB_SHA" --title 'LiteView 0.9.21 Build 38 Web Radar' --notes "$NOTES"
           fi
