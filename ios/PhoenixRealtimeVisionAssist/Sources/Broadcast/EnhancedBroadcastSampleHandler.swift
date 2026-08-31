@@ -1,28 +1,33 @@
 import Foundation
 import ReplayKit
 
-/// ReplayKit entry point that preserves the validated video pipeline and adds real `.audioApp`
-/// diagnostics without changing the stable vision analyzer implementation.
+/// Build 31 ReplayKit entry point.
+/// Video uses the faster multi-target evidence processor. App audio is analyzed twice:
+/// legacy aggregate telemetry remains for diagnostics while the spatial path publishes
+/// inter-channel delay/coherence cues. Microphone audio is intentionally ignored.
 final class EnhancedBroadcastSampleHandler: RPBroadcastSampleHandler {
-    private let visionHandler = BroadcastSampleHandler()
-    private let audioAnalyzer = BroadcastAudioTelemetryAnalyzer()
+    private let visionProcessor = EvidenceFirstVideoProcessor()
+    private let audioDiagnostics = BroadcastAudioTelemetryAnalyzer()
+    private let spatialAudio = BroadcastSpatialAudioAnalyzer()
 
     override func broadcastStarted(withSetupInfo setupInfo: [String: NSObject]?) {
-        audioAnalyzer.reset()
-        visionHandler.broadcastStarted(withSetupInfo: setupInfo)
+        audioDiagnostics.reset()
+        spatialAudio.reset()
+        visionProcessor.start()
     }
 
     override func broadcastPaused() {
-        visionHandler.broadcastPaused()
+        visionProcessor.pause()
     }
 
     override func broadcastResumed() {
-        visionHandler.broadcastResumed()
+        visionProcessor.resume()
     }
 
     override func broadcastFinished() {
-        audioAnalyzer.finish()
-        visionHandler.broadcastFinished()
+        spatialAudio.finish()
+        audioDiagnostics.finish()
+        visionProcessor.finish()
     }
 
     override func processSampleBuffer(
@@ -31,12 +36,11 @@ final class EnhancedBroadcastSampleHandler: RPBroadcastSampleHandler {
     ) {
         switch sampleBufferType {
         case .video:
-            visionHandler.processSampleBuffer(sampleBuffer, with: .video)
+            visionProcessor.consumeVideo(sampleBuffer)
         case .audioApp:
-            audioAnalyzer.consume(sampleBuffer)
+            audioDiagnostics.consume(sampleBuffer)
+            spatialAudio.consume(sampleBuffer)
         case .audioMic:
-            // Microphone audio is intentionally ignored. LiteView only diagnoses the app/game
-            // audio stream and never records or persists microphone content.
             break
         @unknown default:
             break
