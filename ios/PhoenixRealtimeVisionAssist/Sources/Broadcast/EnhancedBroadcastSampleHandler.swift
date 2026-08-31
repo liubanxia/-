@@ -1,12 +1,13 @@
 import Foundation
 import ReplayKit
 
-/// Build 32 ReplayKit entry point.
+/// ReplayKit entry point for screen-visible evidence only.
 ///
-/// Screen-visible video evidence is split into three paths:
+/// Video evidence is split into four paths:
 /// - people detection/tracking,
 /// - mobile soundwave/arrow HUD recognition,
-/// - low-frequency top-compass OCR for automatic map heading.
+/// - low-frequency top-compass OCR for automatic heading,
+/// - low-frequency visible map/POI OCR for automatic map and coarse position locking.
 ///
 /// App audio keeps aggregate diagnostics plus a separate HRTF-oriented stereo delay/coherence
 /// path. Microphone audio is intentionally ignored.
@@ -14,6 +15,7 @@ final class EnhancedBroadcastSampleHandler: RPBroadcastSampleHandler {
     private let visionProcessor = EvidenceFirstVideoProcessor()
     private let hudSoundAnalyzer = BroadcastHUDSoundAnalyzer()
     private let compassAnalyzer = BroadcastCompassHeadingAnalyzer()
+    private let mapLocalizationAnalyzer = BroadcastMapLocalizationAnalyzer()
     private let audioDiagnostics = BroadcastAudioTelemetryAnalyzer()
     private let spatialAudio = BroadcastSpatialAudioAnalyzer()
 
@@ -22,6 +24,7 @@ final class EnhancedBroadcastSampleHandler: RPBroadcastSampleHandler {
         spatialAudio.reset()
         hudSoundAnalyzer.reset()
         compassAnalyzer.reset()
+        mapLocalizationAnalyzer.reset()
         visionProcessor.start()
     }
 
@@ -34,6 +37,7 @@ final class EnhancedBroadcastSampleHandler: RPBroadcastSampleHandler {
     }
 
     override func broadcastFinished() {
+        mapLocalizationAnalyzer.finish()
         compassAnalyzer.finish()
         hudSoundAnalyzer.finish()
         spatialAudio.finish()
@@ -49,6 +53,7 @@ final class EnhancedBroadcastSampleHandler: RPBroadcastSampleHandler {
         case .video:
             hudSoundAnalyzer.consumeVideo(sampleBuffer)
             compassAnalyzer.consumeVideo(sampleBuffer)
+            mapLocalizationAnalyzer.consumeVideo(sampleBuffer)
             visionProcessor.consumeVideo(sampleBuffer)
         case .audioApp:
             audioDiagnostics.consume(sampleBuffer)
