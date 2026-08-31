@@ -6,8 +6,8 @@ import ImageIO
 import ReplayKit
 import Vision
 
-/// Reads only screen-visible text from ReplayKit frames.
-/// It recognizes the active Operations map and coarse POI/anchor labels without reading game memory.
+/// Stability-first, screen-visible map/POI OCR.
+/// A single OCR frame is never allowed to move the active map anchor.
 final class BroadcastMapLocalizationAnalyzer {
     private struct MapPattern {
         let mapID: SharedDetectedMapID
@@ -29,11 +29,22 @@ final class BroadcastMapLocalizationAnalyzer {
     private let publisher = MapLocalizationStatePublisher()
     private let preprocessor: BroadcastFramePreprocessor?
     private let lock = NSLock()
+
     private var active = false
     private var lastAnalysisUptime: TimeInterval = 0
+
     private var pendingMap: SharedDetectedMapID?
     private var pendingMapHits = 0
+    private var pendingMapConfidenceSum = 0.0
     private var confirmedMap: SharedDetectedMapID?
+
+    private var pendingAnchorMap: SharedDetectedMapID?
+    private var pendingAnchorIndex: Int?
+    private var pendingAnchorHits = 0
+    private var pendingAnchorConfidenceSum = 0.0
+    private var confirmedAnchorMap: SharedDetectedMapID?
+    private var confirmedAnchorIndex: Int?
+    private var confirmedAnchorConfidence = 0.0
 
     init() {
         preprocessor = try? BroadcastFramePreprocessor(side: 320)
@@ -45,7 +56,15 @@ final class BroadcastMapLocalizationAnalyzer {
         lastAnalysisUptime = 0
         pendingMap = nil
         pendingMapHits = 0
+        pendingMapConfidenceSum = 0
         confirmedMap = nil
+        pendingAnchorMap = nil
+        pendingAnchorIndex = nil
+        pendingAnchorHits = 0
+        pendingAnchorConfidenceSum = 0
+        confirmedAnchorMap = nil
+        confirmedAnchorIndex = nil
+        confirmedAnchorConfidence = 0
         lock.unlock()
         publisher.clear()
     }
@@ -65,15 +84,13 @@ final class BroadcastMapLocalizationAnalyzer {
             return
         }
         lastAnalysisUptime = now
-        let priorConfirmed = confirmedMap
+        let priorConfirmedMap = confirmedMap
         lock.unlock()
 
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
               let preprocessor else { return }
 
         do {
-            // Broad upper-screen crop catches the game minimap, location text, compass area,
-            // loading/map titles and many POI labels while keeping OCR cost bounded.
             _ = try preprocessor.preprocess(
                 source: pixelBuffer,
                 orientation: videoOrientation(of: sampleBuffer),
@@ -86,7 +103,7 @@ final class BroadcastMapLocalizationAnalyzer {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .fast
         request.usesLanguageCorrection = false
-        request.minimumTextHeight = 0.020
+        request.minimumTextHeight = 0.022
         request.recognitionLanguages = ["zh-Hans", "en-US"]
         request.customWords = Self.customWords
 
@@ -114,65 +131,145 @@ final class BroadcastMapLocalizationAnalyzer {
         let directMap = bestMapMatch(in: strings)
         let uniqueAnchor = bestAnchorMatch(in: strings, restrictingTo: nil, uniqueOnly: true)
 
-        let proposedMap: Match<SharedDetectedMapID>?
-        if let directMap {
+        var proposedMap: Match<SharedDetectedMapID>?
+        if let directMap, directMap.confidence >= 0.56 {
             proposedMap = directMap
-        } else if let uniqueAnchor {
-            proposedMap = Match(value: uniqueAnchor.value.mapID, confidence: uniqueAnchor.confidence * 0.88)
-        } else {
-            proposedMap = priorConfirmed.map { Match(value: $0, confidence: 0.48) }
+        } else if let uniqueAnchor, uniqueAnchor.confidence >= 0.68 {
+            proposedMap = Match(
+                value: uniqueAnchor.value.mapID,
+                confidence: uniqueAnchor.confidence * 0.90
+            )
         }
 
-        guard let proposedMap else { return }
-        let mapIsConfirmed = updateMapConfirmation(proposedMap)
-        let mapID = mapIsConfirmed ?? priorConfirmed ?? proposedMap.value
+        if let proposedMap {
+            updateMapConfirmation(proposedMap)
+        }
+
+        lock.lock()
+        let stableMap = confirmedMap ?? priorConfirmedMap
+        lock.unlock()
+        guard let mapID = stableMap else { return }
 
         let anchor = bestAnchorMatch(in: strings, restrictingTo: mapID, uniqueOnly: false)
-        let mapConfidence: Double
-        if let directMap, directMap.value == mapID {
-            mapConfidence = directMap.confidence
-        } else if let anchor {
-            mapConfidence = max(proposedMap.confidence, anchor.confidence * 0.82)
+        if let anchor, anchor.confidence >= 0.50 {
+            updateAnchorConfirmation(anchor, for: mapID)
         } else {
-            mapConfidence = proposedMap.confidence
+            decayPendingAnchor()
         }
 
-        if let anchor, anchor.confidence >= 0.34 {
+        lock.lock()
+        let stableAnchor = confirmedAnchorMap == mapID ? confirmedAnchorIndex : nil
+        let stableAnchorConfidence = confirmedAnchorMap == mapID ? confirmedAnchorConfidence : 0
+        lock.unlock()
+
+        let mapConfidence: Double = {
+            if let directMap, directMap.value == mapID { return directMap.confidence }
+            if let uniqueAnchor, uniqueAnchor.value.mapID == mapID {
+                return max(0.56, uniqueAnchor.confidence * 0.86)
+            }
+            return 0.56
+        }()
+
+        if let stableAnchor {
             publisher.publish(
                 SharedMapLocalizationEvidence(
                     mapID: mapID,
-                    anchorIndex: anchor.value.anchorIndex,
+                    anchorIndex: stableAnchor,
                     mapConfidence: mapConfidence,
-                    anchorConfidence: anchor.confidence,
-                    source: directMap == nil ? .poiOCR : .combinedOCR
+                    anchorConfidence: stableAnchorConfidence,
+                    source: directMap?.value == mapID ? .combinedOCR : .poiOCR
                 ),
                 timestamp: now
             )
-        } else if mapConfidence >= 0.42 {
+        } else if mapConfidence >= 0.56 {
             publisher.publish(
                 SharedMapLocalizationEvidence(
                     mapID: mapID,
                     mapConfidence: mapConfidence,
-                    source: directMap == nil ? .poiOCR : .mapNameOCR
+                    source: directMap?.value == mapID ? .mapNameOCR : .poiOCR
                 ),
                 timestamp: now
             )
         }
     }
 
-    private func updateMapConfirmation(_ proposed: Match<SharedDetectedMapID>) -> SharedDetectedMapID? {
+    private func updateMapConfirmation(_ proposed: Match<SharedDetectedMapID>) {
         lock.lock()
         defer { lock.unlock() }
+
         if pendingMap == proposed.value {
             pendingMapHits += 1
+            pendingMapConfidenceSum += proposed.confidence
         } else {
             pendingMap = proposed.value
             pendingMapHits = 1
+            pendingMapConfidenceSum = proposed.confidence
         }
-        if proposed.confidence >= 0.72 || pendingMapHits >= 2 {
-            confirmedMap = proposed.value
+
+        let average = pendingMapConfidenceSum / Double(max(pendingMapHits, 1))
+        let switching = confirmedMap != nil && confirmedMap != proposed.value
+        let requiredHits = switching ? 3 : 2
+        let threshold = switching ? 0.68 : 0.60
+
+        guard pendingMapHits >= requiredHits, average >= threshold else { return }
+        guard confirmedMap != proposed.value else { return }
+
+        confirmedMap = proposed.value
+        pendingMapHits = 0
+        pendingMapConfidenceSum = 0
+
+        // A map switch invalidates the old anchor. Do not carry a POI between maps.
+        confirmedAnchorMap = nil
+        confirmedAnchorIndex = nil
+        confirmedAnchorConfidence = 0
+        pendingAnchorMap = nil
+        pendingAnchorIndex = nil
+        pendingAnchorHits = 0
+        pendingAnchorConfidenceSum = 0
+    }
+
+    private func updateAnchorConfirmation(_ match: Match<AnchorPattern>, for mapID: SharedDetectedMapID) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let index = match.value.anchorIndex
+        if pendingAnchorMap == mapID, pendingAnchorIndex == index {
+            pendingAnchorHits += 1
+            pendingAnchorConfidenceSum += match.confidence
+        } else {
+            pendingAnchorMap = mapID
+            pendingAnchorIndex = index
+            pendingAnchorHits = 1
+            pendingAnchorConfidenceSum = match.confidence
         }
-        return confirmedMap
+
+        let average = pendingAnchorConfidenceSum / Double(max(pendingAnchorHits, 1))
+        let switching = confirmedAnchorMap == mapID
+            && confirmedAnchorIndex != nil
+            && confirmedAnchorIndex != index
+        let requiredHits = switching ? 3 : 2
+        let threshold = switching ? 0.62 : 0.56
+
+        guard pendingAnchorHits >= requiredHits, average >= threshold else { return }
+        confirmedAnchorMap = mapID
+        confirmedAnchorIndex = index
+        confirmedAnchorConfidence = min(max(average, 0), 1)
+        pendingAnchorHits = 0
+        pendingAnchorConfidenceSum = 0
+    }
+
+    private func decayPendingAnchor() {
+        lock.lock()
+        defer { lock.unlock() }
+        if pendingAnchorHits > 0 {
+            pendingAnchorHits -= 1
+            pendingAnchorConfidenceSum *= 0.55
+        }
+        if pendingAnchorHits == 0 {
+            pendingAnchorMap = nil
+            pendingAnchorIndex = nil
+            pendingAnchorConfidenceSum = 0
+        }
     }
 
     private func bestMapMatch(in strings: [(String, Double)]) -> Match<SharedDetectedMapID>? {
@@ -183,7 +280,7 @@ final class BroadcastMapLocalizationAnalyzer {
                 for (text, ocrConfidence) in strings {
                     guard Self.matches(text: text, alias: normalizedAlias) else { continue }
                     let aliasFactor = min(1.0, 0.62 + Double(normalizedAlias.count) * 0.035)
-                    let confidence = min(1, ocrConfidence * 0.76 + aliasFactor * 0.24)
+                    let confidence = min(1, ocrConfidence * 0.78 + aliasFactor * 0.22)
                     if best == nil || confidence > best!.confidence {
                         best = Match(value: pattern.mapID, confidence: confidence)
                     }
@@ -207,7 +304,7 @@ final class BroadcastMapLocalizationAnalyzer {
                 for (text, ocrConfidence) in strings {
                     guard Self.matches(text: text, alias: normalizedAlias) else { continue }
                     let aliasFactor = min(1.0, 0.58 + Double(normalizedAlias.count) * 0.032)
-                    let confidence = min(1, ocrConfidence * 0.74 + aliasFactor * 0.26)
+                    let confidence = min(1, ocrConfidence * 0.78 + aliasFactor * 0.22)
                     if best == nil || confidence > best!.confidence {
                         best = Match(value: pattern, confidence: confidence)
                     }
@@ -219,9 +316,10 @@ final class BroadcastMapLocalizationAnalyzer {
 
     private static func matches(text: String, alias: String) -> Bool {
         guard !alias.isEmpty else { return false }
-        if text.contains(alias) { return true }
-        // Permit OCR fragments only for sufficiently distinctive aliases.
-        if alias.count >= 5, text.count >= 4, alias.contains(text) { return true }
+        if text == alias { return true }
+        if alias.count >= 4, text.contains(alias) { return true }
+        // Fragment matching is deliberately conservative. Short UI words caused false POI jumps.
+        if alias.count >= 8, text.count >= 6, alias.contains(text) { return true }
         return false
     }
 
