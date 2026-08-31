@@ -11,9 +11,16 @@
     <key>CFBundlePackageType</key>
     <string>XPC!</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.9.10</string>
+    <string>0.9.20</string>
     <key>CFBundleVersion</key>
-    <string>27</string>
+    <string>37</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>LiteView Broadcast uses your local network only to send screen-visible radar analysis to your Web Radar device.</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
     <key>NSExtension</key>
     <dict>
         <key>NSExtensionPointIdentifier</key>
