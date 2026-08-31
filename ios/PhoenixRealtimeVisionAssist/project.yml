@@ -41,6 +41,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.phoenix.realtimevisionassist
         GENERATE_INFOPLIST_FILE: NO
+        SWIFT_COMPILATION_MODE: singlefile
+        SWIFT_OPTIMIZATION_LEVEL: -O
     entitlements:
       path: Config/App.entitlements
       properties:
