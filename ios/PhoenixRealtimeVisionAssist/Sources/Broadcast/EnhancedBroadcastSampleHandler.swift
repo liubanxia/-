@@ -1,18 +1,24 @@
 import Foundation
 import ReplayKit
 
-/// Build 31 ReplayKit entry point.
-/// Video uses the faster multi-target evidence processor. App audio is analyzed twice:
-/// legacy aggregate telemetry remains for diagnostics while the spatial path publishes
-/// inter-channel delay/coherence cues. Microphone audio is intentionally ignored.
+/// Build 32 ReplayKit entry point.
+///
+/// Video is consumed by two independent screen-visible paths:
+/// - EvidenceFirstVideoProcessor: people detection/tracking.
+/// - BroadcastHUDSoundAnalyzer: rendered mobile soundwave/arrow HUD analysis.
+///
+/// App audio keeps aggregate telemetry for diagnostics and a separate HRTF-oriented stereo
+/// delay/coherence path. Microphone audio is intentionally ignored.
 final class EnhancedBroadcastSampleHandler: RPBroadcastSampleHandler {
     private let visionProcessor = EvidenceFirstVideoProcessor()
+    private let hudSoundAnalyzer = BroadcastHUDSoundAnalyzer()
     private let audioDiagnostics = BroadcastAudioTelemetryAnalyzer()
     private let spatialAudio = BroadcastSpatialAudioAnalyzer()
 
     override func broadcastStarted(withSetupInfo setupInfo: [String: NSObject]?) {
         audioDiagnostics.reset()
         spatialAudio.reset()
+        hudSoundAnalyzer.reset()
         visionProcessor.start()
     }
 
@@ -25,6 +31,7 @@ final class EnhancedBroadcastSampleHandler: RPBroadcastSampleHandler {
     }
 
     override func broadcastFinished() {
+        hudSoundAnalyzer.finish()
         spatialAudio.finish()
         audioDiagnostics.finish()
         visionProcessor.finish()
@@ -36,6 +43,7 @@ final class EnhancedBroadcastSampleHandler: RPBroadcastSampleHandler {
     ) {
         switch sampleBufferType {
         case .video:
+            hudSoundAnalyzer.consumeVideo(sampleBuffer)
             visionProcessor.consumeVideo(sampleBuffer)
         case .audioApp:
             audioDiagnostics.consume(sampleBuffer)
