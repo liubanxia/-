@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>LiteView Web Radar</title>
+<style>
+:root{color-scheme:dark;--bg:#07100d;--panel:#0d1814;--line:#29453b;--text:#dcebe5;--muted:#7f9b91;--green:#69ffaf;--red:#ff5d6c;--orange:#ffb156;--pink:#ff76b8;--blue:#5da8ff}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+body{padding:12px}.app{max-width:1180px;margin:0 auto}.top{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px}.title{font-size:18px;font-weight:800;letter-spacing:.04em;margin-right:auto}.pill{border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:6px 10px;font-size:12px}.ok{color:var(--green)}.bad{color:var(--red)}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:12px}.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;overflow:hidden}.radar-wrap{position:relative;aspect-ratio:1/1;min-height:360px;background:#050b09}.radar-wrap canvas{width:100%;height:100%;display:block}.badge{position:absolute;top:12px;left:12px;background:#07100dd9;border:1px solid var(--line);padding:8px 10px;border-radius:10px;font-size:12px;backdrop-filter:blur(8px)}.coords{position:absolute;right:12px;top:12px;text-align:right;background:#07100dd9;border:1px solid var(--line);padding:8px 10px;border-radius:10px;font-size:12px}.legend{position:absolute;left:12px;bottom:12px;display:flex;gap:10px;flex-wrap:wrap;background:#07100dd9;border:1px solid var(--line);padding:8px 10px;border-radius:10px;font-size:11px}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}.side{display:flex;flex-direction:column;gap:12px}.section{padding:14px}.section h3{font-size:12px;margin:0 0 10px;color:var(--muted);font-weight:700}.kv{display:grid;grid-template-columns:1fr auto;gap:8px 12px;font-size:12px}.value{font-weight:700}.targets,.sounds{display:flex;flex-direction:column;gap:8px}.item{padding:8px;border-radius:10px;background:#07100d;border:1px solid #20372f;font-size:11px}.row{display:flex;justify-content:space-between;gap:8px}.bar{height:4px;background:#13241e;border-radius:999px;overflow:hidden;margin-top:6px}.fill{height:100%;background:currentColor}.footer{margin-top:10px;color:var(--muted);font-size:11px;line-height:1.55}.buttons{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}button{background:#13241e;color:var(--text);border:1px solid var(--line);padding:8px 10px;border-radius:10px;font:inherit;font-size:11px}button:active{transform:translateY(1px)}
+@media(max-width:820px){.layout{grid-template-columns:1fr}.side{display:grid;grid-template-columns:1fr 1fr}.radar-wrap{min-height:0}}@media(max-width:560px){body{padding:6px}.side{grid-template-columns:1fr}.title{width:100%}.radar-wrap{border-radius:12px}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="top">
+    <div class="title">LITEVIEW WEB RADAR</div>
+    <div class="pill" id="conn">SSE: connecting</div>
+    <div class="pill" id="mode">LIVE</div>
+  </div>
+  <div class="layout">
+    <div class="card radar-wrap">
+      <canvas id="radar"></canvas>
+      <div class="badge"><b id="mapName">AZ3</b><br><span id="mapMeta">calibration-ready</span></div>
+      <div class="coords"><span id="xy">X 0.500 · Y 0.500</span><br><span id="heading">HDG 0°</span></div>
+      <div class="legend">
+        <span><i class="dot" style="background:var(--green)"></i>自己</span>
+        <span><i class="dot" style="background:var(--red)"></i>可见人物</span>
+        <span><i class="dot" style="background:var(--orange)"></i>脚步</span>
+        <span><i class="dot" style="background:var(--pink)"></i>枪声</span>
+      </div>
+    </div>
+    <div class="side">
+      <div class="card section"><h3>实时状态</h3><div class="kv">
+        <span>地图</span><span class="value" id="mapVal">AZ3</span>
+        <span>定位置信度</span><span class="value" id="locConf">0%</span>
+        <span>人物</span><span class="value" id="targetCount">0</span>
+        <span>声纹</span><span class="value" id="soundCount">0</span>
+        <span>数据年龄</span><span class="value" id="age">--</span>
+      </div><div class="buttons"><button id="demoBtn">切换模拟</button><button id="centerBtn">玩家居中</button></div></div>
+      <div class="card section"><h3>人物证据</h3><div id="targets" class="targets"><div class="item">暂无可靠人物证据</div></div></div>
+      <div class="card section"><h3>声音证据</h3><div id="sounds" class="sounds"><div class="item">暂无可靠声音证据</div></div></div>
+    </div>
+  </div>
+  <div class="footer">数据协议：POST <code>/api/state</code> → SSE <code>/api/events</code>。网页只显示提供给它的可见分析结果；地图几何与实时数据分离，后续可把 AZ3 标定数据直接替换到 <code>maps/az3.json</code>。</div>
+</div>
+<script>
+const canvas=document.getElementById('radar'),ctx=canvas.getContext('2d');
+const els={conn:$('#conn'),mode:$('#mode'),mapName:$('#mapName'),mapMeta:$('#mapMeta'),xy:$('#xy'),heading:$('#heading'),mapVal:$('#mapVal'),locConf:$('#locConf'),targetCount:$('#targetCount'),soundCount:$('#soundCount'),age:$('#age'),targets:$('#targets'),sounds:$('#sounds')};
+function $(s){return document.querySelector(s)}
+let centerOnPlayer=true,demo=false,lastPacketAt=0;
+let state={map:'AZ3',player:{x:.5,y:.5,heading:0,confidence:0},targets:[],sounds:[],timestamp:Date.now()/1000};
+let mapLayer={name:'AZ3',calibrated:false,width:1,height:1,polylines:[],polygons:[],pois:[]};
+async function loadMap(name){try{const r=await fetch(`/maps/${String(name).toLowerCase()}.json`,{cache:'no-store'});if(r.ok){mapLayer=await r.json();els.mapMeta.textContent=mapLayer.calibrated?'1:1 CALIBRATED':'CALIBRATION READY'}}catch(e){}}
+loadMap('az3');
+function resize(){const dpr=Math.min(devicePixelRatio||1,2),r=canvas.getBoundingClientRect();canvas.width=Math.max(1,Math.round(r.width*dpr));canvas.height=Math.max(1,Math.round(r.height*dpr));ctx.setTransform(dpr,0,0,dpr,0,0);draw()}
+addEventListener('resize',resize);new ResizeObserver(resize).observe(canvas);
+function clamp(v,a=0,b=1){return Math.max(a,Math.min(b,v))}
+function worldToScreen(x,y,w,h){let nx=x,ny=y;if(centerOnPlayer&&state.player){nx=.5+(x-state.player.x);ny=.5+(y-state.player.y)}return{x:nx*w,y:(1-ny)*h}}
+function line(points,w,h,stroke,width=1,dash=[]){if(!points?.length)return;ctx.beginPath();points.forEach((p,i)=>{const q=worldToScreen(p[0],p[1],w,h);i?ctx.lineTo(q.x,q.y):ctx.moveTo(q.x,q.y)});ctx.strokeStyle=stroke;ctx.lineWidth=width;ctx.setLineDash(dash);ctx.stroke();ctx.setLineDash([])}
+function draw(){const r=canvas.getBoundingClientRect(),w=r.width,h=r.height;ctx.clearRect(0,0,w,h);ctx.fillStyle='#050b09';ctx.fillRect(0,0,w,h);
+  ctx.strokeStyle='#163026';ctx.lineWidth=1;for(let i=0;i<=10;i++){const x=i*w/10,y=i*h/10;ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke();ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke()}
+  mapLayer.polygons?.forEach(poly=>{if(!poly.points?.length)return;ctx.beginPath();poly.points.forEach((p,i)=>{const q=worldToScreen(p[0],p[1],w,h);i?ctx.lineTo(q.x,q.y):ctx.moveTo(q.x,q.y)});ctx.closePath();ctx.fillStyle=poly.fill||'#10221c';ctx.strokeStyle=poly.stroke||'#315548';ctx.lineWidth=1;ctx.fill();ctx.stroke()});
+  mapLayer.polylines?.forEach(p=>line(p.points,w,h,p.stroke||'#46685c',p.width||1.5,p.dash||[]));
+  mapLayer.pois?.forEach(p=>{const q=worldToScreen(p.x,p.y,w,h);ctx.fillStyle='#98b8aa';ctx.beginPath();ctx.arc(q.x,q.y,2.2,0,Math.PI*2);ctx.fill();ctx.font='10px ui-monospace';ctx.fillText(p.label||p.id,q.x+5,q.y-4)});
+  drawSounds(w,h);drawTargets(w,h);drawPlayer(w,h);
+}
+function drawPlayer(w,h){const p=worldToScreen(state.player?.x??.5,state.player?.y??.5,w,h),a=((state.player?.heading||0)-90)*Math.PI/180;ctx.save();ctx.translate(p.x,p.y);ctx.rotate(a);ctx.fillStyle='#69ffaf';ctx.strokeStyle='#07100d';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(12,0);ctx.lineTo(-8,-7);ctx.lineTo(-4,0);ctx.lineTo(-8,7);ctx.closePath();ctx.fill();ctx.stroke();ctx.restore();ctx.strokeStyle='#69ffaf88';ctx.beginPath();ctx.arc(p.x,p.y,16,0,Math.PI*2);ctx.stroke()}
+function drawTargets(w,h){for(const t of state.targets||[]){let x=t.mapX,y=t.mapY;if(x==null||y==null){const bearing=((state.player?.heading||0)+(t.bearing??((t.screenX??.5)-.5)*100))*Math.PI/180;const d=clamp(t.range??(.12+(1-clamp((t.boxHeight||.08)/.42))*.22),.04,.34);x=clamp((state.player?.x??.5)+Math.sin(bearing)*d);y=clamp((state.player?.y??.5)+Math.cos(bearing)*d)}const q=worldToScreen(x,y,w,h),c=clamp(t.confidence??.5);ctx.strokeStyle=`rgba(255,93,108,${.35+c*.6})`;ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(q.x,q.y,6+c*5,0,Math.PI*2);ctx.stroke();ctx.fillStyle='#ff5d6c';ctx.beginPath();ctx.arc(q.x,q.y,2.4,0,Math.PI*2);ctx.fill()}}
+function drawSounds(w,h){for(const s of state.sounds||[]){const b=((state.player?.heading||0)+(s.bearing??((s.lateral||0)*90)))*Math.PI/180,d=clamp(.09+(1-clamp(s.proximity??.4))*.22,.06,.32),x=clamp((state.player?.x??.5)+Math.sin(b)*d),y=clamp((state.player?.y??.5)+Math.cos(b)*d),q=worldToScreen(x,y,w,h),gun=s.kind==='gunfire',col=gun?'#ff76b8':'#ffb156';ctx.strokeStyle=col;ctx.lineWidth=2;ctx.beginPath();ctx.arc(q.x,q.y,7,0,Math.PI*2);ctx.stroke();if(s.verticalCue){ctx.fillStyle=col;ctx.font='bold 14px ui-monospace';ctx.fillText(s.verticalCue>0?'↑':'↓',q.x+8,q.y+4)}}}
+function applyPacket(p){if(!p||typeof p!=='object')return;state={...state,...p,player:{...state.player,...(p.player||{})},targets:Array.isArray(p.targets)?p.targets:state.targets,sounds:Array.isArray(p.sounds)?p.sounds:state.sounds};lastPacketAt=performance.now();if(p.map&&p.map!==els.mapVal.textContent)loadMap(p.map);updateUI();draw()}
+function updateUI(){const p=state.player||{};els.mapName.textContent=state.map||'--';els.mapVal.textContent=state.map||'--';els.xy.textContent=`X ${(p.x??0).toFixed(3)} · Y ${(p.y??0).toFixed(3)}`;els.heading.textContent=`HDG ${Math.round(p.heading||0)}°`;els.locConf.textContent=`${Math.round((p.confidence||0)*100)}%`;els.targetCount.textContent=(state.targets||[]).length;els.soundCount.textContent=(state.sounds||[]).length;
+ els.targets.innerHTML=(state.targets||[]).length?(state.targets||[]).map((t,i)=>`<div class="item" style="color:#ff7f8b"><div class="row"><b>T${i+1}</b><span>${Math.round((t.confidence||0)*100)}%</span></div><div>screen ${(t.screenX??t.x??0).toFixed?.(3)??'--'} · stable ${t.stableFrames??0}</div><div class="bar"><div class="fill" style="width:${Math.round((t.confidence||0)*100)}%"></div></div></div>`).join(''):'<div class="item">暂无可靠人物证据</div>';
+ els.sounds.innerHTML=(state.sounds||[]).length?(state.sounds||[]).map((s,i)=>`<div class="item" style="color:${s.kind==='gunfire'?'#ff76b8':'#ffb156'}"><div class="row"><b>${s.kind||'sound'} ${s.verticalCue>0?'↑':s.verticalCue<0?'↓':''}</b><span>${Math.round((s.confidence||0)*100)}%</span></div><div>bearing ${Math.round(s.bearing??((s.lateral||0)*90))}° · prox ${Math.round((s.proximity||0)*100)}%</div></div>`).join(''):'<div class="item">暂无可靠声音证据</div>'}
+function connect(){const es=new EventSource('/api/events');es.onopen=()=>{els.conn.textContent='SSE: connected';els.conn.className='pill ok'};es.onmessage=e=>{if(demo)return;try{applyPacket(JSON.parse(e.data))}catch(_){}};es.onerror=()=>{els.conn.textContent='SSE: reconnecting';els.conn.className='pill bad'}}
+connect();
+setInterval(()=>{els.age.textContent=lastPacketAt?`${Math.round(performance.now()-lastPacketAt)} ms`:'--';if(demo){const t=performance.now()/1000;applyPacket({map:'AZ3',player:{x:.5+.12*Math.sin(t*.15),y:.5+.10*Math.cos(t*.13),heading:(t*22)%360,confidence:.93},targets:[{screenX:.28,confidence:.88,boxHeight:.16,stableFrames:4,bearing:-34},{screenX:.71,confidence:.72,boxHeight:.08,stableFrames:3,bearing:41}],sounds:[{kind:'footstep',bearing:-70,proximity:.72,verticalCue:1,confidence:.82},{kind:'gunfire',bearing:58,proximity:.35,verticalCue:0,confidence:.76}],timestamp:Date.now()/1000})}},180);
+$('#demoBtn').onclick=()=>{demo=!demo;els.mode.textContent=demo?'DEMO':'LIVE';els.mode.className=demo?'pill':'pill ok'};$('#centerBtn').onclick=()=>{centerOnPlayer=!centerOnPlayer;$('#centerBtn').textContent=centerOnPlayer?'玩家居中':'全图视图';draw()};
+updateUI();resize();
+</script>
+</body>
+</html>
