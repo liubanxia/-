@@ -1,4 +1,4 @@
-name: LiteView Stability First Analysis Candidate
+name: LiteView Multiscale Person Recovery Candidate
 
 on:
   push:
@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 jobs:
-  build-stability-first-analysis:
+  build-multiscale-person-recovery:
     runs-on: macos-15
     timeout-minutes: 35
 
@@ -37,7 +37,7 @@ jobs:
           MODEL_DIR="$ROOT/Resources/BroadcastModels"
           ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
           UNZIP_DIR="$RUNNER_TEMP/liteview-yolo11n-coreml"
-          COMPILE_DIR="$RUNNER_TEMP/liteview-build36-model"
+          COMPILE_DIR="$RUNNER_TEMP/liteview-build37-model"
           URL='https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
           rm -rf "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
           mkdir -p "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
@@ -50,44 +50,50 @@ jobs:
           test -n "$COMPILED"
           cp -R "$COMPILED" "$MODEL_DIR/yolo11n.mlmodelc"
 
-      - name: Guard Build 36 stability-first analysis
+      - name: Guard Build 37 multiscale person wiring
         shell: bash
         run: |
           set -euo pipefail
           ROOT='ios/PhoenixRealtimeVisionAssist'
+          PERSON="$ROOT/Sources/ExtensionSupport/MultiScalePersonAnalyzer.swift"
           MAPOCR="$ROOT/Sources/ExtensionSupport/BroadcastMapLocalizationAnalyzer.swift"
           COMPASS="$ROOT/Sources/ExtensionSupport/BroadcastCompassHeadingAnalyzer.swift"
           HUD="$ROOT/Sources/ExtensionSupport/BroadcastHUDSoundAnalyzer.swift"
           HANDLER="$ROOT/Sources/Broadcast/EnhancedBroadcastSampleHandler.swift"
           PROJECT="$ROOT/project.yml"
 
+          grep -q 'final class MultiScalePersonAnalyzer' "$PERSON"
+          grep -q 'searchROIs' "$PERSON"
+          grep -q 'CGRect(x: 0.16, y: 0.04, width: 0.68, height: 0.92)' "$PERSON"
+          grep -q 'VNDetectHumanRectanglesRequest' "$PERSON"
+          grep -q 'immediate = track.confidence >= 0.52' "$PERSON"
+          grep -q 'private let multiscalePersonAnalyzer = MultiScalePersonAnalyzer()' "$HANDLER"
+          grep -q 'multiscalePersonAnalyzer.consumeVideo(sampleBuffer)' "$HANDLER"
+          ! grep -q 'visionLifecycle.consumeVideo(sampleBuffer)' "$HANDLER"
           grep -q 'requiredHits = switching ? 3 : 2' "$MAPOCR"
-          grep -q 'Fragment matching is deliberately conservative' "$MAPOCR"
           grep -q 'confirmLargeJump' "$COMPASS"
-          grep -q 'confidence >= 0.44' "$COMPASS"
-          grep -q 'hits >= 2' "$HUD"
           grep -q 'verticalHits >= 2' "$HUD"
-          grep -q 'mapLocalizationAnalyzer.consumeVideo' "$HANDLER"
-          grep -q 'CURRENT_PROJECT_VERSION: 36' "$PROJECT"
-          grep -q 'MARKETING_VERSION: 0.9.19' "$PROJECT"
-          echo 'BUILD36_STABILITY_GUARD_PASS'
+          grep -q 'CURRENT_PROJECT_VERSION: 37' "$PROJECT"
+          grep -q 'MARKETING_VERSION: 0.9.20' "$PROJECT"
+          echo 'BUILD37_MULTISCALE_PERSON_GUARD_PASS'
 
       - name: Generate project
         working-directory: ios/PhoenixRealtimeVisionAssist
         run: xcodegen generate
 
-      - name: Verify Build 36 target wiring
+      - name: Verify Build 37 target wiring
         shell: bash
         run: |
           set -euo pipefail
           PBX='ios/PhoenixRealtimeVisionAssist/PhoenixRealtimeVisionAssist.xcodeproj/project.pbxproj'
           grep -q 'AutoCircularMinimapRadarController.swift' "$PBX"
+          grep -q 'MultiScalePersonAnalyzer.swift' "$PBX"
+          grep -q 'BroadcastNanoPersonDetector.swift' "$PBX"
           grep -q 'BroadcastMapLocalizationAnalyzer.swift' "$PBX"
           grep -q 'BroadcastCompassHeadingAnalyzer.swift' "$PBX"
           grep -q 'BroadcastHUDSoundAnalyzer.swift' "$PBX"
-          grep -q 'MapLocalizationStateChannel.swift' "$PBX"
           ! grep -q 'EdgeHUDRadarController.swift in Sources' "$PBX"
-          echo 'BUILD36_TARGET_WIRING_PASS'
+          echo 'BUILD37_TARGET_WIRING_PASS'
 
       - name: Run lifecycle smoke test
         shell: bash
@@ -99,8 +105,8 @@ jobs:
             "$ROOT/Sources/Core/BroadcastLifecycle.swift" \
             "$ROOT/Sources/Vision/PhoenixCapabilityModelBank.swift" \
             "$ROOT/scripts/lifecycle_smoke_main.swift" \
-            -o "$RUNNER_TEMP/liteview-build36-lifecycle"
-          "$RUNNER_TEMP/liteview-build36-lifecycle"
+            -o "$RUNNER_TEMP/liteview-build37-lifecycle"
+          "$RUNNER_TEMP/liteview-build37-lifecycle"
 
       - name: Run synthetic PCM telemetry test
         shell: bash
@@ -113,15 +119,15 @@ jobs:
             -framework AudioToolbox \
             -framework CoreMedia \
             -framework CoreFoundation \
-            -o "$RUNNER_TEMP/liteview-build36-audio"
-          "$RUNNER_TEMP/liteview-build36-audio"
+            -o "$RUNNER_TEMP/liteview-build37-audio"
+          "$RUNNER_TEMP/liteview-build37-audio"
 
       - name: Build unsigned iPhone Release app and Broadcast Extension
         working-directory: ios/PhoenixRealtimeVisionAssist
         shell: bash
         run: |
           set -euo pipefail
-          DERIVED="$RUNNER_TEMP/LiteViewBuild36DerivedData"
+          DERIVED="$RUNNER_TEMP/LiteViewBuild37DerivedData"
           rm -rf "$DERIVED"
           xcodebuild \
             -project PhoenixRealtimeVisionAssist.xcodeproj \
@@ -133,19 +139,19 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build
 
-      - name: Normalize 0.9.19 Build 36 and verify final binaries
+      - name: Normalize 0.9.20 Build 37 and verify final binaries
         shell: bash
         run: |
           set -euo pipefail
-          PRODUCTS="$RUNNER_TEMP/LiteViewBuild36DerivedData/Build/Products/Release-iphoneos"
+          PRODUCTS="$RUNNER_TEMP/LiteViewBuild37DerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
           EXT="$APP/PlugIns/PhoenixBroadcastExtension.appex"
           APP_PLIST="$APP/Info.plist"
           EXT_PLIST="$EXT/Info.plist"
           APP_BIN="$APP/PhoenixRealtimeVisionAssist"
           EXT_BIN="$EXT/PhoenixBroadcastExtension"
-          APP_LINKS="$RUNNER_TEMP/build36-app-links.txt"
-          EXT_LINKS="$RUNNER_TEMP/build36-ext-links.txt"
+          APP_LINKS="$RUNNER_TEMP/build37-app-links.txt"
+          EXT_LINKS="$RUNNER_TEMP/build37-ext-links.txt"
           test -d "$APP" && test -d "$EXT" && test -x "$APP_BIN" && test -x "$EXT_BIN"
           otool -L "$APP_BIN" > "$APP_LINKS"
           otool -L "$EXT_BIN" > "$EXT_LINKS"
@@ -156,30 +162,30 @@ jobs:
               /usr/libexec/PlistBuddy -c "Add :$key string $value" "$plist"
           }
           set_plist_string "$APP_PLIST" CFBundleDisplayName LiteView
-          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.19
-          set_plist_string "$APP_PLIST" CFBundleVersion 36
+          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.20
+          set_plist_string "$APP_PLIST" CFBundleVersion 37
           set_plist_string "$EXT_PLIST" CFBundleDisplayName 'LiteView Broadcast'
-          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.19
-          set_plist_string "$EXT_PLIST" CFBundleVersion 36
+          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.20
+          set_plist_string "$EXT_PLIST" CFBundleVersion 37
 
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PLIST")" = '36'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_PLIST")" = '36'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PLIST")" = '37'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_PLIST")" = '37'
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT_PLIST")" = 'PhoenixBroadcastExtension.EnhancedBroadcastSampleHandler'
           test -n "$(find "$EXT" -type d -name 'yolo11n.mlmodelc' -prune -print -quit)"
           grep -q 'AVKit.framework' "$APP_LINKS"
           grep -q 'AVFoundation.framework' "$APP_LINKS"
           grep -q 'Vision.framework' "$EXT_LINKS"
-          echo 'BUILD36_FINAL_BINARY_PASS'
+          echo 'BUILD37_FINAL_BINARY_PASS'
 
       - name: Package unsigned IPA
         shell: bash
         run: |
           set -euo pipefail
-          PRODUCTS="$RUNNER_TEMP/LiteViewBuild36DerivedData/Build/Products/Release-iphoneos"
+          PRODUCTS="$RUNNER_TEMP/LiteViewBuild37DerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
-          ROOT="$RUNNER_TEMP/LiteViewBuild36Package"
-          IPA="$RUNNER_TEMP/LiteView-0.9.19-Build36-StabilityFirstAnalysis-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.19-Build36-StabilityFirstAnalysis.txt"
+          ROOT="$RUNNER_TEMP/LiteViewBuild37Package"
+          IPA="$RUNNER_TEMP/LiteView-0.9.20-Build37-MultiscalePersonRecovery-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.20-Build37-MultiscalePersonRecovery.txt"
           rm -rf "$ROOT" "$IPA" "$MANIFEST"
           mkdir -p "$ROOT/Payload"
           cp -R "$APP" "$ROOT/Payload/"
@@ -188,16 +194,18 @@ jobs:
           SIZE="$(stat -f%z "$IPA")"
           SHA="$(shasum -a 256 "$IPA" | awk '{print $1}')"
           cat > "$MANIFEST" <<EOF
-          LiteView 0.9.19 Build 36 Stability First Analysis
+          LiteView 0.9.20 Build 37 Multiscale Person Recovery
           commit=${GITHUB_SHA}
-          version=0.9.19
-          build=36
+          version=0.9.20
+          build=37
           ipa_size_bytes=${SIZE}
           ipa_sha256=${SHA}
-          map_poi=multi-frame hysteresis; map switches 3-hit gated
-          compass=large-jump two-sample confirmation
-          hud_sound=two-frame cue tracking; vertical arrow two-hit gated
-          visible_people=existing multi-target tracker retained to avoid recall regression
+          visible_people=alternating full/center/left/right CoreML ROIs with sparse Vision human fallback
+          person_warning=high-confidence fresh hit may warn immediately; weaker targets require persistence
+          map_poi=stability-first OCR coarse localization retained
+          continuous_exact_map_position=not claimed; requires minimap background/reference registration
+          compass=large-jump two-sample confirmation retained
+          hud_sound=two-frame cue tracking retained
           hidden_game_state=none
           memory_access=none
           signing=unsigned; preserve PlugIns when re-signing
@@ -209,10 +217,10 @@ jobs:
       - name: Upload candidate artifact
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-stability-first-analysis-0.9.19-build36
+          name: liteview-multiscale-person-recovery-0.9.20-build37
           path: |
-            ${{ runner.temp }}/LiteView-0.9.19-Build36-StabilityFirstAnalysis-unsigned.ipa
-            ${{ runner.temp }}/LiteView-0.9.19-Build36-StabilityFirstAnalysis.txt
+            ${{ runner.temp }}/LiteView-0.9.20-Build37-MultiscalePersonRecovery-unsigned.ipa
+            ${{ runner.temp }}/LiteView-0.9.20-Build37-MultiscalePersonRecovery.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -223,15 +231,15 @@ jobs:
         run: |
           set -euo pipefail
           TAG='liteview-audio-clean-overlay-latest'
-          IPA="$RUNNER_TEMP/LiteView-0.9.19-Build36-StabilityFirstAnalysis-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.19-Build36-StabilityFirstAnalysis.txt"
-          NOTES='Build 36 changes the analysis layer from single-frame acceptance to stability-first fusion. Map/POI switches require repeated OCR evidence, large compass jumps require a second confirming sample, and rendered soundwave/vertical-arrow cues require cross-frame persistence. Existing visible-person multi-target tracking is retained so the accuracy fix does not simply trade false positives for more missed people.'
+          IPA="$RUNNER_TEMP/LiteView-0.9.20-Build37-MultiscalePersonRecovery-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.20-Build37-MultiscalePersonRecovery.txt"
+          NOTES='Build 37 replaces the full-frame-only person path with a multiscale screen-visible analyzer. It alternates whole-screen and enlarged center/left/right ROIs so distant mobile-game characters occupy more model pixels, uses a sparse Vision human fallback when Core ML has no recent target, and allows a very strong fresh target to trigger warning immediately while weaker candidates still require temporal persistence. Map/POI OCR remains automatic coarse localization; exact continuous position is not falsely claimed without minimap reference registration.'
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
-            gh release edit "$TAG" --title 'LiteView 0.9.19 Build 36 Stability First Analysis' --notes "$NOTES" --target "$GITHUB_SHA"
+            gh release edit "$TAG" --title 'LiteView 0.9.20 Build 37 Multiscale Person Recovery' --notes "$NOTES" --target "$GITHUB_SHA"
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" \
               --target "$GITHUB_SHA" \
-              --title 'LiteView 0.9.19 Build 36 Stability First Analysis' \
+              --title 'LiteView 0.9.20 Build 37 Multiscale Person Recovery' \
               --notes "$NOTES"
           fi
