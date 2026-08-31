@@ -1,4 +1,4 @@
-name: LiteView Circular Minimap Candidate
+name: LiteView Auto Circular Minimap Candidate
 
 on:
   push:
@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 jobs:
-  build-circular-minimap:
+  build-auto-circular-minimap:
     runs-on: macos-15
     timeout-minutes: 35
 
@@ -37,7 +37,7 @@ jobs:
           MODEL_DIR="$ROOT/Resources/BroadcastModels"
           ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
           UNZIP_DIR="$RUNNER_TEMP/liteview-yolo11n-coreml"
-          COMPILE_DIR="$RUNNER_TEMP/liteview-build34-model"
+          COMPILE_DIR="$RUNNER_TEMP/liteview-build35-model"
           URL='https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
           rm -rf "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
           mkdir -p "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
@@ -50,57 +50,50 @@ jobs:
           test -n "$COMPILED"
           cp -R "$COMPILED" "$MODEL_DIR/yolo11n.mlmodelc"
 
-      - name: Guard Build 34 circular minimap wiring
+      - name: Guard Build 35 auto circular minimap wiring
         shell: bash
         run: |
           set -euo pipefail
           ROOT='ios/PhoenixRealtimeVisionAssist'
-          CTRL="$ROOT/Sources/App/EdgeHUDRadarController.swift"
-          HUD="$ROOT/Sources/ExtensionSupport/BroadcastHUDSoundAnalyzer.swift"
-          COMPASS="$ROOT/Sources/ExtensionSupport/BroadcastCompassHeadingAnalyzer.swift"
-          SPATIAL="$ROOT/Sources/Broadcast/BroadcastSpatialAudioAnalyzer.swift"
+          CTRL="$ROOT/Sources/App/AutoCircularMinimapRadarController.swift"
+          MAPOCR="$ROOT/Sources/ExtensionSupport/BroadcastMapLocalizationAnalyzer.swift"
+          MAPSTATE="$ROOT/Sources/Core/MapLocalizationStateChannel.swift"
           HANDLER="$ROOT/Sources/Broadcast/EnhancedBroadcastSampleHandler.swift"
           PROJECT="$ROOT/project.yml"
 
-          grep -q 'LITEVIEW_CIRCULAR_MAP_BUILD34' "$CTRL"
-          grep -q 'Build 34' "$CTRL"
-          grep -q 'circleScale' "$CTRL"
-          grep -q 'mapZoom' "$CTRL"
-          grep -q 'rotateWithHeading' "$CTRL"
-          grep -q 'centerOnPlayer' "$CTRL"
-          grep -q 'FullMapPredictiveRadarEngine' "$CTRL"
-          grep -q 'HUDSoundStateReader' "$CTRL"
-          grep -q 'CompassHeadingStateReader' "$CTRL"
-          grep -q 'SpatialAudioStateReader' "$CTRL"
-          grep -q 'BroadcastHUDSoundAnalyzer' "$HUD"
-          grep -q 'verticalCue' "$HUD"
-          grep -q 'BroadcastCompassHeadingAnalyzer' "$COMPASS"
-          grep -q 'bestNormalizedCorrelation' "$SPATIAL"
-          grep -q 'hudSoundAnalyzer.consumeVideo' "$HANDLER"
-          grep -q 'compassAnalyzer.consumeVideo' "$HANDLER"
-          grep -q 'CURRENT_PROJECT_VERSION: 34' "$PROJECT"
-          grep -q 'MARKETING_VERSION: 0.9.17' "$PROJECT"
-          echo 'BUILD34_CIRCULAR_MINIMAP_WIRING_PASS'
+          grep -q 'LITEVIEW_AUTO_CIRCULAR_MAP_BUILD35' "$CTRL"
+          grep -q 'autoLocalizationEnabled' "$CTRL"
+          grep -q 'MapLocalizationStateReader' "$CTRL"
+          grep -q 'didTransitionToRenderSize' "$CTRL"
+          grep -q 'BroadcastMapLocalizationAnalyzer' "$MAPOCR"
+          grep -q 'recognitionLanguages = \["zh-Hans", "en-US"\]' "$MAPOCR"
+          grep -q 'MapLocalizationStatePublisher' "$MAPSTATE"
+          grep -q 'mapLocalizationAnalyzer.consumeVideo' "$HANDLER"
+          grep -q 'CURRENT_PROJECT_VERSION: 35' "$PROJECT"
+          grep -q 'MARKETING_VERSION: 0.9.18' "$PROJECT"
+          grep -q 'EdgeHUDRadarController.swift' "$PROJECT"
+          echo 'BUILD35_AUTO_CIRCULAR_WIRING_PASS'
 
       - name: Generate project
         working-directory: ios/PhoenixRealtimeVisionAssist
         run: xcodegen generate
 
-      - name: Verify Build 34 target wiring
+      - name: Verify Build 35 target wiring
         shell: bash
         run: |
           set -euo pipefail
           PBX='ios/PhoenixRealtimeVisionAssist/PhoenixRealtimeVisionAssist.xcodeproj/project.pbxproj'
-          grep -q 'EdgeHUDRadarController.swift' "$PBX"
-          grep -q 'BroadcastHUDSoundAnalyzer.swift' "$PBX"
-          grep -q 'BroadcastCompassHeadingAnalyzer.swift' "$PBX"
+          grep -q 'AutoCircularMinimapRadarController.swift' "$PBX"
+          grep -q 'BroadcastMapLocalizationAnalyzer.swift' "$PBX"
+          grep -q 'MapLocalizationStateChannel.swift' "$PBX"
+          ! grep -q 'EdgeHUDRadarController.swift in Sources' "$PBX"
           ! grep -q 'HUDFusedRadarController.swift in Sources' "$PBX"
           ! grep -q 'EvidenceFirstRadarController.swift in Sources' "$PBX"
           ! grep -q 'VisibleMultiMapRadarController.swift in Sources' "$PBX"
           ! grep -q 'MultiMapFloatingRadarController.swift in Sources' "$PBX"
           ! grep -q 'FullMapFloatingRadarController.swift in Sources' "$PBX"
           ! grep -q 'FloatingDotPiPController.swift in Sources' "$PBX"
-          echo 'BUILD34_TARGET_WIRING_PASS'
+          echo 'BUILD35_TARGET_WIRING_PASS'
 
       - name: Run lifecycle smoke test
         shell: bash
@@ -112,8 +105,8 @@ jobs:
             "$ROOT/Sources/Core/BroadcastLifecycle.swift" \
             "$ROOT/Sources/Vision/PhoenixCapabilityModelBank.swift" \
             "$ROOT/scripts/lifecycle_smoke_main.swift" \
-            -o "$RUNNER_TEMP/liteview-build34-lifecycle"
-          "$RUNNER_TEMP/liteview-build34-lifecycle"
+            -o "$RUNNER_TEMP/liteview-build35-lifecycle"
+          "$RUNNER_TEMP/liteview-build35-lifecycle"
 
       - name: Run synthetic PCM telemetry test
         shell: bash
@@ -126,15 +119,15 @@ jobs:
             -framework AudioToolbox \
             -framework CoreMedia \
             -framework CoreFoundation \
-            -o "$RUNNER_TEMP/liteview-build34-audio"
-          "$RUNNER_TEMP/liteview-build34-audio"
+            -o "$RUNNER_TEMP/liteview-build35-audio"
+          "$RUNNER_TEMP/liteview-build35-audio"
 
       - name: Build unsigned iPhone Release app and Broadcast Extension
         working-directory: ios/PhoenixRealtimeVisionAssist
         shell: bash
         run: |
           set -euo pipefail
-          DERIVED="$RUNNER_TEMP/LiteViewBuild34DerivedData"
+          DERIVED="$RUNNER_TEMP/LiteViewBuild35DerivedData"
           rm -rf "$DERIVED"
           xcodebuild \
             -project PhoenixRealtimeVisionAssist.xcodeproj \
@@ -146,19 +139,19 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build
 
-      - name: Normalize 0.9.17 Build 34 and verify final binaries
+      - name: Normalize 0.9.18 Build 35 and verify final binaries
         shell: bash
         run: |
           set -euo pipefail
-          PRODUCTS="$RUNNER_TEMP/LiteViewBuild34DerivedData/Build/Products/Release-iphoneos"
+          PRODUCTS="$RUNNER_TEMP/LiteViewBuild35DerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
           EXT="$APP/PlugIns/PhoenixBroadcastExtension.appex"
           APP_PLIST="$APP/Info.plist"
           EXT_PLIST="$EXT/Info.plist"
           APP_BIN="$APP/PhoenixRealtimeVisionAssist"
           EXT_BIN="$EXT/PhoenixBroadcastExtension"
-          APP_LINKS="$RUNNER_TEMP/build34-app-links.txt"
-          EXT_LINKS="$RUNNER_TEMP/build34-ext-links.txt"
+          APP_LINKS="$RUNNER_TEMP/build35-app-links.txt"
+          EXT_LINKS="$RUNNER_TEMP/build35-ext-links.txt"
           test -d "$APP" && test -d "$EXT" && test -x "$APP_BIN" && test -x "$EXT_BIN"
           otool -L "$APP_BIN" > "$APP_LINKS"
           otool -L "$EXT_BIN" > "$EXT_LINKS"
@@ -169,31 +162,31 @@ jobs:
               /usr/libexec/PlistBuddy -c "Add :$key string $value" "$plist"
           }
           set_plist_string "$APP_PLIST" CFBundleDisplayName LiteView
-          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.17
-          set_plist_string "$APP_PLIST" CFBundleVersion 34
+          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.18
+          set_plist_string "$APP_PLIST" CFBundleVersion 35
           set_plist_string "$EXT_PLIST" CFBundleDisplayName 'LiteView Broadcast'
-          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.17
-          set_plist_string "$EXT_PLIST" CFBundleVersion 34
+          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.18
+          set_plist_string "$EXT_PLIST" CFBundleVersion 35
 
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PLIST")" = '34'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_PLIST")" = '34'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PLIST")" = '35'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_PLIST")" = '35'
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT_PLIST")" = 'PhoenixBroadcastExtension.EnhancedBroadcastSampleHandler'
           test -n "$(find "$EXT" -type d -name 'yolo11n.mlmodelc' -prune -print -quit)"
           grep -q 'AVKit.framework' "$APP_LINKS"
           grep -q 'AVFoundation.framework' "$APP_LINKS"
           grep -q 'AudioToolbox.framework' "$APP_LINKS"
           grep -q 'Vision.framework' "$EXT_LINKS"
-          echo 'BUILD34_FINAL_BINARY_PASS'
+          echo 'BUILD35_FINAL_BINARY_PASS'
 
       - name: Package unsigned IPA
         shell: bash
         run: |
           set -euo pipefail
-          PRODUCTS="$RUNNER_TEMP/LiteViewBuild34DerivedData/Build/Products/Release-iphoneos"
+          PRODUCTS="$RUNNER_TEMP/LiteViewBuild35DerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
-          ROOT="$RUNNER_TEMP/LiteViewBuild34Package"
-          IPA="$RUNNER_TEMP/LiteView-0.9.17-Build34-CircularMinimap-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.17-Build34-CircularMinimap.txt"
+          ROOT="$RUNNER_TEMP/LiteViewBuild35Package"
+          IPA="$RUNNER_TEMP/LiteView-0.9.18-Build35-AutoCircularMinimap-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.18-Build35-AutoCircularMinimap.txt"
           rm -rf "$ROOT" "$IPA" "$MANIFEST"
           mkdir -p "$ROOT/Payload"
           cp -R "$APP" "$ROOT/Payload/"
@@ -202,18 +195,20 @@ jobs:
           SIZE="$(stat -f%z "$IPA")"
           SHA="$(shasum -a 256 "$IPA" | awk '{print $1}')"
           cat > "$MANIFEST" <<EOF
-          LiteView 0.9.17 Build 34 Circular Minimap
+          LiteView 0.9.18 Build 35 Auto Circular Minimap
           commit=${GITHUB_SHA}
-          version=0.9.17
-          build=34
+          version=0.9.18
+          build=35
           ipa_size_bytes=${SIZE}
           ipa_sha256=${SHA}
-          pip_canvas=320x320 circular map content
-          circle_size=62%-96% adjustable
+          pip_canvas=320x320 1:1 circular content; system PiP pinch-resizable
           map_zoom=0.72x-1.65x adjustable
           background_opacity=8%-48% adjustable
-          map_modes=full-map or player-centered
-          rotation_modes=north-up or follow-heading
+          map_modes=player-centered or full-map
+          rotation_modes=follow-heading or north-up
+          automatic_map_detection=visible OCR map title and unique POI aliases
+          automatic_anchor_detection=visible POI OCR; retains last lock when evidence disappears
+          manual_map_anchor=fallback only
           maps=Zero Dam;Layali Grove;Space City;Brakkesh;Tide Prison;AZ3
           visual_marker=red screen-visible person evidence only
           prediction_marker=blue public-topology route probability
@@ -231,10 +226,10 @@ jobs:
       - name: Upload candidate artifact
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-circular-minimap-0.9.17-build34
+          name: liteview-auto-circular-minimap-0.9.18-build35
           path: |
-            ${{ runner.temp }}/LiteView-0.9.17-Build34-CircularMinimap-unsigned.ipa
-            ${{ runner.temp }}/LiteView-0.9.17-Build34-CircularMinimap.txt
+            ${{ runner.temp }}/LiteView-0.9.18-Build35-AutoCircularMinimap-unsigned.ipa
+            ${{ runner.temp }}/LiteView-0.9.18-Build35-AutoCircularMinimap.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -245,15 +240,15 @@ jobs:
         run: |
           set -euo pipefail
           TAG='liteview-audio-clean-overlay-latest'
-          IPA="$RUNNER_TEMP/LiteView-0.9.17-Build34-CircularMinimap-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.17-Build34-CircularMinimap.txt"
-          NOTES='Build 34 restores an always-on map as an adjustable circular minimap instead of a large square overlay. Circle size, map zoom, background opacity, player-centered/full-map mode, and north-up/follow-heading rotation are configurable so the visual layout can be tuned to resemble the game minimap. Screen-visible person evidence, public-topology route predictions, rendered soundwave HUD cues, automatic compass OCR, and HRTF secondary audio evidence remain separate.'
+          IPA="$RUNNER_TEMP/LiteView-0.9.18-Build35-AutoCircularMinimap-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.18-Build35-AutoCircularMinimap.txt"
+          NOTES='Build 35 keeps a 1:1 circular minimap inside the system pinch-resizable PiP. It adds screen-visible OCR for automatic map identification and coarse POI/anchor locking. Normal play no longer requires returning to LiteView to mark each point: detected map/POI evidence updates automatically and the last reliable lock is retained when labels temporarily disappear. Manual map and anchor selection remain fallback only. No hidden game state or memory access is used.'
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
-            gh release edit "$TAG" --title 'LiteView 0.9.17 Build 34 Circular Minimap' --notes "$NOTES" --target "$GITHUB_SHA"
+            gh release edit "$TAG" --title 'LiteView 0.9.18 Build 35 Auto Circular Minimap' --notes "$NOTES" --target "$GITHUB_SHA"
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" \
               --target "$GITHUB_SHA" \
-              --title 'LiteView 0.9.17 Build 34 Circular Minimap' \
+              --title 'LiteView 0.9.18 Build 35 Auto Circular Minimap' \
               --notes "$NOTES"
           fi
