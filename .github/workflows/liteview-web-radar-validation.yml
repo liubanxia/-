@@ -1,0 +1,102 @@
+name: LiteView Web Radar Validation
+
+on:
+  push:
+    branches:
+      - feature/liteview-audio-clean-overlay
+    paths:
+      - 'web/liteview-radar/**'
+      - 'ios/PhoenixRealtimeVisionAssist/**'
+      - '.github/workflows/liteview-web-radar-validation.yml'
+  workflow_dispatch:
+
+jobs:
+  web-radar-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python syntax
+        run: |
+          python3 -m py_compile web/liteview-radar/server.py web/liteview-radar/demo_sender.py
+      - name: Start relay and verify HTTP state path
+        run: |
+          cd web/liteview-radar
+          python3 server.py --host 127.0.0.1 --port 8765 > /tmp/liteview-radar.log 2>&1 &
+          echo $! > /tmp/liteview-radar.pid
+          python3 - <<'PY'
+          import json, time, urllib.request
+          base='http://127.0.0.1:8765'
+          for _ in range(30):
+              try:
+                  with urllib.request.urlopen(base+'/health', timeout=.5) as r:
+                      obj=json.load(r)
+                  assert obj['ok'] is True
+                  assert obj['discovery']['magic']=='LITEVIEW_RADAR_V1'
+                  break
+              except Exception:
+                  time.sleep(.1)
+          else:
+              raise SystemExit('relay did not start')
+          payload={
+              'map':'AZ3',
+              'player':{'x':0.42,'y':0.61,'heading':133,'confidence':0.88,'mode':'tracking'},
+              'targets':[{'screenX':0.28,'screenY':0.55,'confidence':0.79,'boxHeight':0.11,'stableFrames':3}],
+              'sounds':[{'kind':'footstep','lateral':-0.4,'bearing':-36,'proximity':0.62,'verticalCue':1,'confidence':0.73,'source':'hud'}],
+              'source':'ci-smoke',
+          }
+          req=urllib.request.Request(base+'/api/state', data=json.dumps(payload).encode(), headers={'Content-Type':'application/json'}, method='POST')
+          with urllib.request.urlopen(req, timeout=1) as r:
+              assert json.load(r)['ok'] is True
+          with urllib.request.urlopen(base+'/api/state', timeout=1) as r:
+              state=json.load(r)
+          assert state['map']=='AZ3'
+          assert abs(state['player']['x']-0.42)<1e-9
+          assert len(state['targets'])==1
+          assert state['sounds'][0]['verticalCue']==1
+          print('WEB RADAR SMOKE PASS')
+          PY
+          kill "$(cat /tmp/liteview-radar.pid)" || true
+
+  ios-bridge-build:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        working-directory: ios/PhoenixRealtimeVisionAssist
+        run: xcodegen generate
+      - name: Guard Web Radar target wiring
+        working-directory: ios/PhoenixRealtimeVisionAssist
+        run: |
+          grep -q 'ContinuousMapPositionStateChannel.swift' project.yml
+          grep -q 'MapScreenVisibilityStateChannel.swift' project.yml
+          grep -q 'WebRadarConfiguration.swift' project.yml
+          grep -q 'BroadcastContinuousMapLocalizer' Sources/Broadcast/EnhancedBroadcastSampleHandler.swift
+          grep -q 'BroadcastWebRadarBridge' Sources/Broadcast/EnhancedBroadcastSampleHandler.swift
+          grep -q 'BroadcastFullMapVisibilityAnalyzer' Sources/Broadcast/EnhancedBroadcastSampleHandler.swift
+          grep -q 'LITEVIEW_RADAR_V1' ../../web/liteview-radar/server.py
+      - name: Build unsigned iPhone Release app and Broadcast Extension
+        working-directory: ios/PhoenixRealtimeVisionAssist
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project PhoenixRealtimeVisionAssist.xcodeproj \
+            -scheme PhoenixRealtimeVisionAssist \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath "$RUNNER_TEMP/LiteViewWebRadarDerived" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build | tee "$RUNNER_TEMP/liteview-web-radar-build.log"
+      - name: Verify extension binary
+        run: |
+          APP="$RUNNER_TEMP/LiteViewWebRadarDerived/Build/Products/Release-iphoneos/PhoenixRealtimeVisionAssist.app"
+          test -d "$APP"
+          test -d "$APP/PlugIns/PhoenixBroadcastExtension.appex"
+          test -f "$APP/PlugIns/PhoenixBroadcastExtension.appex/PhoenixBroadcastExtension"
+          echo 'IOS WEB RADAR BUILD PASS'
