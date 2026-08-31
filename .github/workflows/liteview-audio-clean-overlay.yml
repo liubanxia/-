@@ -1,4 +1,4 @@
-name: LiteView Evidence First Radar Candidate
+name: LiteView HUD HRTF Fusion Candidate
 
 on:
   push:
@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 jobs:
-  build-evidence-first:
+  build-hud-hrtf-fusion:
     runs-on: macos-15
     timeout-minutes: 35
 
@@ -37,7 +37,7 @@ jobs:
           MODEL_DIR="$ROOT/Resources/BroadcastModels"
           ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
           UNZIP_DIR="$RUNNER_TEMP/liteview-yolo11n-coreml"
-          COMPILE_DIR="$RUNNER_TEMP/liteview-build31-model"
+          COMPILE_DIR="$RUNNER_TEMP/liteview-build32-model"
           URL='https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
           rm -rf "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
           mkdir -p "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
@@ -50,60 +50,64 @@ jobs:
           test -n "$COMPILED"
           cp -R "$COMPILED" "$MODEL_DIR/yolo11n.mlmodelc"
 
-      - name: Guard Build 31 evidence-first wiring
+      - name: Guard Build 32 HUD HRTF wiring
         shell: bash
         run: |
           set -euo pipefail
           ROOT='ios/PhoenixRealtimeVisionAssist'
-          CTRL="$ROOT/Sources/App/EvidenceFirstRadarController.swift"
+          CTRL="$ROOT/Sources/App/HUDFusedRadarController.swift"
           VIDEO="$ROOT/Sources/Broadcast/EvidenceFirstVideoProcessor.swift"
+          HUD="$ROOT/Sources/ExtensionSupport/BroadcastHUDSoundAnalyzer.swift"
+          COMPASS="$ROOT/Sources/ExtensionSupport/BroadcastCompassHeadingAnalyzer.swift"
           SPATIAL="$ROOT/Sources/Broadcast/BroadcastSpatialAudioAnalyzer.swift"
-          CHANNELS="$ROOT/Sources/Core/EvidenceStateChannels.swift"
           HANDLER="$ROOT/Sources/Broadcast/EnhancedBroadcastSampleHandler.swift"
           PROJECT="$ROOT/project.yml"
 
-          grep -q 'BUILD 31 · EVIDENCE FIRST' "$CTRL"
-          grep -q 'LITEVIEW_EVIDENCE_FIRST_BUILD31' "$CTRL"
-          grep -q 'VisibleTargetStateReader' "$CTRL"
-          grep -q 'SpatialAudioStateReader' "$CTRL"
-          grep -q 'stableFrames >= 2' "$CTRL"
-          grep -q 'horizontalFOV' "$CTRL"
-          grep -q '0.46' "$VIDEO"
-          grep -q '0.62' "$VIDEO"
-          grep -q '1.20' "$VIDEO"
-          grep -q 'VisibleTargetStatePublisher' "$VIDEO"
-          grep -q 'minimumConfidence: 0.075' "$VIDEO"
+          grep -q 'BUILD 32 · HUD+HRTF' "$CTRL"
+          grep -q 'LITEVIEW_HUD_HRTF_BUILD32' "$CTRL"
+          grep -q 'HUDSoundStateReader' "$CTRL"
+          grep -q 'CompassHeadingStateReader' "$CTRL"
+          grep -q 'fuseSounds' "$CTRL"
+          grep -q 'STEP' "$CTRL"
+          grep -q 'SHOT' "$CTRL"
+          grep -q 'BroadcastHUDSoundAnalyzer' "$HUD"
+          grep -q 'redMask' "$HUD"
+          grep -q 'whiteMask' "$HUD"
+          grep -q 'verticalCue' "$HUD"
+          grep -q 'BroadcastCompassHeadingAnalyzer' "$COMPASS"
+          grep -q 'VNRecognizeTextRequest' "$COMPASS"
+          grep -q '0.52' "$COMPASS"
           grep -q 'bestNormalizedCorrelation' "$SPATIAL"
-          grep -q 'coherence' "$SPATIAL"
-          grep -q 'SpatialAudioStatePublisher' "$SPATIAL"
-          grep -q 'slotCount = 4' "$CHANNELS"
-          grep -q 'spatial-audio.v1' "$CHANNELS"
           grep -q 'EvidenceFirstVideoProcessor' "$HANDLER"
-          grep -q 'BroadcastSpatialAudioAnalyzer' "$HANDLER"
-          grep -q 'CURRENT_PROJECT_VERSION: 31' "$PROJECT"
-          grep -q 'MARKETING_VERSION: 0.9.14' "$PROJECT"
-          grep -q 'VisibleMultiMapRadarController.swift' "$PROJECT"
-          grep -q 'EvidenceStateChannels.swift' "$PROJECT"
-          echo 'BUILD31_EVIDENCE_WIRING_PASS'
+          grep -q 'hudSoundAnalyzer.consumeVideo' "$HANDLER"
+          grep -q 'compassAnalyzer.consumeVideo' "$HANDLER"
+          grep -q 'CURRENT_PROJECT_VERSION: 32' "$PROJECT"
+          grep -q 'MARKETING_VERSION: 0.9.15' "$PROJECT"
+          grep -q 'EvidenceFirstRadarController.swift' "$PROJECT"
+          grep -q 'HUDSoundStateChannel.swift' "$PROJECT"
+          grep -q 'CompassHeadingStateChannel.swift' "$PROJECT"
+          echo 'BUILD32_HUD_HRTF_WIRING_PASS'
 
       - name: Generate project
         working-directory: ios/PhoenixRealtimeVisionAssist
         run: xcodegen generate
 
-      - name: Verify Build 31 target wiring
+      - name: Verify Build 32 target wiring
         shell: bash
         run: |
           set -euo pipefail
           PBX='ios/PhoenixRealtimeVisionAssist/PhoenixRealtimeVisionAssist.xcodeproj/project.pbxproj'
-          grep -q 'EvidenceFirstRadarController.swift' "$PBX"
-          grep -q 'EvidenceFirstVideoProcessor.swift' "$PBX"
-          grep -q 'BroadcastSpatialAudioAnalyzer.swift' "$PBX"
-          grep -q 'EvidenceStateChannels.swift' "$PBX"
+          grep -q 'HUDFusedRadarController.swift' "$PBX"
+          grep -q 'BroadcastHUDSoundAnalyzer.swift' "$PBX"
+          grep -q 'BroadcastCompassHeadingAnalyzer.swift' "$PBX"
+          grep -q 'HUDSoundStateChannel.swift' "$PBX"
+          grep -q 'CompassHeadingStateChannel.swift' "$PBX"
+          ! grep -q 'EvidenceFirstRadarController.swift in Sources' "$PBX"
           ! grep -q 'VisibleMultiMapRadarController.swift in Sources' "$PBX"
           ! grep -q 'MultiMapFloatingRadarController.swift in Sources' "$PBX"
           ! grep -q 'FullMapFloatingRadarController.swift in Sources' "$PBX"
           ! grep -q 'FloatingDotPiPController.swift in Sources' "$PBX"
-          echo 'BUILD31_TARGET_WIRING_PASS'
+          echo 'BUILD32_TARGET_WIRING_PASS'
 
       - name: Run lifecycle smoke test
         shell: bash
@@ -115,8 +119,8 @@ jobs:
             "$ROOT/Sources/Core/BroadcastLifecycle.swift" \
             "$ROOT/Sources/Vision/PhoenixCapabilityModelBank.swift" \
             "$ROOT/scripts/lifecycle_smoke_main.swift" \
-            -o "$RUNNER_TEMP/liteview-build31-lifecycle"
-          "$RUNNER_TEMP/liteview-build31-lifecycle"
+            -o "$RUNNER_TEMP/liteview-build32-lifecycle"
+          "$RUNNER_TEMP/liteview-build32-lifecycle"
 
       - name: Run synthetic PCM telemetry test
         shell: bash
@@ -129,15 +133,15 @@ jobs:
             -framework AudioToolbox \
             -framework CoreMedia \
             -framework CoreFoundation \
-            -o "$RUNNER_TEMP/liteview-build31-audio"
-          "$RUNNER_TEMP/liteview-build31-audio"
+            -o "$RUNNER_TEMP/liteview-build32-audio"
+          "$RUNNER_TEMP/liteview-build32-audio"
 
       - name: Build unsigned iPhone Release app and Broadcast Extension
         working-directory: ios/PhoenixRealtimeVisionAssist
         shell: bash
         run: |
           set -euo pipefail
-          DERIVED="$RUNNER_TEMP/LiteViewBuild31DerivedData"
+          DERIVED="$RUNNER_TEMP/LiteViewBuild32DerivedData"
           rm -rf "$DERIVED"
           xcodebuild \
             -project PhoenixRealtimeVisionAssist.xcodeproj \
@@ -149,24 +153,20 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build
 
-      - name: Normalize 0.9.14 Build 31 and verify final binaries
+      - name: Normalize 0.9.15 Build 32 and verify final binaries
         shell: bash
         run: |
           set -euo pipefail
-          PRODUCTS="$RUNNER_TEMP/LiteViewBuild31DerivedData/Build/Products/Release-iphoneos"
+          PRODUCTS="$RUNNER_TEMP/LiteViewBuild32DerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
           EXT="$APP/PlugIns/PhoenixBroadcastExtension.appex"
           APP_PLIST="$APP/Info.plist"
           EXT_PLIST="$EXT/Info.plist"
           APP_BIN="$APP/PhoenixRealtimeVisionAssist"
           EXT_BIN="$EXT/PhoenixBroadcastExtension"
-          APP_LINKS="$RUNNER_TEMP/build31-app-links.txt"
-          EXT_LINKS="$RUNNER_TEMP/build31-ext-links.txt"
-
-          test -d "$APP"
-          test -d "$EXT"
-          test -x "$APP_BIN"
-          test -x "$EXT_BIN"
+          APP_LINKS="$RUNNER_TEMP/build32-app-links.txt"
+          EXT_LINKS="$RUNNER_TEMP/build32-ext-links.txt"
+          test -d "$APP" && test -d "$EXT" && test -x "$APP_BIN" && test -x "$EXT_BIN"
           otool -L "$APP_BIN" > "$APP_LINKS"
           otool -L "$EXT_BIN" > "$EXT_LINKS"
 
@@ -176,32 +176,31 @@ jobs:
               /usr/libexec/PlistBuddy -c "Add :$key string $value" "$plist"
           }
           set_plist_string "$APP_PLIST" CFBundleDisplayName LiteView
-          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.14
-          set_plist_string "$APP_PLIST" CFBundleVersion 31
+          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.15
+          set_plist_string "$APP_PLIST" CFBundleVersion 32
           set_plist_string "$EXT_PLIST" CFBundleDisplayName 'LiteView Broadcast'
-          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.14
-          set_plist_string "$EXT_PLIST" CFBundleVersion 31
+          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.15
+          set_plist_string "$EXT_PLIST" CFBundleVersion 32
 
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PLIST")" = '0.9.14'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PLIST")" = '31'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_PLIST")" = '31'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PLIST")" = '32'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_PLIST")" = '32'
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT_PLIST")" = 'PhoenixBroadcastExtension.EnhancedBroadcastSampleHandler'
           test -n "$(find "$EXT" -type d -name 'yolo11n.mlmodelc' -prune -print -quit)"
           grep -q 'AVKit.framework' "$APP_LINKS"
           grep -q 'AVFoundation.framework' "$APP_LINKS"
           grep -q 'AudioToolbox.framework' "$APP_LINKS"
           grep -q 'Vision.framework' "$EXT_LINKS"
-          echo 'BUILD31_FINAL_BINARY_PASS'
+          echo 'BUILD32_FINAL_BINARY_PASS'
 
       - name: Package unsigned IPA
         shell: bash
         run: |
           set -euo pipefail
-          PRODUCTS="$RUNNER_TEMP/LiteViewBuild31DerivedData/Build/Products/Release-iphoneos"
+          PRODUCTS="$RUNNER_TEMP/LiteViewBuild32DerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
-          ROOT="$RUNNER_TEMP/LiteViewBuild31Package"
-          IPA="$RUNNER_TEMP/LiteView-0.9.14-Build31-EvidenceFirstRadar-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.14-Build31-EvidenceFirstRadar.txt"
+          ROOT="$RUNNER_TEMP/LiteViewBuild32Package"
+          IPA="$RUNNER_TEMP/LiteView-0.9.15-Build32-HUD-HRTF-Fusion-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.15-Build32-HUD-HRTF-Fusion.txt"
           rm -rf "$ROOT" "$IPA" "$MANIFEST"
           mkdir -p "$ROOT/Payload"
           cp -R "$APP" "$ROOT/Payload/"
@@ -210,22 +209,25 @@ jobs:
           SIZE="$(stat -f%z "$IPA")"
           SHA="$(shasum -a 256 "$IPA" | awk '{print $1}')"
           cat > "$MANIFEST" <<EOF
-          LiteView 0.9.14 Build 31 Evidence First Radar
+          LiteView 0.9.15 Build 32 HUD HRTF Fusion
           commit=${GITHUB_SHA}
-          version=0.9.14
-          build=31
+          version=0.9.15
+          build=32
           ipa_size_bytes=${SIZE}
           ipa_sha256=${SHA}
-          visual_targets=up to 4 concurrent entitlement-free target slots
-          visual_reacquisition=about 0.46s nominal when searching, thermal/latency adaptive
-          full_scan=about 0.62s searching / 0.92s while tracking
-          human_fallback=eligible after one empty full scan, throttled about 1.20s
-          red_marker=screen-relative visible-person bearing and coarse distance from box height
-          red_marker_claim=not an absolute world/map coordinate
-          blue_marker=public-map topology route probability only
-          prediction_decay=about 2.8s maximum without fresh visible evidence
-          spatial_audio=stereo inter-channel delay + normalized correlation + level bias
-          spatial_audio_low_confidence=no forced directional convergence
+          visual_targets=up to 4 concurrent screen-visible people
+          visual_reacquisition=fast evidence-first path retained
+          hud_sound=screen-visible mobile compass soundwave region scanned about every 0.14s
+          hud_kind=red-biased glyph gunfire; white-biased glyph footstep
+          hud_distance=soundwave glyph size used only as coarse proximity
+          hud_vertical=screen glyph vertical asymmetry provides weak up/down arrow cue
+          compass=top-center fast OCR about every 0.52s, automatic heading when confidence is sufficient
+          manual_heading=fallback only when compass OCR is unavailable
+          hrtf=stereo inter-channel delay + normalized correlation + level bias
+          sound_fusion=HUD wins; HRTF refines only when consistent and reduces confidence on conflict
+          red_marker=screen-visible person relative bearing/coarse distance, not absolute world coordinate
+          blue_marker=public map topology route probability only
+          sound_marker=HUD/HRTF relative direction + coarse proximity + up/down cue
           maps=Zero Dam;Layali Grove;Space City;Brakkesh;Tide Prison;AZ3
           hidden_game_state=none
           memory_access=none
@@ -238,10 +240,10 @@ jobs:
       - name: Upload candidate artifact
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-evidence-first-0.9.14-build31
+          name: liteview-hud-hrtf-fusion-0.9.15-build32
           path: |
-            ${{ runner.temp }}/LiteView-0.9.14-Build31-EvidenceFirstRadar-unsigned.ipa
-            ${{ runner.temp }}/LiteView-0.9.14-Build31-EvidenceFirstRadar.txt
+            ${{ runner.temp }}/LiteView-0.9.15-Build32-HUD-HRTF-Fusion-unsigned.ipa
+            ${{ runner.temp }}/LiteView-0.9.15-Build32-HUD-HRTF-Fusion.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -252,15 +254,15 @@ jobs:
         run: |
           set -euo pipefail
           TAG='liteview-audio-clean-overlay-latest'
-          IPA="$RUNNER_TEMP/LiteView-0.9.14-Build31-EvidenceFirstRadar-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.14-Build31-EvidenceFirstRadar.txt"
-          NOTES='Build 31 fixes the structural accuracy problems in Build 30. Up to four visible people can cross the extension/app boundary, visual reacquisition is much faster, and the independent human fallback can engage after one empty scan. Red dots now mean screen-relative visible-person direction and coarse distance instead of pretending to be exact full-map coordinates. Blue dots remain topology route probabilities. App-audio direction now uses stereo delay/coherence plus level bias and suppresses low-confidence convergence.'
+          IPA="$RUNNER_TEMP/LiteView-0.9.15-Build32-HUD-HRTF-Fusion-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.15-Build32-HUD-HRTF-Fusion.txt"
+          NOTES='Build 32 adds the missing mobile-native evidence: rendered soundwave HUD recognition, coarse soundwave-size proximity, up/down arrow cue extraction, automatic screen-compass heading, and HRTF stereo delay/coherence as a secondary cue. HUD evidence takes priority over raw audio. Manual heading is now fallback only. Visible-person multi-target detection and public-map topology prediction remain separate so estimates are not presented as exact hidden game coordinates.'
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
-            gh release edit "$TAG" --title 'LiteView 0.9.14 Build 31 Evidence First Radar' --notes "$NOTES" --target "$GITHUB_SHA"
+            gh release edit "$TAG" --title 'LiteView 0.9.15 Build 32 HUD HRTF Fusion' --notes "$NOTES" --target "$GITHUB_SHA"
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" \
               --target "$GITHUB_SHA" \
-              --title 'LiteView 0.9.14 Build 31 Evidence First Radar' \
+              --title 'LiteView 0.9.15 Build 32 HUD HRTF Fusion' \
               --notes "$NOTES"
           fi
