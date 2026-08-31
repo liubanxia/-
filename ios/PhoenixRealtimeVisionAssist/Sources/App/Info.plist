@@ -11,9 +11,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.9.20</string>
+    <string>0.9.21</string>
     <key>CFBundleVersion</key>
-    <string>37</string>
+    <string>38</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>LiteView uses your local network only to send its own screen-visible radar analysis to your Web Radar device.</string>
     <key>NSAppTransportSecurity</key>
