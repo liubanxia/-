@@ -1,4 +1,4 @@
-name: LiteView Edge HUD Candidate
+name: LiteView Circular Minimap Candidate
 
 on:
   push:
@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 jobs:
-  build-edge-hud:
+  build-circular-minimap:
     runs-on: macos-15
     timeout-minutes: 35
 
@@ -37,7 +37,7 @@ jobs:
           MODEL_DIR="$ROOT/Resources/BroadcastModels"
           ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
           UNZIP_DIR="$RUNNER_TEMP/liteview-yolo11n-coreml"
-          COMPILE_DIR="$RUNNER_TEMP/liteview-build33-model"
+          COMPILE_DIR="$RUNNER_TEMP/liteview-build34-model"
           URL='https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
           rm -rf "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
           mkdir -p "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
@@ -50,7 +50,7 @@ jobs:
           test -n "$COMPILED"
           cp -R "$COMPILED" "$MODEL_DIR/yolo11n.mlmodelc"
 
-      - name: Guard Build 33 edge HUD wiring
+      - name: Guard Build 34 circular minimap wiring
         shell: bash
         run: |
           set -euo pipefail
@@ -62,11 +62,13 @@ jobs:
           HANDLER="$ROOT/Sources/Broadcast/EnhancedBroadcastSampleHandler.swift"
           PROJECT="$ROOT/project.yml"
 
-          grep -q 'B33 EDGE HUD' "$CTRL"
-          grep -q 'LITEVIEW_EDGE_HUD_BUILD33' "$CTRL"
-          grep -q 'kCVPixelBufferWidthKey: 480' "$CTRL"
-          grep -q 'kCVPixelBufferHeightKey: 96' "$CTRL"
-          grep -q '0.08...0.35' "$CTRL"
+          grep -q 'LITEVIEW_CIRCULAR_MAP_BUILD34' "$CTRL"
+          grep -q 'Build 34' "$CTRL"
+          grep -q 'circleScale' "$CTRL"
+          grep -q 'mapZoom' "$CTRL"
+          grep -q 'rotateWithHeading' "$CTRL"
+          grep -q 'centerOnPlayer' "$CTRL"
+          grep -q 'FullMapPredictiveRadarEngine' "$CTRL"
           grep -q 'HUDSoundStateReader' "$CTRL"
           grep -q 'CompassHeadingStateReader' "$CTRL"
           grep -q 'SpatialAudioStateReader' "$CTRL"
@@ -76,16 +78,15 @@ jobs:
           grep -q 'bestNormalizedCorrelation' "$SPATIAL"
           grep -q 'hudSoundAnalyzer.consumeVideo' "$HANDLER"
           grep -q 'compassAnalyzer.consumeVideo' "$HANDLER"
-          grep -q 'CURRENT_PROJECT_VERSION: 33' "$PROJECT"
-          grep -q 'MARKETING_VERSION: 0.9.16' "$PROJECT"
-          grep -q 'HUDFusedRadarController.swift' "$PROJECT"
-          echo 'BUILD33_EDGE_HUD_WIRING_PASS'
+          grep -q 'CURRENT_PROJECT_VERSION: 34' "$PROJECT"
+          grep -q 'MARKETING_VERSION: 0.9.17' "$PROJECT"
+          echo 'BUILD34_CIRCULAR_MINIMAP_WIRING_PASS'
 
       - name: Generate project
         working-directory: ios/PhoenixRealtimeVisionAssist
         run: xcodegen generate
 
-      - name: Verify Build 33 target wiring
+      - name: Verify Build 34 target wiring
         shell: bash
         run: |
           set -euo pipefail
@@ -99,7 +100,7 @@ jobs:
           ! grep -q 'MultiMapFloatingRadarController.swift in Sources' "$PBX"
           ! grep -q 'FullMapFloatingRadarController.swift in Sources' "$PBX"
           ! grep -q 'FloatingDotPiPController.swift in Sources' "$PBX"
-          echo 'BUILD33_TARGET_WIRING_PASS'
+          echo 'BUILD34_TARGET_WIRING_PASS'
 
       - name: Run lifecycle smoke test
         shell: bash
@@ -111,8 +112,8 @@ jobs:
             "$ROOT/Sources/Core/BroadcastLifecycle.swift" \
             "$ROOT/Sources/Vision/PhoenixCapabilityModelBank.swift" \
             "$ROOT/scripts/lifecycle_smoke_main.swift" \
-            -o "$RUNNER_TEMP/liteview-build33-lifecycle"
-          "$RUNNER_TEMP/liteview-build33-lifecycle"
+            -o "$RUNNER_TEMP/liteview-build34-lifecycle"
+          "$RUNNER_TEMP/liteview-build34-lifecycle"
 
       - name: Run synthetic PCM telemetry test
         shell: bash
@@ -125,15 +126,15 @@ jobs:
             -framework AudioToolbox \
             -framework CoreMedia \
             -framework CoreFoundation \
-            -o "$RUNNER_TEMP/liteview-build33-audio"
-          "$RUNNER_TEMP/liteview-build33-audio"
+            -o "$RUNNER_TEMP/liteview-build34-audio"
+          "$RUNNER_TEMP/liteview-build34-audio"
 
       - name: Build unsigned iPhone Release app and Broadcast Extension
         working-directory: ios/PhoenixRealtimeVisionAssist
         shell: bash
         run: |
           set -euo pipefail
-          DERIVED="$RUNNER_TEMP/LiteViewBuild33DerivedData"
+          DERIVED="$RUNNER_TEMP/LiteViewBuild34DerivedData"
           rm -rf "$DERIVED"
           xcodebuild \
             -project PhoenixRealtimeVisionAssist.xcodeproj \
@@ -145,19 +146,19 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build
 
-      - name: Normalize 0.9.16 Build 33 and verify final binaries
+      - name: Normalize 0.9.17 Build 34 and verify final binaries
         shell: bash
         run: |
           set -euo pipefail
-          PRODUCTS="$RUNNER_TEMP/LiteViewBuild33DerivedData/Build/Products/Release-iphoneos"
+          PRODUCTS="$RUNNER_TEMP/LiteViewBuild34DerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
           EXT="$APP/PlugIns/PhoenixBroadcastExtension.appex"
           APP_PLIST="$APP/Info.plist"
           EXT_PLIST="$EXT/Info.plist"
           APP_BIN="$APP/PhoenixRealtimeVisionAssist"
           EXT_BIN="$EXT/PhoenixBroadcastExtension"
-          APP_LINKS="$RUNNER_TEMP/build33-app-links.txt"
-          EXT_LINKS="$RUNNER_TEMP/build33-ext-links.txt"
+          APP_LINKS="$RUNNER_TEMP/build34-app-links.txt"
+          EXT_LINKS="$RUNNER_TEMP/build34-ext-links.txt"
           test -d "$APP" && test -d "$EXT" && test -x "$APP_BIN" && test -x "$EXT_BIN"
           otool -L "$APP_BIN" > "$APP_LINKS"
           otool -L "$EXT_BIN" > "$EXT_LINKS"
@@ -168,31 +169,31 @@ jobs:
               /usr/libexec/PlistBuddy -c "Add :$key string $value" "$plist"
           }
           set_plist_string "$APP_PLIST" CFBundleDisplayName LiteView
-          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.16
-          set_plist_string "$APP_PLIST" CFBundleVersion 33
+          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.17
+          set_plist_string "$APP_PLIST" CFBundleVersion 34
           set_plist_string "$EXT_PLIST" CFBundleDisplayName 'LiteView Broadcast'
-          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.16
-          set_plist_string "$EXT_PLIST" CFBundleVersion 33
+          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.17
+          set_plist_string "$EXT_PLIST" CFBundleVersion 34
 
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PLIST")" = '33'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_PLIST")" = '33'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PLIST")" = '34'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_PLIST")" = '34'
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT_PLIST")" = 'PhoenixBroadcastExtension.EnhancedBroadcastSampleHandler'
           test -n "$(find "$EXT" -type d -name 'yolo11n.mlmodelc' -prune -print -quit)"
           grep -q 'AVKit.framework' "$APP_LINKS"
           grep -q 'AVFoundation.framework' "$APP_LINKS"
           grep -q 'AudioToolbox.framework' "$APP_LINKS"
           grep -q 'Vision.framework' "$EXT_LINKS"
-          echo 'BUILD33_FINAL_BINARY_PASS'
+          echo 'BUILD34_FINAL_BINARY_PASS'
 
       - name: Package unsigned IPA
         shell: bash
         run: |
           set -euo pipefail
-          PRODUCTS="$RUNNER_TEMP/LiteViewBuild33DerivedData/Build/Products/Release-iphoneos"
+          PRODUCTS="$RUNNER_TEMP/LiteViewBuild34DerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
-          ROOT="$RUNNER_TEMP/LiteViewBuild33Package"
-          IPA="$RUNNER_TEMP/LiteView-0.9.16-Build33-EdgeHUD-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.16-Build33-EdgeHUD.txt"
+          ROOT="$RUNNER_TEMP/LiteViewBuild34Package"
+          IPA="$RUNNER_TEMP/LiteView-0.9.17-Build34-CircularMinimap-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.17-Build34-CircularMinimap.txt"
           rm -rf "$ROOT" "$IPA" "$MANIFEST"
           mkdir -p "$ROOT/Payload"
           cp -R "$APP" "$ROOT/Payload/"
@@ -201,22 +202,24 @@ jobs:
           SIZE="$(stat -f%z "$IPA")"
           SHA="$(shasum -a 256 "$IPA" | awk '{print $1}')"
           cat > "$MANIFEST" <<EOF
-          LiteView 0.9.16 Build 33 Edge HUD
+          LiteView 0.9.17 Build 34 Circular Minimap
           commit=${GITHUB_SHA}
-          version=0.9.16
-          build=33
+          version=0.9.17
+          build=34
           ipa_size_bytes=${SIZE}
           ipa_sha256=${SHA}
-          pip_canvas=480x96 ultra-wide edge strip
-          default_background_opacity=20%
-          adjustable_background_opacity=8%-35%
-          full_map_overlay=removed from always-on PiP
-          visual_marker=thin red direction dot only
-          sound_marker=small orange/pink triangle with optional up/down cue
-          self_marker=small green center dot
+          pip_canvas=320x320 circular map content
+          circle_size=62%-96% adjustable
+          map_zoom=0.72x-1.65x adjustable
+          background_opacity=8%-48% adjustable
+          map_modes=full-map or player-centered
+          rotation_modes=north-up or follow-heading
+          maps=Zero Dam;Layali Grove;Space City;Brakkesh;Tide Prison;AZ3
+          visual_marker=red screen-visible person evidence only
+          prediction_marker=blue public-topology route probability
+          sound_marker=orange/pink HUD soundwave + optional up/down cue
           compass=automatic top-screen OCR retained
           hrtf=stereo delay/coherence retained as secondary evidence
-          hud_sound=screen-visible soundwave recognition retained as primary sound evidence
           hidden_game_state=none
           memory_access=none
           signing=unsigned; preserve PlugIns when re-signing
@@ -228,10 +231,10 @@ jobs:
       - name: Upload candidate artifact
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-edge-hud-0.9.16-build33
+          name: liteview-circular-minimap-0.9.17-build34
           path: |
-            ${{ runner.temp }}/LiteView-0.9.16-Build33-EdgeHUD-unsigned.ipa
-            ${{ runner.temp }}/LiteView-0.9.16-Build33-EdgeHUD.txt
+            ${{ runner.temp }}/LiteView-0.9.17-Build34-CircularMinimap-unsigned.ipa
+            ${{ runner.temp }}/LiteView-0.9.17-Build34-CircularMinimap.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -242,15 +245,15 @@ jobs:
         run: |
           set -euo pipefail
           TAG='liteview-audio-clean-overlay-latest'
-          IPA="$RUNNER_TEMP/LiteView-0.9.16-Build33-EdgeHUD-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.16-Build33-EdgeHUD.txt"
-          NOTES='Build 33 removes the always-on square full-map PiP that obscured gameplay. The active overlay is now a 480x96 ultra-wide edge strip with 8%-35% background opacity. It keeps thin visible-person direction dots, screen-visible soundwave direction and up/down cues, automatic compass OCR, and HRTF secondary audio evidence while leaving the main game view unobstructed.'
+          IPA="$RUNNER_TEMP/LiteView-0.9.17-Build34-CircularMinimap-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.17-Build34-CircularMinimap.txt"
+          NOTES='Build 34 restores an always-on map as an adjustable circular minimap instead of a large square overlay. Circle size, map zoom, background opacity, player-centered/full-map mode, and north-up/follow-heading rotation are configurable so the visual layout can be tuned to resemble the game minimap. Screen-visible person evidence, public-topology route predictions, rendered soundwave HUD cues, automatic compass OCR, and HRTF secondary audio evidence remain separate.'
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
-            gh release edit "$TAG" --title 'LiteView 0.9.16 Build 33 Edge HUD' --notes "$NOTES" --target "$GITHUB_SHA"
+            gh release edit "$TAG" --title 'LiteView 0.9.17 Build 34 Circular Minimap' --notes "$NOTES" --target "$GITHUB_SHA"
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" \
               --target "$GITHUB_SHA" \
-              --title 'LiteView 0.9.16 Build 33 Edge HUD' \
+              --title 'LiteView 0.9.17 Build 34 Circular Minimap' \
               --notes "$NOTES"
           fi
