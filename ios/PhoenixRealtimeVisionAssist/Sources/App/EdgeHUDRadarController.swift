@@ -8,7 +8,7 @@ import Foundation
 import SwiftUI
 import UIKit
 
-fileprivate enum EdgeHUDState: Equatable {
+fileprivate enum CircularRadarState: Equatable {
     case preview, waiting, frames, searching, tracking, failed, paused, test
 
     var code: String {
@@ -25,7 +25,7 @@ fileprivate enum EdgeHUDState: Equatable {
     }
 }
 
-fileprivate struct EdgeSoundMarker: Equatable {
+fileprivate struct CircularSoundMarker: Equatable {
     let lateral: Double
     let proximity: Double
     let verticalCue: Int
@@ -34,10 +34,11 @@ fileprivate struct EdgeSoundMarker: Equatable {
     let usedHUD: Bool
 }
 
-fileprivate struct EdgeHUDFrame {
-    let state: EdgeHUDState
+fileprivate struct CircularRadarFrame {
+    let state: CircularRadarState
     let visualTargets: [SharedVisibleTargetEvidence]
-    let soundMarkers: [EdgeSoundMarker]
+    let predictions: [RadarMapCandidate]
+    let soundMarkers: [CircularSoundMarker]
     let heading: Double
     let autoHeading: Bool
     let pulse: Bool
@@ -53,15 +54,38 @@ final class FloatingDotPiPModel: NSObject,
     @Published private(set) var isPossible = false
     @Published private(set) var isActive = false
     @Published private(set) var isStarting = false
-    @Published private(set) var liveStatusText = "边缘 HUD 已就绪 · 等待屏幕广播"
+    @Published private(set) var liveStatusText = "圆形地图已就绪 · 等待屏幕广播"
     @Published private(set) var soundStatusText = "声纹/HRTF：等待证据"
     @Published private(set) var compassStatusText = "罗盘：等待屏幕顶部朝向"
     @Published private(set) var lastError: String?
     @Published private(set) var lastBackgroundRenderDelta: UInt64?
 
     @Published var vibrationWarningEnabled = true
-    @Published var radarOpacity = 0.20 { didSet { renderFrame() } }
+    @Published var radarOpacity = 0.22 { didSet { renderFrame() } }
+    @Published var circleScale = 0.88 { didSet { renderFrame() } }
+    @Published var mapZoom = 1.00 { didSet { renderFrame() } }
+    @Published var rotateWithHeading = true { didSet { renderFrame() } }
+    @Published var centerOnPlayer = false { didSet { renderFrame() } }
     @Published var manualHeadingDegrees = 0.0 { didSet { renderFrame() } }
+    @Published var horizontalFOV = 100.0 { didSet { renderFrame() } }
+    @Published var selectedMapID: DeltaMapID = .az3 {
+        didSet {
+            guard selectedMapID != oldValue else { return }
+            selectedAnchorNodeID = DeltaMapCatalog.defaultAnchorID(for: selectedMapID)
+            resetRouteState()
+            renderFrame()
+        }
+    }
+    @Published var selectedAnchorNodeID = DeltaMapCatalog.defaultAnchorID(for: .az3) {
+        didSet {
+            guard selectedAnchorNodeID != oldValue else { return }
+            resetRouteState()
+            renderFrame()
+        }
+    }
+
+    var mapOptions: [MapCatalogEntry] { DeltaMapCatalog.all }
+    var anchorOptions: [DeltaMapAnchorDisplayOption] { DeltaMapCatalog.anchors(for: selectedMapID) }
 
     let displayLayer = AVSampleBufferDisplayLayer()
 
@@ -70,6 +94,7 @@ final class FloatingDotPiPModel: NSObject,
     private let hudSoundReader = HUDSoundStateReader()
     private let spatialReader = SpatialAudioStateReader()
     private let compassReader = CompassHeadingStateReader()
+    private let predictionEngine = FullMapPredictiveRadarEngine()
 
     private var pictureInPictureController: AVPictureInPictureController?
     private var timer: Timer?
@@ -79,6 +104,9 @@ final class FloatingDotPiPModel: NSObject,
     private var pipStartAttempt = 0
     private var audioSessionActive = false
 
+    private var lastPredictionUptime: TimeInterval = 0
+    private var lastPredictions: [RadarMapCandidate] = []
+    private var lastRouteNodeID: String?
     private var targetWasConfirmed = false
     private var lastWarningUptime: TimeInterval = 0
     private var testStartedUptime: TimeInterval = 0
@@ -99,10 +127,10 @@ final class FloatingDotPiPModel: NSObject,
     }
 
     var buttonTitle: String {
-        if isActive { return "关闭边缘 HUD" }
+        if isActive { return "关闭圆形地图" }
         if isStarting { return "正在开启…" }
-        if isPossible { return "开启边缘 HUD" }
-        return isSupported ? "边缘 HUD 准备中…" : "此设备不支持悬浮图"
+        if isPossible { return "开启圆形常驻地图" }
+        return isSupported ? "圆形地图准备中…" : "此设备不支持悬浮图"
     }
 
     var statusColor: Color {
@@ -136,7 +164,7 @@ final class FloatingDotPiPModel: NSObject,
     func start() {
         guard timer == nil else { return }
         renderFrame()
-        let timer = Timer(timeInterval: 0.16, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 0.18, repeats: true) { [weak self] _ in
             self?.renderFrame()
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -176,29 +204,31 @@ final class FloatingDotPiPModel: NSObject,
         let now = ProcessInfo.processInfo.systemUptime
         testStartedUptime = now
         testEndsUptime = now + 8
-        liveStatusText = "测试：细人物点 + 声纹箭头 + 自动罗盘"
+        liveStatusText = "测试：圆形地图 + 人物 + 路线 + 声纹 + 自动罗盘"
         start()
         renderFrame()
         startPictureInPictureIfPossible()
     }
 
-    private func makeFrame(at now: TimeInterval) -> EdgeHUDFrame {
+    private func makeFrame(at now: TimeInterval) -> CircularRadarFrame {
         if testEndsUptime > now {
             let elapsed = now - testStartedUptime
+            let heading = normalized(265 + sin(elapsed * 0.6) * 24)
             let targets = [
                 SharedVisibleTargetEvidence(x: 0.22, y: 0.58, confidence: 0.91, boxHeight: 0.20, stableFrames: 4),
                 SharedVisibleTargetEvidence(x: 0.55, y: 0.50, confidence: 0.78, boxHeight: 0.11, stableFrames: 3),
                 SharedVisibleTargetEvidence(x: 0.82, y: 0.61, confidence: 0.69, boxHeight: 0.07, stableFrames: 2)
             ]
             let sounds = [
-                EdgeSoundMarker(lateral: -0.68, proximity: 0.72, verticalCue: 1, kind: .footstep, confidence: 0.88, usedHUD: true),
-                EdgeSoundMarker(lateral: 0.42, proximity: 0.35, verticalCue: -1, kind: .gunfire, confidence: 0.82, usedHUD: true)
+                CircularSoundMarker(lateral: -0.68, proximity: 0.72, verticalCue: 1, kind: .footstep, confidence: 0.88, usedHUD: true),
+                CircularSoundMarker(lateral: 0.42, proximity: 0.35, verticalCue: -1, kind: .gunfire, confidence: 0.82, usedHUD: true)
             ]
-            return EdgeHUDFrame(
+            return CircularRadarFrame(
                 state: .test,
                 visualTargets: targets,
+                predictions: routePredictions(for: targets, heading: heading, at: now),
                 soundMarkers: sounds,
-                heading: normalized(265 + sin(elapsed * 0.6) * 24),
+                heading: heading,
                 autoHeading: true,
                 pulse: pulseOn(now),
                 alert: true
@@ -215,6 +245,10 @@ final class FloatingDotPiPModel: NSObject,
         let confirmedTargets = targets.filter { $0.confidence >= 0.13 && $0.stableFrames >= 2 }
         updateWarning(hasConfirmedTarget: !confirmedTargets.isEmpty, at: now)
 
+        let predictions = targets.isEmpty
+            ? decayedPredictions(at: now)
+            : routePredictions(for: targets, heading: heading, at: now)
+
         if autoHeading, let compass {
             compassStatusText = String(format: "罗盘 AUTO %.0f° · %.0f%%", compass.degrees, compass.confidence * 100)
         } else {
@@ -222,14 +256,14 @@ final class FloatingDotPiPModel: NSObject,
         }
         updateSoundStatus(hud: hudSounds, spatial: spatial, fused: sounds)
 
-        let state: EdgeHUDState
+        let state: CircularRadarState
         if let snapshot = store.read() {
             if snapshot.phase == .paused {
                 state = .paused
-                liveStatusText = "广播已暂停 · 边缘 HUD 保留"
+                liveStatusText = "广播已暂停 · 圆形地图保留"
             } else if snapshot.phase == .finished {
                 state = .preview
-                liveStatusText = "广播已结束 · 边缘 HUD 保留"
+                liveStatusText = "广播已结束 · 圆形地图保留"
             } else {
                 switch snapshot.visionPipelineStage {
                 case .waitingForFrames:
@@ -243,7 +277,13 @@ final class FloatingDotPiPModel: NSObject,
                     liveStatusText = "AI 最近一次失败 · 正在重捕获"
                 case .noVisibleTarget:
                     state = .searching
-                    liveStatusText = sounds.isEmpty ? "AI 搜索中 · 暂无可靠证据" : "无人物 · 声纹方向 \(sounds.count) 个"
+                    if !sounds.isEmpty {
+                        liveStatusText = "无人物 · 声纹方向 \(sounds.count) 个"
+                    } else if !predictions.isEmpty {
+                        liveStatusText = "人物暂失 · 蓝色路线短时衰减"
+                    } else {
+                        liveStatusText = "AI 搜索中 · 暂无可靠证据"
+                    }
                 case .targetDetected, .coordinateReady, .stableTarget:
                     state = .tracking
                     liveStatusText = "可见人物 \(targets.count) 个 · 声纹 \(hudSounds.count) 个"
@@ -252,13 +292,14 @@ final class FloatingDotPiPModel: NSObject,
         } else {
             state = .preview
             liveStatusText = targets.isEmpty && hudSounds.isEmpty
-                ? "边缘 HUD 已就绪 · 等待 LiteView Broadcast"
+                ? "圆形地图已就绪 · 等待 LiteView Broadcast"
                 : "人物/声纹通道已收到证据"
         }
 
-        return EdgeHUDFrame(
+        return CircularRadarFrame(
             state: state,
             visualTargets: targets,
+            predictions: predictions,
             soundMarkers: sounds,
             heading: heading,
             autoHeading: autoHeading,
@@ -270,7 +311,7 @@ final class FloatingDotPiPModel: NSObject,
     private func fuseSounds(
         hud: [SharedHUDSoundEvidence],
         spatial: SharedSpatialAudioEvidence?
-    ) -> [EdgeSoundMarker] {
+    ) -> [CircularSoundMarker] {
         if !hud.isEmpty {
             return hud.prefix(3).map { item in
                 var lateral = item.lateral
@@ -284,7 +325,7 @@ final class FloatingDotPiPModel: NSObject,
                         confidence *= 0.84
                     }
                 }
-                return EdgeSoundMarker(
+                return CircularSoundMarker(
                     lateral: min(max(lateral, -1), 1),
                     proximity: item.proximity,
                     verticalCue: item.verticalCue,
@@ -297,7 +338,7 @@ final class FloatingDotPiPModel: NSObject,
 
         guard let spatial, spatial.confidence >= 0.34 else { return [] }
         return [
-            EdgeSoundMarker(
+            CircularSoundMarker(
                 lateral: spatial.lateral,
                 proximity: 0.32,
                 verticalCue: 0,
@@ -306,6 +347,56 @@ final class FloatingDotPiPModel: NSObject,
                 usedHUD: false
             )
         ]
+    }
+
+    private func routePredictions(
+        for targets: [SharedVisibleTargetEvidence],
+        heading: Double,
+        at now: TimeInterval
+    ) -> [RadarMapCandidate] {
+        let strongest = targets.sorted { lhs, rhs in
+            targetScore(lhs) > targetScore(rhs)
+        }.prefix(2)
+        var bestByNode: [String: RadarMapCandidate] = [:]
+        var firstObservedNode: String?
+
+        for target in strongest {
+            let solution = predictionEngine.solve(
+                mapID: selectedMapID,
+                anchorNodeID: selectedAnchorNodeID,
+                headingDegrees: heading,
+                visualScreenX: target.x,
+                visualConfidence: target.confidence,
+                stableFrames: target.stableFrames,
+                audioCue: nil,
+                audioStrength: 0,
+                previousObservedNodeID: lastRouteNodeID,
+                predictionCount: 4
+            )
+            if firstObservedNode == nil { firstObservedNode = solution.observed?.nodeID }
+            for candidate in solution.predictions {
+                if let old = bestByNode[candidate.nodeID], old.confidence >= candidate.confidence { continue }
+                bestByNode[candidate.nodeID] = candidate
+            }
+        }
+
+        if let firstObservedNode { lastRouteNodeID = firstObservedNode }
+        let predictions = Array(bestByNode.values.sorted { $0.confidence > $1.confidence }.prefix(5))
+        if !predictions.isEmpty {
+            lastPredictions = predictions
+            lastPredictionUptime = now
+        }
+        return predictions
+    }
+
+    private func decayedPredictions(at now: TimeInterval) -> [RadarMapCandidate] {
+        let age = now - lastPredictionUptime
+        guard age >= 0, age <= 2.6 else {
+            if age > 2.6 { lastPredictions = [] }
+            return []
+        }
+        let scale = max(0.04, exp(-age / 1.05))
+        return lastPredictions.map { $0.scaledConfidence(scale) }
     }
 
     private func freshSpatialAudio(at now: TimeInterval) -> SharedSpatialAudioEvidence? {
@@ -318,7 +409,7 @@ final class FloatingDotPiPModel: NSObject,
     private func updateSoundStatus(
         hud: [SharedHUDSoundEvidence],
         spatial: SharedSpatialAudioEvidence?,
-        fused: [EdgeSoundMarker]
+        fused: [CircularSoundMarker]
     ) {
         if !hud.isEmpty {
             let up = hud.filter { $0.verticalCue > 0 }.count
@@ -342,6 +433,19 @@ final class FloatingDotPiPModel: NSObject,
               now - lastWarningUptime >= 2.5 else { return }
         lastWarningUptime = now
         AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+    }
+
+    private func targetScore(_ target: SharedVisibleTargetEvidence) -> Double {
+        target.confidence * 0.74
+            + min(target.boxHeight * 1.6, 1) * 0.18
+            + min(Double(target.stableFrames) / 5, 1) * 0.08
+    }
+
+    private func resetRouteState() {
+        lastPredictionUptime = 0
+        lastPredictions = []
+        lastRouteNodeID = nil
+        targetWasConfirmed = false
     }
 
     private func normalized(_ value: Double) -> Double {
@@ -472,8 +576,8 @@ final class FloatingDotPiPModel: NSObject,
         let attributes: [CFString: Any] = [kCVPixelBufferPoolMinimumBufferCountKey: 3]
         let pixel: [CFString: Any] = [
             kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
-            kCVPixelBufferWidthKey: 480,
-            kCVPixelBufferHeightKey: 96,
+            kCVPixelBufferWidthKey: 320,
+            kCVPixelBufferHeightKey: 320,
             kCVPixelBufferCGImageCompatibilityKey: true,
             kCVPixelBufferCGBitmapContextCompatibilityKey: true,
             kCVPixelBufferIOSurfacePropertiesKey: [:]
@@ -483,7 +587,7 @@ final class FloatingDotPiPModel: NSObject,
         pixelBufferPool = pool
     }
 
-    private func makePixelBuffer(for frame: EdgeHUDFrame) -> CVPixelBuffer? {
+    private func makePixelBuffer(for frame: CircularRadarFrame) -> CVPixelBuffer? {
         if pixelBufferPool == nil { configurePixelBufferPool() }
         guard let pixelBufferPool else { return nil }
         var buffer: CVPixelBuffer?
@@ -505,113 +609,222 @@ final class FloatingDotPiPModel: NSObject,
         ) else { return nil }
 
         context.clear(CGRect(x: 0, y: 0, width: width, height: height))
-        let bar = CGRect(x: 3, y: 8, width: CGFloat(width - 6), height: CGFloat(height - 16))
-        let alpha = min(max(radarOpacity, 0.08), 0.35)
-        context.setFillColor(UIColor.black.withAlphaComponent(alpha).cgColor)
-        context.fill(bar)
 
-        let left: CGFloat = 24
-        let right = CGFloat(width - 24)
-        let centerY = CGFloat(height) * 0.48
-        context.setStrokeColor(UIColor.white.withAlphaComponent(0.22).cgColor)
-        context.setLineWidth(1)
-        context.move(to: CGPoint(x: left, y: centerY))
-        context.addLine(to: CGPoint(x: right, y: centerY))
-        context.strokePath()
+        let diameter = CGFloat(min(width, height)) * CGFloat(min(max(circleScale, 0.62), 0.96))
+        let circleRect = CGRect(
+            x: (CGFloat(width) - diameter) * 0.5,
+            y: (CGFloat(height) - diameter) * 0.5,
+            width: diameter,
+            height: diameter
+        )
+        let knowledge = predictionEngine.knowledge(for: selectedMapID)
+        let anchor = knowledge.nodes.first(where: { $0.id == selectedAnchorNodeID })
 
-        for fraction in stride(from: 0.0, through: 1.0, by: 0.125) {
-            let x = left + (right - left) * CGFloat(fraction)
-            context.setStrokeColor(UIColor.white.withAlphaComponent(fraction == 0.5 ? 0.32 : 0.12).cgColor)
-            context.move(to: CGPoint(x: x, y: centerY - 4))
-            context.addLine(to: CGPoint(x: x, y: centerY + 4))
-            context.strokePath()
-        }
+        context.saveGState()
+        context.addEllipse(in: circleRect)
+        context.clip()
+        context.setFillColor(UIColor.black.withAlphaComponent(min(max(radarOpacity, 0.08), 0.48)).cgColor)
+        context.fill(circleRect)
 
+        drawCircularGrid(context, circleRect: circleRect)
+        drawTopology(knowledge, anchor: anchor, heading: frame.heading, context: context, circleRect: circleRect)
+        drawPredictions(frame.predictions, knowledge: knowledge, anchor: anchor, heading: frame.heading, context: context, circleRect: circleRect)
+        drawOwnAnchor(anchor, heading: frame.heading, context: context, circleRect: circleRect)
+        drawVisualTargets(frame.visualTargets, anchor: anchor, heading: frame.heading, context: context, circleRect: circleRect)
+        drawSoundMarkers(frame.soundMarkers, anchor: anchor, heading: frame.heading, context: context, circleRect: circleRect)
+        context.restoreGState()
+
+        context.setStrokeColor(UIColor.white.withAlphaComponent(frame.alert ? (frame.pulse ? 0.76 : 0.42) : 0.24).cgColor)
+        context.setLineWidth(frame.alert ? 2.2 : 1.2)
+        context.strokeEllipse(in: circleRect.insetBy(dx: 1.5, dy: 1.5))
+
+        let title = DeltaMapCatalog.shortName(for: selectedMapID)
+        drawText(title, at: CGPoint(x: circleRect.minX + 13, y: circleRect.maxY - 20), size: 8.8, bold: true, color: .white, context: context)
         drawText(
             frame.autoHeading ? String(format: "AUTO %.0f°", frame.heading) : String(format: "MAN %.0f°", frame.heading),
-            at: CGPoint(x: 10, y: CGFloat(height - 18)),
-            size: 8.5,
-            bold: true,
-            color: UIColor.white.withAlphaComponent(0.80),
+            at: CGPoint(x: circleRect.maxX - 66, y: circleRect.maxY - 20),
+            size: 7.2,
+            bold: false,
+            color: UIColor.white.withAlphaComponent(0.72),
             context: context
         )
-        drawText("B33 EDGE HUD", at: CGPoint(x: CGFloat(width - 86), y: CGFloat(height - 18)), size: 7.0, bold: false, color: UIColor.white.withAlphaComponent(0.52), context: context)
-        drawText(frame.state.code, at: CGPoint(x: 10, y: 11), size: 7.5, bold: true, color: UIColor.white.withAlphaComponent(0.70), context: context)
-
-        drawVisualTargets(frame.visualTargets, left: left, right: right, centerY: centerY, context: context)
-        drawSoundMarkers(frame.soundMarkers, left: left, right: right, centerY: centerY, context: context)
-
-        let selfX = (left + right) * 0.5
-        context.setFillColor(UIColor.systemGreen.cgColor)
-        context.fillEllipse(in: CGRect(x: selfX - 2.5, y: centerY - 2.5, width: 5, height: 5))
-
-        if frame.alert {
-            context.setStrokeColor(UIColor.systemRed.withAlphaComponent(frame.pulse ? 0.60 : 0.22).cgColor)
-            context.setLineWidth(frame.pulse ? 1.6 : 1)
-            context.stroke(bar.insetBy(dx: 1.5, dy: 1.5))
-        }
+        drawText("B34", at: CGPoint(x: circleRect.minX + 13, y: circleRect.minY + 11), size: 7.0, bold: true, color: UIColor.white.withAlphaComponent(0.58), context: context)
+        drawText(frame.state.code, at: CGPoint(x: circleRect.maxX - 50, y: circleRect.minY + 11), size: 7.0, bold: true, color: UIColor.white.withAlphaComponent(0.58), context: context)
         return buffer
+    }
+
+    private func drawCircularGrid(_ context: CGContext, circleRect: CGRect) {
+        let center = CGPoint(x: circleRect.midX, y: circleRect.midY)
+        context.setStrokeColor(UIColor.white.withAlphaComponent(0.10).cgColor)
+        context.setLineWidth(0.8)
+        context.strokeEllipse(in: circleRect.insetBy(dx: circleRect.width * 0.18, dy: circleRect.height * 0.18))
+        context.strokeEllipse(in: circleRect.insetBy(dx: circleRect.width * 0.34, dy: circleRect.height * 0.34))
+        context.move(to: CGPoint(x: center.x, y: circleRect.minY + 6))
+        context.addLine(to: CGPoint(x: center.x, y: circleRect.maxY - 6))
+        context.move(to: CGPoint(x: circleRect.minX + 6, y: center.y))
+        context.addLine(to: CGPoint(x: circleRect.maxX - 6, y: center.y))
+        context.strokePath()
+    }
+
+    private func drawTopology(
+        _ knowledge: MapKnowledge,
+        anchor: MapNode?,
+        heading: Double,
+        context: CGContext,
+        circleRect: CGRect
+    ) {
+        let nodes = Dictionary(uniqueKeysWithValues: knowledge.nodes.map { ($0.id, $0) })
+        for edge in knowledge.edges {
+            guard edge.from < edge.to,
+                  let from = nodes[edge.from],
+                  let to = nodes[edge.to] else { continue }
+            let p1 = transformedMapPoint(x: from.x, y: from.y, anchor: anchor, heading: heading, circleRect: circleRect)
+            let p2 = transformedMapPoint(x: to.x, y: to.y, anchor: anchor, heading: heading, circleRect: circleRect)
+            context.setStrokeColor(UIColor.white.withAlphaComponent(edge.floorDelta == 0 ? 0.34 : 0.50).cgColor)
+            context.setLineWidth(edge.floorDelta == 0 ? 1.25 : 1.7)
+            context.setLineDash(phase: 0, lengths: edge.floorDelta == 0 ? [] : [4, 3])
+            context.move(to: p1)
+            context.addLine(to: p2)
+            context.strokePath()
+        }
+        context.setLineDash(phase: 0, lengths: [])
+    }
+
+    private func drawPredictions(
+        _ predictions: [RadarMapCandidate],
+        knowledge: MapKnowledge,
+        anchor: MapNode?,
+        heading: Double,
+        context: CGContext,
+        circleRect: CGRect
+    ) {
+        for candidate in predictions.prefix(5) {
+            let p = transformedMapPoint(x: candidate.point.x, y: candidate.point.y, anchor: anchor, heading: heading, circleRect: circleRect)
+            let confidence = CGFloat(candidate.confidence)
+            context.setStrokeColor(UIColor.systemBlue.withAlphaComponent(0.30 + confidence * 0.48).cgColor)
+            context.setLineWidth(1.2)
+            let halo = 8 + confidence * 10
+            context.strokeEllipse(in: CGRect(x: p.x - halo / 2, y: p.y - halo / 2, width: halo, height: halo))
+            context.setFillColor(UIColor.systemBlue.withAlphaComponent(0.52 + confidence * 0.34).cgColor)
+            context.fillEllipse(in: CGRect(x: p.x - 2.1, y: p.y - 2.1, width: 4.2, height: 4.2))
+        }
+    }
+
+    private func drawOwnAnchor(
+        _ anchor: MapNode?,
+        heading: Double,
+        context: CGContext,
+        circleRect: CGRect
+    ) {
+        guard let anchor else { return }
+        let p = transformedMapPoint(x: anchor.x, y: anchor.y, anchor: anchor, heading: heading, circleRect: circleRect)
+        context.setStrokeColor(UIColor.systemGreen.withAlphaComponent(0.82).cgColor)
+        context.setLineWidth(1.7)
+        context.strokeEllipse(in: CGRect(x: p.x - 6, y: p.y - 6, width: 12, height: 12))
+        context.setFillColor(UIColor.systemGreen.cgColor)
+        context.fillEllipse(in: CGRect(x: p.x - 2.7, y: p.y - 2.7, width: 5.4, height: 5.4))
+
+        let displayBearing = rotateWithHeading ? 0.0 : heading
+        let rad = displayBearing * .pi / 180
+        let end = CGPoint(x: p.x + CGFloat(sin(rad)) * 14, y: p.y - CGFloat(cos(rad)) * 14)
+        context.move(to: p)
+        context.addLine(to: end)
+        context.strokePath()
     }
 
     private func drawVisualTargets(
         _ targets: [SharedVisibleTargetEvidence],
-        left: CGFloat,
-        right: CGFloat,
-        centerY: CGFloat,
-        context: CGContext
+        anchor: MapNode?,
+        heading: Double,
+        context: CGContext,
+        circleRect: CGRect
     ) {
+        guard let anchor else { return }
+        let origin = transformedMapPoint(x: anchor.x, y: anchor.y, anchor: anchor, heading: heading, circleRect: circleRect)
+        let radiusLimit = circleRect.width * 0.34
         for target in targets.prefix(4) {
-            let x = left + (right - left) * CGFloat(target.x)
+            let offset = (target.x - 0.5) * horizontalFOV
+            let displayBearing = rotateWithHeading ? offset : heading + offset
+            let rad = displayBearing * .pi / 180
+            let near = min(max(target.boxHeight / 0.42, 0), 1)
+            let radius = CGFloat(0.18 + (1 - near) * 0.82) * radiusLimit
+            let p = CGPoint(x: origin.x + CGFloat(sin(rad)) * radius, y: origin.y - CGFloat(cos(rad)) * radius)
             let stable = target.stableFrames >= 2
             let confidence = CGFloat(target.confidence)
-            let y = centerY + 12
-            context.setStrokeColor(UIColor.systemRed.withAlphaComponent(stable ? 0.90 : 0.38).cgColor)
+            context.setStrokeColor(UIColor.systemRed.withAlphaComponent(stable ? 0.86 : 0.36).cgColor)
             context.setLineWidth(stable ? 1.6 : 1)
-            let r: CGFloat = stable ? 4.0 + confidence * 2.0 : 4.0
-            context.strokeEllipse(in: CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2))
+            let halo = stable ? 8 + confidence * 6 : 9
+            context.strokeEllipse(in: CGRect(x: p.x - halo / 2, y: p.y - halo / 2, width: halo, height: halo))
             if stable {
-                context.setFillColor(UIColor.systemRed.withAlphaComponent(0.82).cgColor)
-                context.fillEllipse(in: CGRect(x: x - 1.8, y: y - 1.8, width: 3.6, height: 3.6))
+                context.setFillColor(UIColor.systemRed.withAlphaComponent(0.86).cgColor)
+                context.fillEllipse(in: CGRect(x: p.x - 2, y: p.y - 2, width: 4, height: 4))
             }
         }
     }
 
     private func drawSoundMarkers(
-        _ markers: [EdgeSoundMarker],
-        left: CGFloat,
-        right: CGFloat,
-        centerY: CGFloat,
-        context: CGContext
+        _ markers: [CircularSoundMarker],
+        anchor: MapNode?,
+        heading: Double,
+        context: CGContext,
+        circleRect: CGRect
     ) {
+        guard let anchor else { return }
+        let origin = transformedMapPoint(x: anchor.x, y: anchor.y, anchor: anchor, heading: heading, circleRect: circleRect)
+        let radiusLimit = circleRect.width * 0.38
         for marker in markers.prefix(3) {
-            let normalized = CGFloat((min(max(marker.lateral, -1), 1) + 1) * 0.5)
-            let x = left + (right - left) * normalized
-            let y = centerY - 14
+            let relativeBearing = marker.lateral * 90
+            let displayBearing = rotateWithHeading ? relativeBearing : heading + relativeBearing
+            let rad = displayBearing * .pi / 180
+            let radius = CGFloat(0.28 + (1 - marker.proximity) * 0.72) * radiusLimit
+            let p = CGPoint(x: origin.x + CGFloat(sin(rad)) * radius, y: origin.y - CGFloat(cos(rad)) * radius)
             let color: UIColor = marker.kind == .gunfire ? .systemPink : .systemOrange
             let confidence = CGFloat(marker.confidence)
-            context.setFillColor(color.withAlphaComponent(0.58 + confidence * 0.35).cgColor)
-            let triangle: [CGPoint] = [
-                CGPoint(x: x, y: y - 5),
-                CGPoint(x: x - 4, y: y + 3),
-                CGPoint(x: x + 4, y: y + 3)
-            ]
-            context.beginPath()
-            context.move(to: triangle[0])
-            context.addLine(to: triangle[1])
-            context.addLine(to: triangle[2])
-            context.closePath()
-            context.fillPath()
-
+            context.setStrokeColor(color.withAlphaComponent(0.34 + confidence * 0.54).cgColor)
+            context.setLineWidth(marker.usedHUD ? 1.8 : 1.0)
+            if !marker.usedHUD { context.setLineDash(phase: 0, lengths: [3, 3]) }
+            context.strokeEllipse(in: CGRect(x: p.x - 5.5, y: p.y - 5.5, width: 11, height: 11))
+            context.setLineDash(phase: 0, lengths: [])
             let arrow = marker.verticalCue > 0 ? "↑" : (marker.verticalCue < 0 ? "↓" : "")
             if !arrow.isEmpty {
-                drawText(arrow, at: CGPoint(x: x + 6, y: y - 2), size: 9, bold: true, color: color, context: context)
-            }
-            if marker.proximity >= 0.62 {
-                context.setStrokeColor(color.withAlphaComponent(0.72).cgColor)
-                context.setLineWidth(1)
-                context.strokeEllipse(in: CGRect(x: x - 7, y: y - 8, width: 14, height: 14))
+                drawText(arrow, at: CGPoint(x: p.x + 6, y: p.y - 2), size: 8.5, bold: true, color: color, context: context)
             }
         }
+    }
+
+    private func transformedMapPoint(
+        x: Double,
+        y: Double,
+        anchor: MapNode?,
+        heading: Double,
+        circleRect: CGRect
+    ) -> CGPoint {
+        let zoom = min(max(mapZoom, 0.72), 1.65)
+        var nx: Double
+        var ny: Double
+
+        if centerOnPlayer, let anchor {
+            nx = 0.5 + (x - anchor.x) * zoom
+            ny = 0.5 + (y - anchor.y) * zoom
+        } else {
+            nx = 0.5 + (x - 0.5) * zoom
+            ny = 0.5 + (y - 0.5) * zoom
+        }
+
+        if rotateWithHeading {
+            let rad = heading * .pi / 180
+            let dx = nx - 0.5
+            let dy = ny - 0.5
+            let rx = dx * cos(rad) - dy * sin(rad)
+            let ry = dx * sin(rad) + dy * cos(rad)
+            nx = 0.5 + rx
+            ny = 0.5 + ry
+        }
+
+        return CGPoint(
+            x: circleRect.minX + CGFloat(nx) * circleRect.width,
+            y: circleRect.maxY - CGFloat(ny) * circleRect.height
+        )
     }
 
     private func drawText(_ text: String, at point: CGPoint, size: CGFloat, bold: Bool, color: UIColor, context: CGContext) {
@@ -651,40 +864,72 @@ struct FloatingDotPiPCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Label("边缘声纹 HUD", systemImage: "rectangle.topthird.inset.filled")
+                Label("圆形常驻地图", systemImage: "circle.grid.2x2.fill")
                     .font(.headline)
                 Spacer()
-                Text("Build 33").font(.caption.bold()).foregroundStyle(.secondary)
+                Text("Build 34").font(.caption.bold()).foregroundStyle(.secondary)
             }
 
-            EdgeHUDPreview(model: model)
-                .aspectRatio(5, contentMode: .fit)
+            CircularRadarPreview(model: model)
+                .aspectRatio(1, contentMode: .fit)
+                .frame(maxWidth: 270)
                 .frame(maxWidth: .infinity)
-                .frame(maxHeight: 96)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay { RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.10), lineWidth: 1) }
-                .accessibilityIdentifier("LITEVIEW_EDGE_HUD_BUILD33")
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .accessibilityIdentifier("LITEVIEW_CIRCULAR_MAP_BUILD34")
 
             HStack(spacing: 10) {
                 legend(.green, "自己")
                 legend(.red, "人物")
-                legend(.orange, "脚步")
-                legend(.pink, "枪声")
+                legend(.blue, "路线")
+                legend(.orange, "声纹")
             }
+
+            Picker("地图", selection: $model.selectedMapID) {
+                ForEach(model.mapOptions) { entry in
+                    Text(entry.displayName).tag(entry.id)
+                }
+            }
+            .pickerStyle(.menu)
+
+            Picker("当前位置", selection: $model.selectedAnchorNodeID) {
+                ForEach(model.anchorOptions) { option in
+                    Text(option.title).tag(option.id)
+                }
+            }
+            .pickerStyle(.menu)
+
+            Toggle("玩家居中（更像游戏小地图）", isOn: $model.centerOnPlayer)
+                .font(.caption)
+            Toggle("随视角旋转", isOn: $model.rotateWithHeading)
+                .font(.caption)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack { Text("圆盘大小"); Spacer(); Text("\(Int(model.circleScale * 100))%").monospacedDigit() }
+                Slider(value: $model.circleScale, in: 0.62...0.96, step: 0.01)
+            }
+            .font(.caption)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack { Text("地图缩放"); Spacer(); Text(String(format: "%.2fx", model.mapZoom)).monospacedDigit() }
+                Slider(value: $model.mapZoom, in: 0.72...1.65, step: 0.01)
+            }
+            .font(.caption)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack { Text("背景透明度"); Spacer(); Text("\(Int(model.radarOpacity * 100))%").monospacedDigit() }
+                Slider(value: $model.radarOpacity, in: 0.08...0.48, step: 0.01)
+            }
+            .font(.caption)
 
             Text(model.compassStatusText)
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack { Text("背景透明度"); Spacer(); Text("\(Int(model.radarOpacity * 100))%").monospacedDigit() }
-                Slider(value: $model.radarOpacity, in: 0.08...0.35, step: 0.01)
-            }.font(.caption)
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack { Text("罗盘识别失败时的手动备用"); Spacer(); Text("\(Int(model.manualHeadingDegrees))°").monospacedDigit() }
+                HStack { Text("自动罗盘失败时备用角度"); Spacer(); Text("\(Int(model.manualHeadingDegrees))°").monospacedDigit() }
                 Slider(value: $model.manualHeadingDegrees, in: 0...359, step: 1)
-            }.font(.caption)
+            }
+            .font(.caption)
 
             Button(action: model.togglePictureInPicture) {
                 Label(model.buttonTitle, systemImage: model.isActive ? "pip.exit" : "pip.enter")
@@ -693,17 +938,29 @@ struct FloatingDotPiPCard: View {
             .buttonStyle(.borderedProminent)
             .disabled(!model.isSupported || model.isStarting)
 
-            Button("测试边缘 HUD（8 秒）", action: model.runVisualWarningTest)
+            Button("测试圆形地图（8 秒）", action: model.runVisualWarningTest)
                 .buttonStyle(.bordered)
                 .frame(maxWidth: .infinity)
 
-            Toggle("稳定人物首次出现时震动", isOn: $model.vibrationWarningEnabled).font(.caption)
-            Text(model.liveStatusText).font(.caption.weight(.semibold)).foregroundStyle(model.statusColor)
-            Text(model.soundStatusText).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-            if let error = model.lastError { Text(error).font(.caption.monospaced()).foregroundStyle(.red) }
-            if let delta = model.lastBackgroundRenderDelta { Text("上轮后台 PiP 刷新 \(delta) 帧").font(.caption.monospacedDigit()).foregroundStyle(delta > 4 ? Color.green : Color.orange) }
+            Toggle("稳定人物首次出现时震动", isOn: $model.vibrationWarningEnabled)
+                .font(.caption)
 
-            Text("Build 33 不再在游戏上常驻整张地图。悬浮层压成超薄横条：红点只给可见人物横向方向，橙/粉三角给脚步/枪声方向，↑↓给楼层提示，绿色中心点代表自己。完整地图不覆盖游戏主体区域。")
+            Text(model.liveStatusText)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(model.statusColor)
+            Text(model.soundStatusText)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            if let error = model.lastError {
+                Text(error).font(.caption.monospaced()).foregroundStyle(.red)
+            }
+            if let delta = model.lastBackgroundRenderDelta {
+                Text("上轮后台 PiP 刷新 \(delta) 帧")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(delta > 4 ? Color.green : Color.orange)
+            }
+
+            Text("Build 34 恢复常驻地图，但改成圆形。可调圆盘大小、缩放、透明度，并可切换全图/玩家居中与北朝上/随视角旋转。人物、路线、声纹和上下层箭头都限制在圆盘内，圆外不绘制地图内容。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -720,22 +977,36 @@ struct FloatingDotPiPCard: View {
     }
 }
 
-fileprivate final class EdgeHUDPreviewHostView: UIView {
+fileprivate final class CircularRadarPreviewHostView: UIView {
     weak var model: FloatingDotPiPModel?
-    override init(frame: CGRect) { super.init(frame: frame); backgroundColor = .clear; isOpaque = false }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func layoutSubviews() { super.layoutSubviews(); model?.layoutDisplayLayer(in: bounds) }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        isOpaque = false
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        model?.layoutDisplayLayer(in: bounds)
+    }
 }
 
-private struct EdgeHUDPreview: UIViewRepresentable {
+private struct CircularRadarPreview: UIViewRepresentable {
     let model: FloatingDotPiPModel
-    func makeUIView(context: Context) -> EdgeHUDPreviewHostView {
-        let view = EdgeHUDPreviewHostView(frame: .zero)
+
+    func makeUIView(context: Context) -> CircularRadarPreviewHostView {
+        let view = CircularRadarPreviewHostView(frame: .zero)
         view.model = model
         model.attachDisplayLayer(to: view)
         return view
     }
-    func updateUIView(_ uiView: EdgeHUDPreviewHostView, context: Context) {
+
+    func updateUIView(_ uiView: CircularRadarPreviewHostView, context: Context) {
         uiView.model = model
         model.attachDisplayLayer(to: uiView)
     }
