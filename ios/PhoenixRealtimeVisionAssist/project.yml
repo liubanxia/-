@@ -55,7 +55,6 @@ targets:
     sources:
       - path: Sources/Broadcast
       - path: Sources/ExtensionSupport
-      - path: Sources/Core/SharedRealtimeStateStore.swift
       - path: Sources/Core/EvidenceStateChannels.swift
       - path: Sources/Core/HUDSoundStateChannel.swift
       - path: Sources/Core/CompassHeadingStateChannel.swift
