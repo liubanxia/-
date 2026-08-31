@@ -1,7 +1,12 @@
 import Foundation
+import Network
 
-/// Sends only LiteView's screen-visible / app-audio evidence to the user-configured LAN radar.
+/// Sends only LiteView's screen-visible / app-audio evidence to a LAN Web Radar relay.
 /// No video frame, screenshot, game process memory, packet payload, or historical recording is sent.
+///
+/// Connection priority:
+/// 1. explicit App Group endpoint when enabled;
+/// 2. automatic UDP LAN discovery from web/liteview-radar/server.py.
 final class BroadcastWebRadarBridge {
     private struct PlayerPayload: Encodable {
         let x: Double?
@@ -44,6 +49,7 @@ final class BroadcastWebRadarBridge {
         let hudSoundCount: Int
         let continuousPositionFresh: Bool
         let rawFrameUpload: Bool
+        let endpointSource: String
     }
 
     private struct RadarPayload: Encodable {
@@ -75,6 +81,9 @@ final class BroadcastWebRadarBridge {
         rawEndpoint: ""
     )
     private var lastConfigurationReadUptime: TimeInterval = 0
+    private var discoveryListener: NWListener?
+    private var discoveredEndpoint: URL?
+    private var discoveredAtUptime: TimeInterval = 0
 
     init() {
         let config = URLSessionConfiguration.ephemeral
@@ -94,12 +103,19 @@ final class BroadcastWebRadarBridge {
             self.inFlight = false
             self.lastConfigurationReadUptime = 0
             self.cachedConfiguration = LiteViewWebRadarConfiguration.load()
+            self.discoveredEndpoint = nil
+            self.discoveredAtUptime = 0
+            self.startDiscoveryListenerIfNeeded()
         }
     }
 
     func finish() {
         queue.async { [weak self] in
-            self?.inFlight = false
+            guard let self else { return }
+            self.inFlight = false
+            self.discoveryListener?.cancel()
+            self.discoveryListener = nil
+            self.discoveredEndpoint = nil
         }
     }
 
@@ -118,9 +134,12 @@ final class BroadcastWebRadarBridge {
             cachedConfiguration = LiteViewWebRadarConfiguration.load()
             lastConfigurationReadUptime = uptime
         }
-        guard cachedConfiguration.enabled,
-              let endpoint = cachedConfiguration.endpoint,
+
+        let manualEndpoint = cachedConfiguration.enabled ? cachedConfiguration.endpoint : nil
+        let autoEndpoint: URL? = uptime - discoveredAtUptime <= 4.0 ? discoveredEndpoint : nil
+        guard let endpoint = manualEndpoint ?? autoEndpoint,
               !inFlight else { return }
+        let endpointSource = manualEndpoint != nil ? "manual-app-group" : "auto-lan-discovery"
 
         let targets = targetReader.read(at: uptime, tolerance: 1.35)
         let hudSounds = hudSoundReader.read(at: uptime, tolerance: 0.95)
@@ -196,7 +215,8 @@ final class BroadcastWebRadarBridge {
                 visibleTargetCount: targetPayload.count,
                 hudSoundCount: hudSounds.count,
                 continuousPositionFresh: position != nil,
-                rawFrameUpload: false
+                rawFrameUpload: false,
+                endpointSource: endpointSource
             ),
             source: "liteview-replaykit-visible-evidence"
         )
@@ -214,6 +234,59 @@ final class BroadcastWebRadarBridge {
                 self?.inFlight = false
             }
         }.resume()
+    }
+
+    private func startDiscoveryListenerIfNeeded() {
+        guard discoveryListener == nil,
+              let port = NWEndpoint.Port(rawValue: 8766) else { return }
+        do {
+            let listener = try NWListener(using: .udp, on: port)
+            listener.newConnectionHandler = { [weak self] connection in
+                guard let self else { return }
+                connection.start(queue: self.queue)
+                connection.receiveMessage { [weak self, weak connection] data, _, _, _ in
+                    guard let self, let connection, let data,
+                          let text = String(data: data, encoding: .utf8),
+                          text.contains("LITEVIEW_RADAR_V1") else {
+                        connection?.cancel()
+                        return
+                    }
+                    let advertisedPort = self.advertisedHTTPPort(from: data) ?? 8765
+                    if case let .hostPort(host, _) = connection.endpoint,
+                       let url = self.endpointURL(host: String(describing: host), port: advertisedPort) {
+                        self.discoveredEndpoint = url
+                        self.discoveredAtUptime = ProcessInfo.processInfo.systemUptime
+                    }
+                    connection.cancel()
+                }
+            }
+            listener.stateUpdateHandler = { state in
+                if case let .failed(error) = state {
+                    _ = error
+                }
+            }
+            listener.start(queue: queue)
+            discoveryListener = listener
+        } catch {
+            discoveryListener = nil
+        }
+    }
+
+    private func advertisedHTTPPort(from data: Data) -> Int? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object["service"] as? String == "LITEVIEW_RADAR_V1",
+              let port = object["port"] as? Int,
+              (1...65535).contains(port) else { return nil }
+        return port
+    }
+
+    private func endpointURL(host: String, port: Int) -> URL? {
+        var components = URLComponents()
+        components.scheme = "http"
+        components.host = host
+        components.port = port
+        components.path = "/api/state"
+        return components.url
     }
 
     private func mapName(_ id: SharedDetectedMapID?) -> String {
