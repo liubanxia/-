@@ -4,7 +4,7 @@ import ReplayKit
 /// ReplayKit entry point for screen-visible evidence only.
 ///
 /// Video evidence is split into four paths:
-/// - people detection/tracking,
+/// - multiscale people detection/tracking for small mobile-game characters,
 /// - mobile soundwave/arrow HUD recognition,
 /// - low-frequency top-compass OCR for automatic heading,
 /// - low-frequency visible map/POI OCR for automatic map and coarse position locking.
@@ -12,7 +12,11 @@ import ReplayKit
 /// App audio keeps aggregate diagnostics plus a separate HRTF-oriented stereo delay/coherence
 /// path. Microphone audio is intentionally ignored.
 final class EnhancedBroadcastSampleHandler: RPBroadcastSampleHandler {
-    private let visionProcessor = EvidenceFirstVideoProcessor()
+    // Keep the legacy processor alive only for lifecycle/heartbeat state. Build 37 no longer sends
+    // video frames through its full-frame-only person path, because that path shrinks small distant
+    // game characters too aggressively. Visible person evidence comes from multiscalePersonAnalyzer.
+    private let visionLifecycle = EvidenceFirstVideoProcessor()
+    private let multiscalePersonAnalyzer = MultiScalePersonAnalyzer()
     private let hudSoundAnalyzer = BroadcastHUDSoundAnalyzer()
     private let compassAnalyzer = BroadcastCompassHeadingAnalyzer()
     private let mapLocalizationAnalyzer = BroadcastMapLocalizationAnalyzer()
@@ -25,24 +29,28 @@ final class EnhancedBroadcastSampleHandler: RPBroadcastSampleHandler {
         hudSoundAnalyzer.reset()
         compassAnalyzer.reset()
         mapLocalizationAnalyzer.reset()
-        visionProcessor.start()
+        multiscalePersonAnalyzer.reset()
+        visionLifecycle.start()
     }
 
     override func broadcastPaused() {
-        visionProcessor.pause()
+        multiscalePersonAnalyzer.pause()
+        visionLifecycle.pause()
     }
 
     override func broadcastResumed() {
-        visionProcessor.resume()
+        multiscalePersonAnalyzer.resume()
+        visionLifecycle.resume()
     }
 
     override func broadcastFinished() {
         mapLocalizationAnalyzer.finish()
         compassAnalyzer.finish()
         hudSoundAnalyzer.finish()
+        multiscalePersonAnalyzer.finish()
         spatialAudio.finish()
         audioDiagnostics.finish()
-        visionProcessor.finish()
+        visionLifecycle.finish()
     }
 
     override func processSampleBuffer(
@@ -54,7 +62,7 @@ final class EnhancedBroadcastSampleHandler: RPBroadcastSampleHandler {
             hudSoundAnalyzer.consumeVideo(sampleBuffer)
             compassAnalyzer.consumeVideo(sampleBuffer)
             mapLocalizationAnalyzer.consumeVideo(sampleBuffer)
-            visionProcessor.consumeVideo(sampleBuffer)
+            multiscalePersonAnalyzer.consumeVideo(sampleBuffer)
         case .audioApp:
             audioDiagnostics.consume(sampleBuffer)
             spatialAudio.consume(sampleBuffer)
