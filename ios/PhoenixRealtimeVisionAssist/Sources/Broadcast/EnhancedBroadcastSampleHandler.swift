@@ -3,14 +3,15 @@ import ReplayKit
 
 /// ReplayKit entry point for screen-visible evidence only.
 ///
-/// Video evidence is split into four paths:
+/// Video evidence is split into five paths:
 /// - multiscale people detection/tracking for small mobile-game characters,
 /// - mobile soundwave/arrow HUD recognition,
 /// - low-frequency top-compass OCR for automatic heading,
-/// - low-frequency visible map/POI OCR for automatic map and coarse position locking.
+/// - low-frequency visible map/POI OCR for automatic map and coarse position locking,
+/// - local continuous self-position registration for the Web Radar.
 ///
-/// App audio keeps aggregate diagnostics plus a separate HRTF-oriented stereo delay/coherence
-/// path. Microphone audio is intentionally ignored.
+/// The LAN Web Radar bridge only serializes the resulting evidence as compact JSON. It never
+/// uploads raw ReplayKit video frames or screenshots.
 final class EnhancedBroadcastSampleHandler: RPBroadcastSampleHandler {
     // Keep the legacy processor alive only for lifecycle/heartbeat state. Build 37 no longer sends
     // video frames through its full-frame-only person path, because that path shrinks small distant
@@ -20,6 +21,8 @@ final class EnhancedBroadcastSampleHandler: RPBroadcastSampleHandler {
     private let hudSoundAnalyzer = BroadcastHUDSoundAnalyzer()
     private let compassAnalyzer = BroadcastCompassHeadingAnalyzer()
     private let mapLocalizationAnalyzer = BroadcastMapLocalizationAnalyzer()
+    private let continuousMapLocalizer = BroadcastContinuousMapLocalizer()
+    private let webRadarBridge = BroadcastWebRadarBridge()
     private let audioDiagnostics = BroadcastAudioTelemetryAnalyzer()
     private let spatialAudio = BroadcastSpatialAudioAnalyzer()
 
@@ -29,21 +32,27 @@ final class EnhancedBroadcastSampleHandler: RPBroadcastSampleHandler {
         hudSoundAnalyzer.reset()
         compassAnalyzer.reset()
         mapLocalizationAnalyzer.reset()
+        continuousMapLocalizer.reset()
         multiscalePersonAnalyzer.reset()
+        webRadarBridge.reset()
         visionLifecycle.start()
     }
 
     override func broadcastPaused() {
+        continuousMapLocalizer.pause()
         multiscalePersonAnalyzer.pause()
         visionLifecycle.pause()
     }
 
     override func broadcastResumed() {
+        continuousMapLocalizer.resume()
         multiscalePersonAnalyzer.resume()
         visionLifecycle.resume()
     }
 
     override func broadcastFinished() {
+        webRadarBridge.finish()
+        continuousMapLocalizer.finish()
         mapLocalizationAnalyzer.finish()
         compassAnalyzer.finish()
         hudSoundAnalyzer.finish()
@@ -62,7 +71,9 @@ final class EnhancedBroadcastSampleHandler: RPBroadcastSampleHandler {
             hudSoundAnalyzer.consumeVideo(sampleBuffer)
             compassAnalyzer.consumeVideo(sampleBuffer)
             mapLocalizationAnalyzer.consumeVideo(sampleBuffer)
+            continuousMapLocalizer.consumeVideo(sampleBuffer)
             multiscalePersonAnalyzer.consumeVideo(sampleBuffer)
+            webRadarBridge.offerVideoTick()
         case .audioApp:
             audioDiagnostics.consume(sampleBuffer)
             spatialAudio.consume(sampleBuffer)
