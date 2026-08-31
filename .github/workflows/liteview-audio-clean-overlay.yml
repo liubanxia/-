@@ -1,4 +1,4 @@
-name: LiteView Visible Six Map Radar Candidate
+name: LiteView Evidence First Radar Candidate
 
 on:
   push:
@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 jobs:
-  build-visible-map:
+  build-evidence-first:
     runs-on: macos-15
     timeout-minutes: 35
 
@@ -37,7 +37,7 @@ jobs:
           MODEL_DIR="$ROOT/Resources/BroadcastModels"
           ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
           UNZIP_DIR="$RUNNER_TEMP/liteview-yolo11n-coreml"
-          COMPILE_DIR="$RUNNER_TEMP/liteview-visible-map-model"
+          COMPILE_DIR="$RUNNER_TEMP/liteview-build31-model"
           URL='https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
           rm -rf "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
           mkdir -p "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
@@ -50,61 +50,60 @@ jobs:
           test -n "$COMPILED"
           cp -R "$COMPILED" "$MODEL_DIR/yolo11n.mlmodelc"
 
-      - name: Guard Build 30 visible map wiring
+      - name: Guard Build 31 evidence-first wiring
         shell: bash
         run: |
           set -euo pipefail
           ROOT='ios/PhoenixRealtimeVisionAssist'
-          CTRL="$ROOT/Sources/App/VisibleMultiMapRadarController.swift"
-          PROJECT="$ROOT/project.yml"
-          SEEDS="$ROOT/Sources/Map/DeltaMapSeeds.swift"
-          CATALOG="$ROOT/Sources/Map/DeltaMapCatalog.swift"
-          ENGINE="$ROOT/Sources/Map/FullMapPredictiveRadarEngine.swift"
-          APP="$ROOT/Sources/App/PhoenixRealtimeVisionAssistApp.swift"
-          AUDIO="$ROOT/Sources/Broadcast/BroadcastAudioTelemetryAnalyzer.swift"
+          CTRL="$ROOT/Sources/App/EvidenceFirstRadarController.swift"
+          VIDEO="$ROOT/Sources/Broadcast/EvidenceFirstVideoProcessor.swift"
+          SPATIAL="$ROOT/Sources/Broadcast/BroadcastSpatialAudioAnalyzer.swift"
+          CHANNELS="$ROOT/Sources/Core/EvidenceStateChannels.swift"
           HANDLER="$ROOT/Sources/Broadcast/EnhancedBroadcastSampleHandler.swift"
-          test -f "$CTRL"
-          grep -q 'LITEVIEW_VISIBLE_MULTI_MAP_BUILD30' "$CTRL"
-          grep -q 'BUILD 30 · VISIBLE MAP' "$CTRL"
-          grep -q '地图可见 · 等待 LiteView Broadcast' "$CTRL"
-          grep -q 'setLineWidth(vertical ? 2.8 : 2.2)' "$CTRL"
-          grep -q 'radius: CGFloat = important ? 4.2 : 3.2' "$CTRL"
-          grep -q 'drawAnchorLabels' "$CTRL"
-          grep -q 'drawOwnAnchor' "$CTRL"
-          grep -q 'ME' "$CTRL"
-          grep -q '测试可见性（8 秒）' "$CTRL"
-          grep -q 'FloatingDotPiPCard' "$APP"
-          grep -q 'MultiMapFloatingRadarController.swift' "$PROJECT"
-          grep -q 'CURRENT_PROJECT_VERSION: 30' "$PROJECT"
-          grep -q 'MARKETING_VERSION: 0.9.13' "$PROJECT"
-          grep -q 'zeroDam' "$SEEDS"
-          grep -q 'layaliGrove' "$SEEDS"
-          grep -q 'spaceCity' "$SEEDS"
-          grep -q 'brakkesh' "$SEEDS"
-          grep -q 'tidePrison' "$SEEDS"
-          grep -q 'az3' "$SEEDS"
-          grep -q 'Zero Dam / 零号大坝' "$CATALOG"
-          grep -q 'Tide Prison / 潮汐监狱' "$CATALOG"
-          grep -q 'FullMapPredictiveRadarEngine' "$ENGINE"
-          grep -q 'case \.audioApp' "$HANDLER"
-          grep -q 'leftLevel' "$AUDIO"
-          echo 'BUILD30_VISIBLE_MAP_WIRING_PASS'
+          PROJECT="$ROOT/project.yml"
+
+          grep -q 'BUILD 31 · EVIDENCE FIRST' "$CTRL"
+          grep -q 'LITEVIEW_EVIDENCE_FIRST_BUILD31' "$CTRL"
+          grep -q 'VisibleTargetStateReader' "$CTRL"
+          grep -q 'SpatialAudioStateReader' "$CTRL"
+          grep -q 'stableFrames >= 2' "$CTRL"
+          grep -q 'horizontalFOV' "$CTRL"
+          grep -q '0.46' "$VIDEO"
+          grep -q '0.62' "$VIDEO"
+          grep -q '1.20' "$VIDEO"
+          grep -q 'VisibleTargetStatePublisher' "$VIDEO"
+          grep -q 'minimumConfidence: 0.075' "$VIDEO"
+          grep -q 'bestNormalizedCorrelation' "$SPATIAL"
+          grep -q 'coherence' "$SPATIAL"
+          grep -q 'SpatialAudioStatePublisher' "$SPATIAL"
+          grep -q 'slotCount = 4' "$CHANNELS"
+          grep -q 'spatial-audio.v1' "$CHANNELS"
+          grep -q 'EvidenceFirstVideoProcessor' "$HANDLER"
+          grep -q 'BroadcastSpatialAudioAnalyzer' "$HANDLER"
+          grep -q 'CURRENT_PROJECT_VERSION: 31' "$PROJECT"
+          grep -q 'MARKETING_VERSION: 0.9.14' "$PROJECT"
+          grep -q 'VisibleMultiMapRadarController.swift' "$PROJECT"
+          grep -q 'EvidenceStateChannels.swift' "$PROJECT"
+          echo 'BUILD31_EVIDENCE_WIRING_PASS'
 
       - name: Generate project
         working-directory: ios/PhoenixRealtimeVisionAssist
         run: xcodegen generate
 
-      - name: Verify only Build 30 radar controller is compiled
+      - name: Verify Build 31 target wiring
         shell: bash
         run: |
           set -euo pipefail
           PBX='ios/PhoenixRealtimeVisionAssist/PhoenixRealtimeVisionAssist.xcodeproj/project.pbxproj'
-          grep -q 'VisibleMultiMapRadarController.swift' "$PBX"
-          ! grep -q 'FloatingDotPiPController.swift' "$PBX"
-          ! grep -q 'FullMapFloatingRadarController.swift' "$PBX"
-          ! grep -q 'MultiMapFloatingRadarController.swift' "$PBX"
-          ! grep -q 'RadarPiPController.swift' "$PBX"
-          echo 'BUILD30_TARGET_WIRING_PASS'
+          grep -q 'EvidenceFirstRadarController.swift' "$PBX"
+          grep -q 'EvidenceFirstVideoProcessor.swift' "$PBX"
+          grep -q 'BroadcastSpatialAudioAnalyzer.swift' "$PBX"
+          grep -q 'EvidenceStateChannels.swift' "$PBX"
+          ! grep -q 'VisibleMultiMapRadarController.swift in Sources' "$PBX"
+          ! grep -q 'MultiMapFloatingRadarController.swift in Sources' "$PBX"
+          ! grep -q 'FullMapFloatingRadarController.swift in Sources' "$PBX"
+          ! grep -q 'FloatingDotPiPController.swift in Sources' "$PBX"
+          echo 'BUILD31_TARGET_WIRING_PASS'
 
       - name: Run lifecycle smoke test
         shell: bash
@@ -116,8 +115,8 @@ jobs:
             "$ROOT/Sources/Core/BroadcastLifecycle.swift" \
             "$ROOT/Sources/Vision/PhoenixCapabilityModelBank.swift" \
             "$ROOT/scripts/lifecycle_smoke_main.swift" \
-            -o "$RUNNER_TEMP/liteview-build30-lifecycle"
-          "$RUNNER_TEMP/liteview-build30-lifecycle"
+            -o "$RUNNER_TEMP/liteview-build31-lifecycle"
+          "$RUNNER_TEMP/liteview-build31-lifecycle"
 
       - name: Run synthetic PCM telemetry test
         shell: bash
@@ -130,15 +129,15 @@ jobs:
             -framework AudioToolbox \
             -framework CoreMedia \
             -framework CoreFoundation \
-            -o "$RUNNER_TEMP/liteview-build30-audio"
-          "$RUNNER_TEMP/liteview-build30-audio"
+            -o "$RUNNER_TEMP/liteview-build31-audio"
+          "$RUNNER_TEMP/liteview-build31-audio"
 
       - name: Build unsigned iPhone Release app and Broadcast Extension
         working-directory: ios/PhoenixRealtimeVisionAssist
         shell: bash
         run: |
           set -euo pipefail
-          DERIVED="$RUNNER_TEMP/LiteViewBuild30DerivedData"
+          DERIVED="$RUNNER_TEMP/LiteViewBuild31DerivedData"
           rm -rf "$DERIVED"
           xcodebuild \
             -project PhoenixRealtimeVisionAssist.xcodeproj \
@@ -150,27 +149,24 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build
 
-      - name: Normalize 0.9.13 Build 30 and verify final binaries
+      - name: Normalize 0.9.14 Build 31 and verify final binaries
         shell: bash
         run: |
           set -euo pipefail
-          PRODUCTS="$RUNNER_TEMP/LiteViewBuild30DerivedData/Build/Products/Release-iphoneos"
+          PRODUCTS="$RUNNER_TEMP/LiteViewBuild31DerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
           EXT="$APP/PlugIns/PhoenixBroadcastExtension.appex"
           APP_PLIST="$APP/Info.plist"
           EXT_PLIST="$EXT/Info.plist"
           APP_BIN="$APP/PhoenixRealtimeVisionAssist"
           EXT_BIN="$EXT/PhoenixBroadcastExtension"
-          APP_STRINGS="$RUNNER_TEMP/build30-app-strings.txt"
-          EXT_STRINGS="$RUNNER_TEMP/build30-ext-strings.txt"
-          APP_LINKS="$RUNNER_TEMP/build30-app-links.txt"
-          EXT_LINKS="$RUNNER_TEMP/build30-ext-links.txt"
+          APP_LINKS="$RUNNER_TEMP/build31-app-links.txt"
+          EXT_LINKS="$RUNNER_TEMP/build31-ext-links.txt"
+
           test -d "$APP"
           test -d "$EXT"
           test -x "$APP_BIN"
           test -x "$EXT_BIN"
-          strings "$APP_BIN" > "$APP_STRINGS" || true
-          strings "$EXT_BIN" > "$EXT_STRINGS" || true
           otool -L "$APP_BIN" > "$APP_LINKS"
           otool -L "$EXT_BIN" > "$EXT_LINKS"
 
@@ -180,44 +176,32 @@ jobs:
               /usr/libexec/PlistBuddy -c "Add :$key string $value" "$plist"
           }
           set_plist_string "$APP_PLIST" CFBundleDisplayName LiteView
-          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.13
-          set_plist_string "$APP_PLIST" CFBundleVersion 30
+          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.14
+          set_plist_string "$APP_PLIST" CFBundleVersion 31
           set_plist_string "$EXT_PLIST" CFBundleDisplayName 'LiteView Broadcast'
-          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.13
-          set_plist_string "$EXT_PLIST" CFBundleVersion 30
+          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.14
+          set_plist_string "$EXT_PLIST" CFBundleVersion 31
 
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP_PLIST")" = 'LiteView'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PLIST")" = '0.9.13'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PLIST")" = '30'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$EXT_PLIST")" = 'LiteView Broadcast'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$EXT_PLIST")" = '0.9.13'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_PLIST")" = '30'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PLIST")" = '0.9.14'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PLIST")" = '31'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_PLIST")" = '31'
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT_PLIST")" = 'PhoenixBroadcastExtension.EnhancedBroadcastSampleHandler'
           test -n "$(find "$EXT" -type d -name 'yolo11n.mlmodelc' -prune -print -quit)"
           grep -q 'AVKit.framework' "$APP_LINKS"
           grep -q 'AVFoundation.framework' "$APP_LINKS"
           grep -q 'AudioToolbox.framework' "$APP_LINKS"
           grep -q 'Vision.framework' "$EXT_LINKS"
-
-          echo 'Release-optimized Swift literal diagnostics (non-fatal):'
-          for needle in 'LITEVIEW_VISIBLE_MULTI_MAP_BUILD30' 'BUILD 30' 'Zero Dam' 'Tide Prison' 'audio-diagnostics.v1'; do
-            if grep -Fq "$needle" "$APP_STRINGS" "$EXT_STRINGS"; then
-              echo "STRING_PRESENT: $needle"
-            else
-              echo "STRING_OPTIMIZED_OR_ABSENT: $needle"
-            fi
-          done
-          echo 'BUILD30_FINAL_BINARY_PASS'
+          echo 'BUILD31_FINAL_BINARY_PASS'
 
       - name: Package unsigned IPA
         shell: bash
         run: |
           set -euo pipefail
-          PRODUCTS="$RUNNER_TEMP/LiteViewBuild30DerivedData/Build/Products/Release-iphoneos"
+          PRODUCTS="$RUNNER_TEMP/LiteViewBuild31DerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
-          ROOT="$RUNNER_TEMP/LiteViewBuild30Package"
-          IPA="$RUNNER_TEMP/LiteView-0.9.13-Build30-VisibleSixMapRadar-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.13-Build30-VisibleSixMapRadar.txt"
+          ROOT="$RUNNER_TEMP/LiteViewBuild31Package"
+          IPA="$RUNNER_TEMP/LiteView-0.9.14-Build31-EvidenceFirstRadar-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.14-Build31-EvidenceFirstRadar.txt"
           rm -rf "$ROOT" "$IPA" "$MANIFEST"
           mkdir -p "$ROOT/Payload"
           cp -R "$APP" "$ROOT/Payload/"
@@ -226,20 +210,22 @@ jobs:
           SIZE="$(stat -f%z "$IPA")"
           SHA="$(shasum -a 256 "$IPA" | awk '{print $1}')"
           cat > "$MANIFEST" <<EOF
-          LiteView 0.9.13 Build 30 Visible Six Map Radar
+          LiteView 0.9.14 Build 31 Evidence First Radar
           commit=${GITHUB_SHA}
-          version=0.9.13
-          build=30
+          version=0.9.14
+          build=31
           ipa_size_bytes=${SIZE}
           ipa_sha256=${SHA}
-          visible_without_broadcast=yes
-          always_visible=map title + grid + thick topology + public-area labels + green self anchor
-          route_width=2.2px normal / 2.8px vertical at 360x360 render size
-          node_radius=3.2px normal / 4.2px important
-          self_marker=30px translucent halo + 20px ring + 10px solid dot + ME label
-          visual_marker=red confidence halo/dot
-          prediction_marker=blue confidence halo/dot, volatile decay about 4.5 seconds
-          audio_marker=orange direction candidates from fresh stereo transient only
+          visual_targets=up to 4 concurrent entitlement-free target slots
+          visual_reacquisition=about 0.46s nominal when searching, thermal/latency adaptive
+          full_scan=about 0.62s searching / 0.92s while tracking
+          human_fallback=eligible after one empty full scan, throttled about 1.20s
+          red_marker=screen-relative visible-person bearing and coarse distance from box height
+          red_marker_claim=not an absolute world/map coordinate
+          blue_marker=public-map topology route probability only
+          prediction_decay=about 2.8s maximum without fresh visible evidence
+          spatial_audio=stereo inter-channel delay + normalized correlation + level bias
+          spatial_audio_low_confidence=no forced directional convergence
           maps=Zero Dam;Layali Grove;Space City;Brakkesh;Tide Prison;AZ3
           hidden_game_state=none
           memory_access=none
@@ -252,10 +238,10 @@ jobs:
       - name: Upload candidate artifact
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-visible-six-map-0.9.13-build30
+          name: liteview-evidence-first-0.9.14-build31
           path: |
-            ${{ runner.temp }}/LiteView-0.9.13-Build30-VisibleSixMapRadar-unsigned.ipa
-            ${{ runner.temp }}/LiteView-0.9.13-Build30-VisibleSixMapRadar.txt
+            ${{ runner.temp }}/LiteView-0.9.14-Build31-EvidenceFirstRadar-unsigned.ipa
+            ${{ runner.temp }}/LiteView-0.9.14-Build31-EvidenceFirstRadar.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -266,15 +252,15 @@ jobs:
         run: |
           set -euo pipefail
           TAG='liteview-audio-clean-overlay-latest'
-          IPA="$RUNNER_TEMP/LiteView-0.9.13-Build30-VisibleSixMapRadar-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.13-Build30-VisibleSixMapRadar.txt"
-          NOTES='Build 30 fixes the blank-looking six-map view. The map title, grid, topology routes, public-area labels and green self anchor are rendered before ReplayKit starts. Routes and nodes are substantially thicker and brighter for iPhone PiP. Red, blue and orange evidence overlays remain conditional.'
+          IPA="$RUNNER_TEMP/LiteView-0.9.14-Build31-EvidenceFirstRadar-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.14-Build31-EvidenceFirstRadar.txt"
+          NOTES='Build 31 fixes the structural accuracy problems in Build 30. Up to four visible people can cross the extension/app boundary, visual reacquisition is much faster, and the independent human fallback can engage after one empty scan. Red dots now mean screen-relative visible-person direction and coarse distance instead of pretending to be exact full-map coordinates. Blue dots remain topology route probabilities. App-audio direction now uses stereo delay/coherence plus level bias and suppresses low-confidence convergence.'
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
-            gh release edit "$TAG" --title 'LiteView 0.9.13 Build 30 Visible Six Map Radar' --notes "$NOTES" --target "$GITHUB_SHA"
+            gh release edit "$TAG" --title 'LiteView 0.9.14 Build 31 Evidence First Radar' --notes "$NOTES" --target "$GITHUB_SHA"
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" \
               --target "$GITHUB_SHA" \
-              --title 'LiteView 0.9.13 Build 30 Visible Six Map Radar' \
+              --title 'LiteView 0.9.14 Build 31 Evidence First Radar' \
               --notes "$NOTES"
           fi
