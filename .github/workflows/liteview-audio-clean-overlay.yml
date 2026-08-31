@@ -1,4 +1,4 @@
-name: LiteView HUD HRTF Fusion Candidate
+name: LiteView Edge HUD Candidate
 
 on:
   push:
@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 jobs:
-  build-hud-hrtf-fusion:
+  build-edge-hud:
     runs-on: macos-15
     timeout-minutes: 35
 
@@ -37,7 +37,7 @@ jobs:
           MODEL_DIR="$ROOT/Resources/BroadcastModels"
           ZIP="$RUNNER_TEMP/liteview-yolo11n-coreml.zip"
           UNZIP_DIR="$RUNNER_TEMP/liteview-yolo11n-coreml"
-          COMPILE_DIR="$RUNNER_TEMP/liteview-build32-model"
+          COMPILE_DIR="$RUNNER_TEMP/liteview-build33-model"
           URL='https://github.com/liubanxia/project_phoenix_core/releases/download/liteview-coreml-latest/liteview-yolo11n-coreml.zip'
           rm -rf "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
           mkdir -p "$MODEL_DIR" "$UNZIP_DIR" "$COMPILE_DIR"
@@ -50,64 +50,56 @@ jobs:
           test -n "$COMPILED"
           cp -R "$COMPILED" "$MODEL_DIR/yolo11n.mlmodelc"
 
-      - name: Guard Build 32 HUD HRTF wiring
+      - name: Guard Build 33 edge HUD wiring
         shell: bash
         run: |
           set -euo pipefail
           ROOT='ios/PhoenixRealtimeVisionAssist'
-          CTRL="$ROOT/Sources/App/HUDFusedRadarController.swift"
-          VIDEO="$ROOT/Sources/Broadcast/EvidenceFirstVideoProcessor.swift"
+          CTRL="$ROOT/Sources/App/EdgeHUDRadarController.swift"
           HUD="$ROOT/Sources/ExtensionSupport/BroadcastHUDSoundAnalyzer.swift"
           COMPASS="$ROOT/Sources/ExtensionSupport/BroadcastCompassHeadingAnalyzer.swift"
           SPATIAL="$ROOT/Sources/Broadcast/BroadcastSpatialAudioAnalyzer.swift"
           HANDLER="$ROOT/Sources/Broadcast/EnhancedBroadcastSampleHandler.swift"
           PROJECT="$ROOT/project.yml"
 
-          grep -q 'BUILD 32 · HUD+HRTF' "$CTRL"
-          grep -q 'LITEVIEW_HUD_HRTF_BUILD32' "$CTRL"
+          grep -q 'B33 EDGE HUD' "$CTRL"
+          grep -q 'LITEVIEW_EDGE_HUD_BUILD33' "$CTRL"
+          grep -q 'kCVPixelBufferWidthKey: 480' "$CTRL"
+          grep -q 'kCVPixelBufferHeightKey: 96' "$CTRL"
+          grep -q '0.08...0.35' "$CTRL"
           grep -q 'HUDSoundStateReader' "$CTRL"
           grep -q 'CompassHeadingStateReader' "$CTRL"
-          grep -q 'fuseSounds' "$CTRL"
-          grep -q 'STEP' "$CTRL"
-          grep -q 'SHOT' "$CTRL"
+          grep -q 'SpatialAudioStateReader' "$CTRL"
           grep -q 'BroadcastHUDSoundAnalyzer' "$HUD"
-          grep -q 'redMask' "$HUD"
-          grep -q 'whiteMask' "$HUD"
           grep -q 'verticalCue' "$HUD"
           grep -q 'BroadcastCompassHeadingAnalyzer' "$COMPASS"
-          grep -q 'VNRecognizeTextRequest' "$COMPASS"
-          grep -q '0.52' "$COMPASS"
           grep -q 'bestNormalizedCorrelation' "$SPATIAL"
-          grep -q 'EvidenceFirstVideoProcessor' "$HANDLER"
           grep -q 'hudSoundAnalyzer.consumeVideo' "$HANDLER"
           grep -q 'compassAnalyzer.consumeVideo' "$HANDLER"
-          grep -q 'CURRENT_PROJECT_VERSION: 32' "$PROJECT"
-          grep -q 'MARKETING_VERSION: 0.9.15' "$PROJECT"
-          grep -q 'EvidenceFirstRadarController.swift' "$PROJECT"
-          grep -q 'HUDSoundStateChannel.swift' "$PROJECT"
-          grep -q 'CompassHeadingStateChannel.swift' "$PROJECT"
-          echo 'BUILD32_HUD_HRTF_WIRING_PASS'
+          grep -q 'CURRENT_PROJECT_VERSION: 33' "$PROJECT"
+          grep -q 'MARKETING_VERSION: 0.9.16' "$PROJECT"
+          grep -q 'HUDFusedRadarController.swift' "$PROJECT"
+          echo 'BUILD33_EDGE_HUD_WIRING_PASS'
 
       - name: Generate project
         working-directory: ios/PhoenixRealtimeVisionAssist
         run: xcodegen generate
 
-      - name: Verify Build 32 target wiring
+      - name: Verify Build 33 target wiring
         shell: bash
         run: |
           set -euo pipefail
           PBX='ios/PhoenixRealtimeVisionAssist/PhoenixRealtimeVisionAssist.xcodeproj/project.pbxproj'
-          grep -q 'HUDFusedRadarController.swift' "$PBX"
+          grep -q 'EdgeHUDRadarController.swift' "$PBX"
           grep -q 'BroadcastHUDSoundAnalyzer.swift' "$PBX"
           grep -q 'BroadcastCompassHeadingAnalyzer.swift' "$PBX"
-          grep -q 'HUDSoundStateChannel.swift' "$PBX"
-          grep -q 'CompassHeadingStateChannel.swift' "$PBX"
+          ! grep -q 'HUDFusedRadarController.swift in Sources' "$PBX"
           ! grep -q 'EvidenceFirstRadarController.swift in Sources' "$PBX"
           ! grep -q 'VisibleMultiMapRadarController.swift in Sources' "$PBX"
           ! grep -q 'MultiMapFloatingRadarController.swift in Sources' "$PBX"
           ! grep -q 'FullMapFloatingRadarController.swift in Sources' "$PBX"
           ! grep -q 'FloatingDotPiPController.swift in Sources' "$PBX"
-          echo 'BUILD32_TARGET_WIRING_PASS'
+          echo 'BUILD33_TARGET_WIRING_PASS'
 
       - name: Run lifecycle smoke test
         shell: bash
@@ -119,8 +111,8 @@ jobs:
             "$ROOT/Sources/Core/BroadcastLifecycle.swift" \
             "$ROOT/Sources/Vision/PhoenixCapabilityModelBank.swift" \
             "$ROOT/scripts/lifecycle_smoke_main.swift" \
-            -o "$RUNNER_TEMP/liteview-build32-lifecycle"
-          "$RUNNER_TEMP/liteview-build32-lifecycle"
+            -o "$RUNNER_TEMP/liteview-build33-lifecycle"
+          "$RUNNER_TEMP/liteview-build33-lifecycle"
 
       - name: Run synthetic PCM telemetry test
         shell: bash
@@ -133,15 +125,15 @@ jobs:
             -framework AudioToolbox \
             -framework CoreMedia \
             -framework CoreFoundation \
-            -o "$RUNNER_TEMP/liteview-build32-audio"
-          "$RUNNER_TEMP/liteview-build32-audio"
+            -o "$RUNNER_TEMP/liteview-build33-audio"
+          "$RUNNER_TEMP/liteview-build33-audio"
 
       - name: Build unsigned iPhone Release app and Broadcast Extension
         working-directory: ios/PhoenixRealtimeVisionAssist
         shell: bash
         run: |
           set -euo pipefail
-          DERIVED="$RUNNER_TEMP/LiteViewBuild32DerivedData"
+          DERIVED="$RUNNER_TEMP/LiteViewBuild33DerivedData"
           rm -rf "$DERIVED"
           xcodebuild \
             -project PhoenixRealtimeVisionAssist.xcodeproj \
@@ -153,19 +145,19 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build
 
-      - name: Normalize 0.9.15 Build 32 and verify final binaries
+      - name: Normalize 0.9.16 Build 33 and verify final binaries
         shell: bash
         run: |
           set -euo pipefail
-          PRODUCTS="$RUNNER_TEMP/LiteViewBuild32DerivedData/Build/Products/Release-iphoneos"
+          PRODUCTS="$RUNNER_TEMP/LiteViewBuild33DerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
           EXT="$APP/PlugIns/PhoenixBroadcastExtension.appex"
           APP_PLIST="$APP/Info.plist"
           EXT_PLIST="$EXT/Info.plist"
           APP_BIN="$APP/PhoenixRealtimeVisionAssist"
           EXT_BIN="$EXT/PhoenixBroadcastExtension"
-          APP_LINKS="$RUNNER_TEMP/build32-app-links.txt"
-          EXT_LINKS="$RUNNER_TEMP/build32-ext-links.txt"
+          APP_LINKS="$RUNNER_TEMP/build33-app-links.txt"
+          EXT_LINKS="$RUNNER_TEMP/build33-ext-links.txt"
           test -d "$APP" && test -d "$EXT" && test -x "$APP_BIN" && test -x "$EXT_BIN"
           otool -L "$APP_BIN" > "$APP_LINKS"
           otool -L "$EXT_BIN" > "$EXT_LINKS"
@@ -176,31 +168,31 @@ jobs:
               /usr/libexec/PlistBuddy -c "Add :$key string $value" "$plist"
           }
           set_plist_string "$APP_PLIST" CFBundleDisplayName LiteView
-          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.15
-          set_plist_string "$APP_PLIST" CFBundleVersion 32
+          set_plist_string "$APP_PLIST" CFBundleShortVersionString 0.9.16
+          set_plist_string "$APP_PLIST" CFBundleVersion 33
           set_plist_string "$EXT_PLIST" CFBundleDisplayName 'LiteView Broadcast'
-          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.15
-          set_plist_string "$EXT_PLIST" CFBundleVersion 32
+          set_plist_string "$EXT_PLIST" CFBundleShortVersionString 0.9.16
+          set_plist_string "$EXT_PLIST" CFBundleVersion 33
 
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PLIST")" = '32'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_PLIST")" = '32'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PLIST")" = '33'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_PLIST")" = '33'
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT_PLIST")" = 'PhoenixBroadcastExtension.EnhancedBroadcastSampleHandler'
           test -n "$(find "$EXT" -type d -name 'yolo11n.mlmodelc' -prune -print -quit)"
           grep -q 'AVKit.framework' "$APP_LINKS"
           grep -q 'AVFoundation.framework' "$APP_LINKS"
           grep -q 'AudioToolbox.framework' "$APP_LINKS"
           grep -q 'Vision.framework' "$EXT_LINKS"
-          echo 'BUILD32_FINAL_BINARY_PASS'
+          echo 'BUILD33_FINAL_BINARY_PASS'
 
       - name: Package unsigned IPA
         shell: bash
         run: |
           set -euo pipefail
-          PRODUCTS="$RUNNER_TEMP/LiteViewBuild32DerivedData/Build/Products/Release-iphoneos"
+          PRODUCTS="$RUNNER_TEMP/LiteViewBuild33DerivedData/Build/Products/Release-iphoneos"
           APP="$PRODUCTS/PhoenixRealtimeVisionAssist.app"
-          ROOT="$RUNNER_TEMP/LiteViewBuild32Package"
-          IPA="$RUNNER_TEMP/LiteView-0.9.15-Build32-HUD-HRTF-Fusion-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.15-Build32-HUD-HRTF-Fusion.txt"
+          ROOT="$RUNNER_TEMP/LiteViewBuild33Package"
+          IPA="$RUNNER_TEMP/LiteView-0.9.16-Build33-EdgeHUD-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.16-Build33-EdgeHUD.txt"
           rm -rf "$ROOT" "$IPA" "$MANIFEST"
           mkdir -p "$ROOT/Payload"
           cp -R "$APP" "$ROOT/Payload/"
@@ -209,26 +201,22 @@ jobs:
           SIZE="$(stat -f%z "$IPA")"
           SHA="$(shasum -a 256 "$IPA" | awk '{print $1}')"
           cat > "$MANIFEST" <<EOF
-          LiteView 0.9.15 Build 32 HUD HRTF Fusion
+          LiteView 0.9.16 Build 33 Edge HUD
           commit=${GITHUB_SHA}
-          version=0.9.15
-          build=32
+          version=0.9.16
+          build=33
           ipa_size_bytes=${SIZE}
           ipa_sha256=${SHA}
-          visual_targets=up to 4 concurrent screen-visible people
-          visual_reacquisition=fast evidence-first path retained
-          hud_sound=screen-visible mobile compass soundwave region scanned about every 0.14s
-          hud_kind=red-biased glyph gunfire; white-biased glyph footstep
-          hud_distance=soundwave glyph size used only as coarse proximity
-          hud_vertical=screen glyph vertical asymmetry provides weak up/down arrow cue
-          compass=top-center fast OCR about every 0.52s, automatic heading when confidence is sufficient
-          manual_heading=fallback only when compass OCR is unavailable
-          hrtf=stereo inter-channel delay + normalized correlation + level bias
-          sound_fusion=HUD wins; HRTF refines only when consistent and reduces confidence on conflict
-          red_marker=screen-visible person relative bearing/coarse distance, not absolute world coordinate
-          blue_marker=public map topology route probability only
-          sound_marker=HUD/HRTF relative direction + coarse proximity + up/down cue
-          maps=Zero Dam;Layali Grove;Space City;Brakkesh;Tide Prison;AZ3
+          pip_canvas=480x96 ultra-wide edge strip
+          default_background_opacity=20%
+          adjustable_background_opacity=8%-35%
+          full_map_overlay=removed from always-on PiP
+          visual_marker=thin red direction dot only
+          sound_marker=small orange/pink triangle with optional up/down cue
+          self_marker=small green center dot
+          compass=automatic top-screen OCR retained
+          hrtf=stereo delay/coherence retained as secondary evidence
+          hud_sound=screen-visible soundwave recognition retained as primary sound evidence
           hidden_game_state=none
           memory_access=none
           signing=unsigned; preserve PlugIns when re-signing
@@ -240,10 +228,10 @@ jobs:
       - name: Upload candidate artifact
         uses: actions/upload-artifact@v4
         with:
-          name: liteview-hud-hrtf-fusion-0.9.15-build32
+          name: liteview-edge-hud-0.9.16-build33
           path: |
-            ${{ runner.temp }}/LiteView-0.9.15-Build32-HUD-HRTF-Fusion-unsigned.ipa
-            ${{ runner.temp }}/LiteView-0.9.15-Build32-HUD-HRTF-Fusion.txt
+            ${{ runner.temp }}/LiteView-0.9.16-Build33-EdgeHUD-unsigned.ipa
+            ${{ runner.temp }}/LiteView-0.9.16-Build33-EdgeHUD.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -254,15 +242,15 @@ jobs:
         run: |
           set -euo pipefail
           TAG='liteview-audio-clean-overlay-latest'
-          IPA="$RUNNER_TEMP/LiteView-0.9.15-Build32-HUD-HRTF-Fusion-unsigned.ipa"
-          MANIFEST="$RUNNER_TEMP/LiteView-0.9.15-Build32-HUD-HRTF-Fusion.txt"
-          NOTES='Build 32 adds the missing mobile-native evidence: rendered soundwave HUD recognition, coarse soundwave-size proximity, up/down arrow cue extraction, automatic screen-compass heading, and HRTF stereo delay/coherence as a secondary cue. HUD evidence takes priority over raw audio. Manual heading is now fallback only. Visible-person multi-target detection and public-map topology prediction remain separate so estimates are not presented as exact hidden game coordinates.'
+          IPA="$RUNNER_TEMP/LiteView-0.9.16-Build33-EdgeHUD-unsigned.ipa"
+          MANIFEST="$RUNNER_TEMP/LiteView-0.9.16-Build33-EdgeHUD.txt"
+          NOTES='Build 33 removes the always-on square full-map PiP that obscured gameplay. The active overlay is now a 480x96 ultra-wide edge strip with 8%-35% background opacity. It keeps thin visible-person direction dots, screen-visible soundwave direction and up/down cues, automatic compass OCR, and HRTF secondary audio evidence while leaving the main game view unobstructed.'
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$IPA" "$MANIFEST" --clobber
-            gh release edit "$TAG" --title 'LiteView 0.9.15 Build 32 HUD HRTF Fusion' --notes "$NOTES" --target "$GITHUB_SHA"
+            gh release edit "$TAG" --title 'LiteView 0.9.16 Build 33 Edge HUD' --notes "$NOTES" --target "$GITHUB_SHA"
           else
             gh release create "$TAG" "$IPA" "$MANIFEST" \
               --target "$GITHUB_SHA" \
-              --title 'LiteView 0.9.15 Build 32 HUD HRTF Fusion' \
+              --title 'LiteView 0.9.16 Build 33 Edge HUD' \
               --notes "$NOTES"
           fi
