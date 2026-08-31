@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "name": "AZ3",
+  "calibrated": false,
+  "coordinateSystem": "normalized-2d",
+  "reference": {
+    "width": 4096,
+    "height": 4096,
+    "origin": "bottom-left",
+    "note": "Calibration canvas only. Do not treat this file as game/world coordinates until calibrated against a permitted screen-visible reference."
+  },
+  "polygons": [],
+  "polylines": [],
+  "pois": []
+}
