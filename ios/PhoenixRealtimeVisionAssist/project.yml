@@ -9,8 +9,8 @@ settings:
     IPHONEOS_DEPLOYMENT_TARGET: 17.0
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: ""
-    CURRENT_PROJECT_VERSION: 32
-    MARKETING_VERSION: 0.9.15
+    CURRENT_PROJECT_VERSION: 33
+    MARKETING_VERSION: 0.9.16
 targets:
   PhoenixRealtimeVisionAssist:
     type: application
@@ -25,6 +25,7 @@ targets:
           - MultiMapFloatingRadarController.swift
           - VisibleMultiMapRadarController.swift
           - EvidenceFirstRadarController.swift
+          - HUDFusedRadarController.swift
       - path: Sources/Core
       - path: Sources/Vision
       - path: Sources/Audio
