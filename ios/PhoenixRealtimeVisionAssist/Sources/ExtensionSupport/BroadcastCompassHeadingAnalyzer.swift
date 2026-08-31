@@ -6,8 +6,8 @@ import ImageIO
 import ReplayKit
 import Vision
 
-/// Low-frequency OCR of the screen-visible mobile compass heading.
-/// The request is restricted to a small top-center crop and uses fast recognition.
+/// Stability-first OCR of the screen-visible mobile compass heading.
+/// Large one-frame jumps are rejected until the next OCR sample confirms them.
 final class BroadcastCompassHeadingAnalyzer {
     private struct Candidate {
         let degrees: Double
@@ -21,6 +21,8 @@ final class BroadcastCompassHeadingAnalyzer {
     private var lastAnalysisUptime: TimeInterval = 0
     private var active = false
     private var previousHeading: Double?
+    private var pendingLargeJump: Double?
+    private var pendingLargeJumpHits = 0
 
     init() {
         preprocessor = try? BroadcastFramePreprocessor(side: 256)
@@ -31,6 +33,8 @@ final class BroadcastCompassHeadingAnalyzer {
         lastAnalysisUptime = 0
         active = true
         previousHeading = nil
+        pendingLargeJump = nil
+        pendingLargeJumpHits = 0
         lock.unlock()
         publisher.clear()
     }
@@ -69,7 +73,7 @@ final class BroadcastCompassHeadingAnalyzer {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .fast
         request.usesLanguageCorrection = false
-        request.minimumTextHeight = 0.035
+        request.minimumTextHeight = 0.038
 
         let handler = VNImageRequestHandler(
             cvPixelBuffer: preprocessor.modelInput,
@@ -86,12 +90,12 @@ final class BroadcastCompassHeadingAnalyzer {
         for observation in request.results ?? [] {
             let centerX = Double(observation.boundingBox.midX)
             let centerDistance = abs(centerX - 0.5)
-            guard centerDistance <= 0.46 else { continue }
+            guard centerDistance <= 0.32 else { continue }
 
             for recognized in observation.topCandidates(2) {
+                let baseConfidence = Double(recognized.confidence)
+                guard baseConfidence >= 0.30 else { continue }
                 for value in Self.extractHeadings(from: recognized.string) {
-                    let baseConfidence = Double(recognized.confidence)
-                    guard baseConfidence >= 0.18 else { continue }
                     candidates.append(
                         Candidate(
                             degrees: value,
@@ -108,31 +112,78 @@ final class BroadcastCompassHeadingAnalyzer {
             score(lhs, previous: previous) < score(rhs, previous: previous)
         }!
         let confidence = min(max(score(selected, previous: previous), 0), 1)
-        guard confidence >= 0.28 else { return }
+        guard confidence >= 0.44 else { return }
 
-        let smoothed: Double
-        if let previous,
-           shortestAngleDistance(previous, selected.degrees) <= 55 {
-            smoothed = circularBlend(from: previous, to: selected.degrees, weight: 0.62)
+        let acceptedHeading: Double
+        if let previous {
+            let jump = shortestAngleDistance(previous, selected.degrees)
+            if jump <= 48 {
+                clearPendingJump()
+                acceptedHeading = circularBlend(from: previous, to: selected.degrees, weight: 0.48)
+            } else {
+                guard confirmLargeJump(selected.degrees, confidence: confidence) else {
+                    return
+                }
+                acceptedHeading = selected.degrees
+            }
         } else {
-            smoothed = selected.degrees
+            // Initial lock also needs two OCR samples unless confidence is exceptionally strong.
+            if confidence >= 0.82 {
+                acceptedHeading = selected.degrees
+                clearPendingJump()
+            } else {
+                guard confirmLargeJump(selected.degrees, confidence: confidence) else { return }
+                acceptedHeading = selected.degrees
+            }
         }
 
         lock.lock()
-        previousHeading = smoothed
+        previousHeading = acceptedHeading
         lock.unlock()
         publisher.publish(
-            SharedCompassHeading(degrees: smoothed, confidence: confidence),
+            SharedCompassHeading(degrees: acceptedHeading, confidence: confidence),
             timestamp: now
         )
     }
 
+    private func confirmLargeJump(_ candidate: Double, confidence: Double) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard confidence >= 0.50 else {
+            pendingLargeJump = nil
+            pendingLargeJumpHits = 0
+            return false
+        }
+
+        if let pendingLargeJump,
+           shortestAngleDistance(pendingLargeJump, candidate) <= 14 {
+            self.pendingLargeJump = circularBlend(from: pendingLargeJump, to: candidate, weight: 0.5)
+            pendingLargeJumpHits += 1
+        } else {
+            pendingLargeJump = candidate
+            pendingLargeJumpHits = 1
+        }
+
+        guard pendingLargeJumpHits >= 2 else { return false }
+        self.pendingLargeJump = nil
+        pendingLargeJumpHits = 0
+        return true
+    }
+
+    private func clearPendingJump() {
+        lock.lock()
+        pendingLargeJump = nil
+        pendingLargeJumpHits = 0
+        lock.unlock()
+    }
+
     private func score(_ candidate: Candidate, previous: Double?) -> Double {
-        let centerScore = 1 - min(candidate.centerDistance / 0.46, 1)
-        var value = candidate.confidence * 0.68 + centerScore * 0.32
+        let centerScore = 1 - min(candidate.centerDistance / 0.32, 1)
+        var value = candidate.confidence * 0.72 + centerScore * 0.28
         if let previous {
             let continuity = 1 - min(shortestAngleDistance(previous, candidate.degrees) / 180, 1)
-            value = value * 0.90 + continuity * 0.10
+            value = value * 0.86 + continuity * 0.14
         }
         return value
     }
