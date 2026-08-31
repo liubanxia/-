@@ -81,17 +81,22 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m py_compile web/liteview-radar/server.py web/liteview-radar/demo_sender.py
-          (cd web/liteview-radar && python3 server.py --host 127.0.0.1 --port 8765 > "$RUNNER_TEMP/web-radar.log" 2>&1 & echo $! > "$RUNNER_TEMP/web-radar.pid")
+          SMOKE_PORT=18765
+          (cd web/liteview-radar && python3 server.py --host 127.0.0.1 --port "$SMOKE_PORT" > "$RUNNER_TEMP/web-radar.log" 2>&1 & echo $! > "$RUNNER_TEMP/web-radar.pid")
           python3 - <<'PY'
           import json,time,urllib.request
-          base='http://127.0.0.1:8765'
-          for _ in range(30):
+          base='http://127.0.0.1:18765'
+          last=None
+          for _ in range(40):
               try:
                   with urllib.request.urlopen(base+'/health',timeout=.5) as r: health=json.load(r)
                   assert health['ok'] and health['discovery']['magic']=='LITEVIEW_RADAR_V1'
                   break
-              except Exception: time.sleep(.1)
-          else: raise SystemExit('Web Radar relay failed to start')
+              except Exception as exc:
+                  last=exc
+                  time.sleep(.1)
+          else:
+              raise SystemExit(f'Web Radar relay failed to start: {last}')
           payload={'map':'AZ3','player':{'x':.42,'y':.61,'heading':133,'confidence':.88,'mode':'tracking'},'targets':[{'screenX':.28,'screenY':.55,'confidence':.79,'boxHeight':.11,'stableFrames':3}],'sounds':[{'kind':'footstep','lateral':-.4,'bearing':-36,'proximity':.62,'verticalCue':1,'confidence':.73,'source':'hud'}]}
           req=urllib.request.Request(base+'/api/state',data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'},method='POST')
           with urllib.request.urlopen(req,timeout=1) as r: assert json.load(r)['ok']
