@@ -44,6 +44,28 @@ def test_router_result_adds_abdomen_specialists_without_private_config(tmp_path)
     assert "appendicitis_2p5d_student" in models
 
 
+def test_router_text_fallback_recognizes_pelvis_without_active_regions(tmp_path):
+    files = create_synthetic_ct_series(tmp_path / "pelvis", body_part="OTHER", count=2)
+    case = _case("CT", files)
+
+    router_result = {
+        "active_body_regions": [],
+        "body_part_display": "Pelvis",
+    }
+    decision = ct_route_decision(case, router_result)
+    models = select_models(case, router_result)
+
+    assert decision["pelvis"] is True
+    assert decision["abdomen"] is False
+    assert decision["head"] is False
+    assert decision["chest"] is False
+    assert "pelvis" in decision["router_regions"]
+    assert models[0] == "body_part_regression"
+    assert "renal_stone_student" in models
+    assert "sbo_2p5d_student" in models
+    assert "appendicitis_2p5d_student" in models
+
+
 def test_synthetic_dr_chest_and_bone_routing(tmp_path):
     chest_path = create_synthetic_dr_image(tmp_path / "chest.dcm", body_part="CHEST")
     chest_case = _case("DR", [chest_path])
